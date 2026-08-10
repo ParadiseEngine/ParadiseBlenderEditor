@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The .NET half of the Blender addon: the two jobs Python cannot do.
+
+      navmesh         Recast/Detour bake  (DotRecast is C# only)
+      contract-check  round-trip our JSON through the engine's own reader/writer,
+                      which is the drift gate on the Python contract implementation
+
+    Everything else in the addon is pure Python and needs no .NET at all — that is the
+    whole point of implementing the contract writer in Python. This tool is optional.
+
+    Resolves Paradise.Export from NuGet by default, so a CI checkout builds without the
+    workspace present. To compile against the engine sources in this workspace instead:
+
+        dotnet build -p:ParadiseUseEngineSource=true
+
+    (the workspace-root Directory.Build.targets does the swap; it only auto-applies to the
+    engine's own consumer repos, not to this one.)
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>ParadiseBlenderBridge</AssemblyName>
+    <RootNamespace>ParadiseBlenderBridge</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Paradise.Export" Version="0.6.2" />
+    <!-- The Recast bake itself: Paradise.Export's NavMeshBinaryWriter consumes an already
+         triangulated navmesh (Godot bakes before handing it over), so the bake that Godot's
+         NavigationServer3D performs has to happen here instead. -->
+    <PackageReference Include="DotRecast.Core" Version="2026.1.3" />
+    <PackageReference Include="DotRecast.Recast" Version="2026.1.3" />
+    <PackageReference Include="DotRecast.Detour" Version="2026.1.3" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,198 @@
+"""Addon preferences: where data goes, and which external tools to drive.
+
+The Godot host splits these between committed project settings and machine-level editor
+settings. Blender's ``AddonPreferences`` are machine-level only, which is the right default
+for tool paths (they differ per machine) but wrong for the data directory (it is a property of
+the project). So the data directory is stored **per-scene** and the tool paths are stored in
+preferences -- see :class:`ParadiseScenePreferences`.
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+
+import bpy
+from bpy.props import BoolProperty, IntProperty, StringProperty
+from bpy.types import AddonPreferences, PropertyGroup, Scene
+
+from .paths import ExportPaths
+
+__all__ = [
+    "ParadiseAddonPreferences",
+    "ParadiseScenePreferences",
+    "classes",
+    "export_paths",
+    "get_preferences",
+    "resolve_blender_data_dir",
+]
+
+PACKAGE = __package__
+
+
+class ParadiseScenePreferences(PropertyGroup):
+    """Project-scoped settings, stored in the .blend so they travel with the scene."""
+
+    data_dir: StringProperty(  # type: ignore[valid-type]
+        name="Data Directory",
+        description=(
+            "Export output root. The runtime resolves every contract path under this "
+            "directory, so assets outside it are unreachable at runtime"
+        ),
+        subtype="DIR_PATH",
+        default="//data",
+    )
+
+    export_on_save: BoolProperty(  # type: ignore[valid-type]
+        name="Export On Save",
+        description=(
+            "Re-export the scene contract when the .blend is saved, matching the Godot host's "
+            "save hook"
+        ),
+        default=True,
+    )
+
+    scene_name_override: StringProperty(  # type: ignore[valid-type]
+        name="Scene Name",
+        description=(
+            "Output name for data/scenes/<name>.json. Empty uses the .blend filename, "
+            "matching the Godot host's rule of using the scene file's basename"
+        ),
+        default="",
+    )
+
+
+class ParadiseAddonPreferences(AddonPreferences):
+    """Machine-scoped settings: external tool locations and live-preview transport."""
+
+    bl_idname = PACKAGE
+
+    runtime_host: StringProperty(  # type: ignore[valid-type]
+        name="Runtime Host",
+        description=(
+            "Path to a paradise-runtime executable, or to a host .csproj (launched via "
+            "`dotnet run --project`). Empty auto-detects the installed dotnet tool"
+        ),
+        subtype="FILE_PATH",
+        default="",
+    )
+
+    runtime_arguments: StringProperty(  # type: ignore[valid-type]
+        name="Runtime Arguments",
+        description="Extra arguments appended to every runtime launch",
+        default="--imgui",
+    )
+
+    ktx_path: StringProperty(  # type: ignore[valid-type]
+        name="toktx Path",
+        description=(
+            "KTX-Software's toktx, used to transcode GLB textures to KTX2. Without it exports "
+            "still succeed, but textured meshes will not load in the runtime, which requires KTX2"
+        ),
+        subtype="FILE_PATH",
+        default="",
+    )
+
+    bridge_project: StringProperty(  # type: ignore[valid-type]
+        name="Bridge Project",
+        description=(
+            "tools/ParadiseBlenderBridge .csproj, used for navmesh baking and the contract "
+            "conformance check. Only needed for those two operations"
+        ),
+        subtype="FILE_PATH",
+        default="",
+    )
+
+    live_port: IntProperty(  # type: ignore[valid-type]
+        name="Live Preview Port",
+        description="Loopback TCP port the runtime listens on for live-preview updates",
+        default=45123,
+        min=1024,
+        max=65535,
+    )
+
+    live_rate_hz: IntProperty(  # type: ignore[valid-type]
+        name="Live Update Rate",
+        description=(
+            "How often coalesced edits are pushed. Blender fires depsgraph updates far faster "
+            "than this; sending each one would flood the socket while dragging"
+        ),
+        default=10,
+        min=1,
+        max=60,
+    )
+
+    def draw(self, context) -> None:
+        layout = self.layout
+
+        box = layout.box()
+        box.label(text="Runtime", icon="PLAY")
+        box.prop(self, "runtime_host")
+        box.prop(self, "runtime_arguments")
+        resolved = shutil.which("paradise-runtime") or _dotnet_tool_path()
+        if not self.runtime_host and resolved:
+            box.label(text=f"Auto-detected: {resolved}", icon="CHECKMARK")
+        elif not self.runtime_host:
+            box.label(
+                text="No runtime found. Install with: dotnet tool install --global Paradise.Sample.Runtime",
+                icon="ERROR",
+            )
+
+        box = layout.box()
+        box.label(text="Live Preview", icon="LINKED")
+        box.prop(self, "live_port")
+        box.prop(self, "live_rate_hz")
+
+        box = layout.box()
+        box.label(text="Optional Tools", icon="TOOL_SETTINGS")
+        box.prop(self, "ktx_path")
+        box.prop(self, "bridge_project")
+
+
+def _dotnet_tool_path() -> str | None:
+    candidate = os.path.join(
+        os.path.expanduser("~"),
+        ".dotnet",
+        "tools",
+        "paradise-runtime.exe" if os.name == "nt" else "paradise-runtime",
+    )
+    return candidate if os.path.exists(candidate) else None
+
+
+def get_preferences(context=None) -> ParadiseAddonPreferences:
+    context = context or bpy.context
+    return context.preferences.addons[PACKAGE].preferences
+
+
+def resolve_blender_data_dir(scene: bpy.types.Scene) -> str:
+    """Absolute path of the scene's data directory.
+
+    Blender's ``//`` prefix is relative to the .blend file, so an unsaved file cannot resolve
+    it. Rather than silently writing into the current working directory -- which is wherever
+    Blender happened to be launched from -- this falls back to a temp directory and the
+    exporter reports where it went.
+    """
+    raw = scene.paradise_project.data_dir or "//data"
+    if raw.startswith("//") and not bpy.data.filepath:
+        import tempfile
+
+        return os.path.join(tempfile.gettempdir(), "paradise_unsaved_blend", "data")
+    return os.path.abspath(bpy.path.abspath(raw))
+
+
+def export_paths(scene: bpy.types.Scene) -> ExportPaths:
+    return ExportPaths(resolve_blender_data_dir(scene))
+
+
+classes = (ParadiseScenePreferences, ParadiseAddonPreferences)
+
+
+def register_pointers() -> None:
+    from bpy.props import PointerProperty
+
+    Scene.paradise_project = PointerProperty(type=ParadiseScenePreferences)
+
+
+def unregister_pointers() -> None:
+    if hasattr(Scene, "paradise_project"):
+        del Scene.paradise_project

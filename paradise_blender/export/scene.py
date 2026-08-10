@@ -1,0 +1,130 @@
+"""Scene walk -> ``data/scenes/<Scene>.json``.
+
+Port of ``SceneDataExporter.ExportRoot``. Walks the scene once, dispatching each object to the
+right exporter, then writes the level document plus its side artifacts (materials, prefab
+templates, project settings, navmesh).
+
+Two structural differences from the Godot host:
+
+* **Order.** Godot walks the scene tree depth-first, so entity order follows the tree. Blender
+  gives no stable iteration order for ``scene.objects``, so entities are emitted sorted by
+  name (see :func:`..authoring.entity.entity_objects`). Without that, two exports of an
+  unchanged scene could differ, which would make every diff and every live-preview patch
+  noisy.
+
+* **Identity sweep.** GUID minting runs before the walk rather than on save alone, so an
+  unsaved .blend still exports unique identities.
+"""
+
+from __future__ import annotations
+
+import os
+
+import bpy
+
+from .. import log
+from ..authoring import entity as authoring
+from ..authoring.guid import ensure_unique_guids
+from ..contract.schema import LevelData
+from ..contract.writer import write_json_document
+from ..paths import ExportPaths
+from ..prefs import export_paths
+from . import navmesh as navmesh_export
+from . import project_settings
+from .camera import export_camera, find_camera
+from .entity import export_entity
+from .light import export_light
+from .material import MaterialExporter
+from .mesh import MeshExporter
+from .prefab import PrefabExporter
+from .world import export_environment, resolve_background_color
+
+__all__ = ["build_level_data", "export_scene", "resolve_scene_name"]
+
+
+def resolve_scene_name(scene: bpy.types.Scene) -> str:
+    """Output name for ``data/scenes/<name>.json``.
+
+    Precedence: an explicit override, then the .blend filename (matching the Godot host's rule
+    of using the scene file's basename), then the Blender scene's own name for an unsaved file.
+    """
+    override = scene.paradise_project.scene_name_override.strip()
+    if override:
+        return override
+    if bpy.data.filepath:
+        return os.path.splitext(os.path.basename(bpy.data.filepath))[0]
+    return scene.name
+
+
+def build_level_data(
+    scene: bpy.types.Scene, paths: ExportPaths, export_assets: bool = True
+) -> LevelData:
+    """Build the level document, optionally exporting mesh/material side artifacts.
+
+    ``export_assets=False`` is the live-preview path: re-exporting every GLB on each transform
+    tweak would stall Blender, and the runtime already has the meshes loaded.
+    """
+    document = LevelData()
+
+    materials = MaterialExporter()
+    meshes = MeshExporter()
+    prefabs = PrefabExporter(materials, meshes)
+
+    camera = find_camera(scene)
+    if camera is not None:
+        document.camera = export_camera(camera, resolve_background_color(scene.world))
+
+    state = document.ensure_lighting_state()
+    state.environment = export_environment(scene)
+    for obj in sorted(
+        (o for o in scene.objects if o.type == "LIGHT"), key=lambda o: o.name
+    ):
+        state.lights.append(export_light(obj))
+
+    for obj in authoring.entity_objects(scene):
+        document.entities.append(export_entity(obj, paths, materials, meshes, prefabs))
+
+    if export_assets:
+        written = materials.write_exported_materials(paths)
+        if written:
+            log.info(f"Exported {written} material document(s).")
+
+    return document
+
+
+def export_scene(scene: bpy.types.Scene, operator=None) -> str | None:
+    """Full export: level document, materials, prefabs, project settings, navmesh.
+
+    Returns the written scene JSON path, or ``None`` if the export could not run.
+    """
+    paths = export_paths(scene)
+    paths.ensure_output_directory()
+
+    repaired = ensure_unique_guids(scene)
+    if repaired:
+        log.info(f"Minted or repaired {repaired} entity GUID(s) before export.", operator)
+
+    scene_name = resolve_scene_name(scene)
+    document = build_level_data(scene, paths)
+
+    project_settings.export_project_settings(paths)
+    navmesh_export.export_navmesh(scene, scene_name, paths, document)
+
+    output_path = paths.level_data_output_path(scene_name)
+    write_json_document(output_path, document.to_json())
+
+    log.info(
+        f"Exported scene data: {output_path} "
+        f"({len(document.entities)} entities, "
+        f"{len(document.lighting.states[0].lights) if document.lighting else 0} lights)",
+        operator,
+    )
+
+    if not document.entities:
+        log.warn(
+            "No Paradise entities were found, so the exported scene will render empty. Select "
+            "objects and use Make Paradise Entity in the Paradise panel.",
+            operator,
+        )
+
+    return output_path

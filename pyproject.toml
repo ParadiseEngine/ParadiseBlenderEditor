@@ -1,0 +1,41 @@
+# Development tooling only. The addon itself ships as a Blender extension
+# (see blender_manifest.toml) and is never pip-installed.
+
+[project]
+name = "paradise-blender-editor"
+version = "0.1.0"
+description = "Blender authoring addon for Paradise Engine"
+requires-python = ">=3.11"          # Blender 4.2 ships 3.11; 5.x ships 3.11+.
+
+[dependency-groups]
+dev = [
+  "pytest>=8.0",
+  # Type stubs for bpy/mathutils so the editor and ruff can resolve Blender imports
+  # outside Blender. Never imported at runtime.
+  "fake-bpy-module>=20240101",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/unit"]
+# tests/integration is excluded by default: those run inside Blender
+# (`blender --background --python`), not under a bare pytest.
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = [
+  # Blender's API is full of callbacks with fixed signatures we do not control.
+  "B008",
+  # `bl_options = {"REGISTER", "UNDO"}` is Blender's required form for operator and panel
+  # options. Annotating it ClassVar would be noise on every class, and Blender reads it
+  # directly off the class regardless.
+  "RUF012",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Blender registration modules legitimately use star-ish patterns and module-level side effects.
+"paradise_blender/__init__.py" = ["E402"]

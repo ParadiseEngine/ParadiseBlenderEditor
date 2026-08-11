@@ -24,18 +24,21 @@ import tempfile
 
 from .. import log
 
-__all__ = ["launch_runtime", "log_path", "resolve_runtime_command"]
+__all__ = ["first_error_line", "launch_runtime", "log_path", "resolve_runtime_command"]
 
 
 def log_path() -> str:
     return os.path.join(tempfile.gettempdir(), "paradise_play.log")
 
 
-def resolve_runtime_command() -> list[str] | None:
+def resolve_runtime_command(warn: bool = True) -> list[str] | None:
     """Argv prefix that runs the runtime, or ``None`` when nothing is installed.
 
     Order: the configured host (a ``.csproj`` runs via ``dotnet run``), then
     ``paradise-runtime`` on PATH, then the globally installed dotnet tool.
+
+    ``warn=False`` silences the diagnostics. The Play panel resolves on every redraw to show
+    the current status, and an unconditional warn there would print once per redraw.
     """
     from ..prefs import get_preferences
 
@@ -45,14 +48,19 @@ def resolve_runtime_command() -> list[str] | None:
         configured = ""
 
     if configured:
-        resolved = os.path.abspath(os.path.expanduser(configured))
+        # realpath, not abspath: a project reached through a symlink builds against the wrong
+        # tree. MSBuild relativizes ProjectReferences against the path as spelled, then resolves
+        # them against the canonicalized directory -- so a symlinked project path silently
+        # retargets every relative reference and the build dies on MSB3202. Blender's file
+        # browser walks into symlinks happily, so authors hit this by simply picking the file.
+        resolved = os.path.realpath(os.path.expanduser(configured))
         if resolved.endswith(".csproj"):
-            command = _dotnet_run(resolved)
+            command = _dotnet_run(resolved, warn=warn)
             if command is not None:
                 return command
         elif os.path.exists(resolved):
             return [resolved]
-        else:
+        elif warn:
             log.warn(f"Configured runtime host '{configured}' does not exist; auto-detecting.")
 
     on_path = shutil.which("paradise-runtime")
@@ -71,18 +79,22 @@ def resolve_runtime_command() -> list[str] | None:
     return None
 
 
-def launch_runtime(arguments: list[str], operator=None) -> int | None:
-    """Launch the runtime detached with the given arguments. Returns its pid, or ``None``.
+def launch_runtime(arguments: list[str], operator=None) -> subprocess.Popen | None:
+    """Launch the runtime detached with the given arguments. Returns the process, or ``None``.
 
     Detached on purpose: the runtime is an interactive window with its own lifetime, and
     Blender must not block or die with it.
+
+    The process is returned rather than its pid so callers can ``poll()`` it. A detached child
+    that dies immediately -- a build error, a missing asset -- is otherwise indistinguishable
+    from one that launched fine, because its output went to :func:`log_path` and Blender only
+    ever saw a successful ``fork``.
     """
     command = resolve_runtime_command()
     if command is None:
         log.error(
-            "No Paradise runtime found. Install it with "
-            "`dotnet tool install --global Paradise.Sample.Runtime`, or set a runtime host in "
-            "the addon preferences.",
+            "No Paradise runtime found. Set a runtime host in the Play panel -- an executable, "
+            "or a host .csproj to run via `dotnet run --project`.",
             operator,
         )
         return None
@@ -115,13 +127,47 @@ def launch_runtime(arguments: list[str], operator=None) -> int | None:
         return None
 
     log.info(f"Launched Paradise runtime (pid {process.pid}) — output: {log_path()}", operator)
-    return process.pid
+    return process
 
 
-def _dotnet_run(project: str) -> list[str] | None:
+# Substrings that mark the line a failed run is actually about. "error" catches MSBuild
+# (`error MSB3202: ...`), the exception words catch a .NET crash banner; a build log buries both
+# under hundreds of lines and ends on a useless "The build failed."
+_FAILURE_MARKERS = ("error", "exception", "unhandled", "fatal")
+
+
+def first_error_line(path: str) -> str | None:
+    """The most explanatory line of a failed run's log, for reporting back into Blender.
+
+    Falls back to the *first* line rather than the last: a launcher that fails its own
+    precondition check prints the cause first and a generic hint after it, so the tail is the
+    least informative part. Anything that fails later, after real output, is caught by a marker.
+    """
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            lines = [line.strip() for line in handle if line.strip()]
+    except OSError:
+        return None
+
+    if not lines:
+        return None
+
+    match = next(
+        (line for line in lines if any(m in line.lower() for m in _FAILURE_MARKERS)),
+        lines[0],
+    )
+    return match if len(match) <= 300 else match[:297] + "..."
+
+
+def _dotnet_run(project: str, warn: bool = True) -> list[str] | None:
+    if not os.path.exists(project):
+        if warn:
+            log.warn(f"Configured runtime project '{project}' does not exist; auto-detecting.")
+        return None
     dotnet = shutil.which("dotnet") or _well_known_dotnet()
     if dotnet is None:
-        log.warn("The configured runtime host is a .csproj but the .NET SDK was not found.")
+        if warn:
+            log.warn("The configured runtime host is a .csproj but the .NET SDK was not found.")
         return None
     return [dotnet, "run", "--project", project, "--"]
 

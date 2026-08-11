@@ -101,11 +101,10 @@ def start(scene: bpy.types.Scene, operator=None) -> bool:
     scene_json = paths.level_data_output_path(resolve_scene_name(scene))
 
     session = LiveSession(scene)
-    session.runtime_pid = launch_runtime(
-        ["--scene", scene_json, "--live", str(port)], operator
-    )
-    if session.runtime_pid is None:
+    process = launch_runtime(["--scene", scene_json, "--live", str(port)], operator)
+    if process is None:
         return False
+    session.runtime_pid = process.pid
 
     connection = LiveConnection(port=port)
     if not _await_connection(connection, port, operator):

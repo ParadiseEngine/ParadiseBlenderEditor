@@ -15,19 +15,24 @@ simulation.
 
 ## Status — read this first
 
-**The Blender half is complete and tested. The engine half does not exist yet.**
+**Implemented and verified against a real game: `ShiningPie.Launcher --live`.**
 
-`paradise-runtime` has no `--live <port>` listener. That is a separate change in the
-`ParadiseGodotEditor` repository (`Paradise.Sample.Runtime`), and the workspace rule that no
-commit may span repositories means it could not land alongside this addon.
+The listener lives in the ShiningPie repository (`ShiningPie.Launcher/LiveLink.cs` and
+`LiveSceneApplier.cs`). Point the addon's runtime host at that launcher, or start it yourself:
 
-Until it does:
+```bash
+cd ShiningPie && dotnet run --project ShiningPie.Launcher -- --live   # listens on 45123
+```
 
-- **Play works fully.** It is unaffected by any of this.
-- **Start Live Preview** launches the runtime, waits 60s for a listener that never opens, and
-  reports exactly that.
-- `tools/mock_runtime.py` implements the protocol and is what `tests/integration/test_live_preview.py`
-  drives, so the Blender side is verified end to end today.
+Then press **Start Live Preview**. Moving an object in Blender moves it in the running game.
+
+`paradise-runtime` (the engine sample) still has **no** `--live` listener — that would be a
+separate change in `ParadiseGodotEditor`. Against that host the button still waits 60s and
+reports the absence.
+
+`tools/mock_runtime.py` remains the executable spec and is what
+`tests/integration/test_live_preview.py` drives, so the Blender side stays testable with no game
+present.
 
 To try it now:
 
@@ -117,9 +122,10 @@ count is reported when the session ends. Dropping is safe for this protocol beca
 Assets are **not** re-exported during a preview: rewriting every GLB on each transform tweak
 would stall Blender for seconds, and the runtime already has the meshes loaded.
 
-## What the engine side needs
+## What a new engine-side listener needs
 
-A sketch of the work, for whoever picks it up in `ParadiseGodotEditor`:
+`ShiningPie.Launcher` is the reference implementation; the sketch below is what any other host
+would reproduce:
 
 1. `--live <port>` in `Paradise.Sample.Runtime/Program.cs`, alongside the existing `--scene`.
 2. A `LiveLinkListener`: accept one client, validate `protocol == 1`, reply `ready`, and read

@@ -16,4 +16,9 @@ __pycache__/
 bin/
 obj/
 
+# Local AI-assistant scratch (lessons, notes). Kept out of the repo deliberately: it is one
+# developer's working memory, not project documentation -- conventions belong in CLAUDE.md
+# and CONVENTIONS.md where they are reviewed.
+.claude/
+
 .DS_Store

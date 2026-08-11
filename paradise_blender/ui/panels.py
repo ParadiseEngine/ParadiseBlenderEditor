@@ -7,6 +7,8 @@ panel doubles as the only place an author can see whether the selected object is
 
 from __future__ import annotations
 
+import os
+
 import bpy
 from bpy.types import Panel
 
@@ -14,7 +16,8 @@ from ..authoring.collider import is_collider
 from ..authoring.entity import entity_objects, is_entity
 from ..export.scene import resolve_scene_name
 from ..live import session as live_session
-from ..prefs import resolve_blender_data_dir
+from ..play.host import resolve_runtime_command
+from ..prefs import get_preferences, resolve_blender_data_dir
 
 __all__ = ["classes"]
 
@@ -71,8 +74,28 @@ class PARADISE_PT_play(_ParadisePanel, Panel):
     def draw(self, context) -> None:
         layout = self.layout
 
+        # The runtime host is machine-scoped (an absolute path), so it is stored in addon
+        # preferences -- but Play is dead until it resolves, and "No Paradise runtime found"
+        # is not actionable from a panel that offers no way to fix it. So the same property is
+        # editable here. warn=False: this resolves on every redraw.
+        preferences = get_preferences(context)
+        command = resolve_runtime_command(warn=False)
+
+        box = layout.box()
+        box.label(text="Runtime", icon="PLAY")
+        box.prop(preferences, "runtime_host", text="")
+        if command is None:
+            box.label(text="No runtime found — set a path above", icon="ERROR")
+            box.label(text="An executable, or a host .csproj")
+        elif preferences.runtime_host.strip():
+            # No path echo -- the field above already shows it.
+            box.label(text="Ready", icon="CHECKMARK")
+        else:
+            box.label(text=f"Auto-detected: {os.path.basename(command[0])}", icon="CHECKMARK")
+
         row = layout.row()
         row.scale_y = 1.4
+        row.enabled = command is not None
         row.operator("paradise.play", icon="PLAY")
 
         box = layout.box()

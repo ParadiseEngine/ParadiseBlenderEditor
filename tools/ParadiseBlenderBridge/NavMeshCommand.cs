@@ -163,15 +163,19 @@ internal static class NavMeshCommand
                 corners.Add(index);
             }
 
-            // DotRecast's navmesh queries and funnel algorithm need UPWARD (+Y) face normals.
-            // Recast's polygon winding produces a downward normal under a naive fan, so the
-            // fan is emitted reversed — the same correction the Godot host applies, and
-            // verified there: the naive order makes FindStraightPath return zig-zag corridors.
+            // Emit the fan in Recast's own vertex order. Recast and Detour are one pipeline:
+            // RcPolyMesh polygons are already wound the way DtNavMesh requires (CCW viewed
+            // from +Y), so the order passes through VERBATIM. The Godot host reverses ITS fan
+            // because Godot's NavigationServer triangulation is wound the other way — copying
+            // that reversal here flipped these polys to clockwise, and the symptom is subtle:
+            // the mesh loads and FindNearestPoly works, but FindStraightPath's funnel gets its
+            // portal left/right swapped and returns zig-zag corridors, while Raycast reports
+            // an immediate hit (t=0) on open ground.
             for (int i = 2; i < corners.Count; i++)
             {
                 triangles.Add(corners[0]);
-                triangles.Add(corners[i]);
                 triangles.Add(corners[i - 1]);
+                triangles.Add(corners[i]);
             }
         }
 

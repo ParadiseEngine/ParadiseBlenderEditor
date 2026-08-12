@@ -214,6 +214,22 @@ def main() -> int:
     check(environment["TonemapMode"] == "Agx", "the AgX view transform maps to the Agx operator")
 
     # -- navmesh ----------------------------------------------------------------------
+    # The walkable-geometry filter must exclude DYNAMIC bodies: the ball is collidable but
+    # moves, and baking it would freeze a bump into the walkable surface at its spawn (the
+    # Godot host bakes StaticColliders only — same semantics). Ball world position converted
+    # to contract axes is (1, 3, -2); nothing in the collected geometry may be near it.
+    from paradise_blender.export.navmesh import collect_walkable_geometry
+
+    nav_vertices, nav_triangles = collect_walkable_geometry(bpy.context.scene)
+    check(len(nav_triangles) > 0, "static collidable geometry reaches the navmesh bake")
+    ball_near = any(
+        abs(nav_vertices[i] - 1.0) < 0.6
+        and abs(nav_vertices[i + 1] - 3.0) < 0.6
+        and abs(nav_vertices[i + 2] - -2.0) < 0.6
+        for i in range(0, len(nav_vertices), 3)
+    )
+    check(not ball_near, "the dynamic ball is excluded from the walkable geometry")
+
     if document["NavMeshFile"]:
         navmesh = os.path.join(DATA_DIR, "scenes", document["NavMeshFile"])
         check(os.path.exists(navmesh) and os.path.getsize(navmesh) > 0,

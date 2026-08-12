@@ -126,6 +126,11 @@ def collect_walkable_geometry(
         props = obj.paradise
         if props.is_agent or not len(props.physics_colliders):
             continue
+        # Dynamic bodies move; baking one freezes it into the walkable surface at its SPAWN --
+        # the car would leave a permanent hole in the navmesh where it started. The Godot host
+        # gets this for free by parsing StaticColliders only; this is the same filter.
+        if props.is_dynamic_body:
+            continue
         if obj.type != "MESH":
             continue
 

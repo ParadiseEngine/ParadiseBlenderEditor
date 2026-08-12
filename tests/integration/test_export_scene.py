@@ -261,6 +261,32 @@ def main() -> int:
 
             bpy.context.scene.paradise_project.navmesh_preview = False
             check(preview.hide_viewport, "turning the toggle off hides the preview")
+
+        # -- per-scene bake settings ---------------------------------------------------
+        from paradise_blender.export.navmesh import BAKE_SETTINGS, bake_settings
+
+        # Key-wise with tolerance: the properties are float32, so 0.1 does not round-trip
+        # to exactly 0.1.
+        resolved = bake_settings(bpy.context.scene)
+        check(set(resolved) == set(BAKE_SETTINGS)
+              and all(approx(resolved[key], BAKE_SETTINGS[key]) for key in BAKE_SETTINGS),
+              "an untouched scene bakes with the engine-default settings", str(resolved))
+
+        with open(navmesh, "rb") as handle:
+            default_bake = handle.read()
+
+        # A fatter agent erodes more walkable area, so the binary must change — this proves
+        # the panel settings actually reach Recast rather than dying in the JSON handoff.
+        bpy.context.scene.paradise_project.navmesh_agent_radius = 0.9
+        check(approx(bake_settings(bpy.context.scene)["agentRadius"], 0.9),
+              "the scene property feeds the bake settings")
+        result = bpy.ops.paradise.bake_navmesh()
+        check(result == {"FINISHED"}, "re-baking with custom settings finishes")
+        with open(navmesh, "rb") as handle:
+            fat_bake = handle.read()
+        check(fat_bake != default_bake,
+              "a different agent radius produces a different navmesh binary")
+        bpy.context.scene.paradise_project.navmesh_agent_radius = 0.4
     else:
         print("     (navmesh skipped — the .NET bridge was unavailable)")
 

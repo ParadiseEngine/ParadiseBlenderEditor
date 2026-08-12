@@ -13,8 +13,10 @@ filter here is: **entities that are not agents and do have physics colliders**. 
 no colliders is scenery you can walk through, and an agent is the thing doing the walking --
 neither belongs in the walkable surface.
 
-Bake parameters mirror the Godot host's exactly (cell 0.1, agent height 1.8, radius 0.4, max
-climb 0.3), so a scene authored in either tool produces the same navmesh. The radius in
+Bake parameters are authored per scene (``ParadiseScenePreferences``, surfaced in the panel's
+NavMesh section) and travel inside the .blend, because they shape exported data. Their
+defaults mirror the Godot host's exactly (cell 0.1, agent height 1.8, radius 0.4, max climb
+0.3, slope 45), so an untouched scene bakes identically from either tool. The radius in
 particular is not a default to tidy up: with radius 0 the planned paths run flush against
 obstacle faces and agent capsules grind along walls.
 
@@ -37,16 +39,46 @@ from ..contract import axes
 from ..contract.schema import LevelData
 from ..paths import ExportPaths
 
-__all__ = ["BAKE_SETTINGS", "bake_navmesh", "collect_walkable_geometry", "export_navmesh"]
+__all__ = [
+    "BAKE_SETTINGS",
+    "bake_navmesh",
+    "bake_settings",
+    "collect_walkable_geometry",
+    "export_navmesh",
+]
 
-#: Must match ``NavMeshBake.cs`` and ``NavMeshBinaryWriter``'s quantization.
+#: The engine defaults — what ``NavMeshBake.cs`` uses on the Godot host, and the defaults of
+#: the per-scene properties below. Kept as the documented reference point (and the fallback
+#: when a scene has no Paradise settings registered, e.g. bare unit contexts).
 BAKE_SETTINGS = {
     "cellSize": 0.1,
     "cellHeight": 0.1,
     "agentHeight": 1.8,
     "agentRadius": 0.4,
     "agentMaxClimb": 0.3,
+    "agentMaxSlope": 45.0,
 }
+
+
+def bake_settings(scene: bpy.types.Scene) -> dict[str, float]:
+    """The scene's bake parameters, in the shape the bridge's ``BakeSettings`` deserializes.
+
+    Authored per scene (see ``ParadiseScenePreferences``) because they shape exported data:
+    the same .blend must bake the same navmesh on every machine. Defaults mirror the Godot
+    host, so an untouched scene still bakes identically from either tool.
+    """
+    props = getattr(scene, "paradise_project", None)
+    if props is None:
+        return dict(BAKE_SETTINGS)
+
+    return {
+        "cellSize": props.navmesh_cell_size,
+        "cellHeight": props.navmesh_cell_height,
+        "agentHeight": props.navmesh_agent_height,
+        "agentRadius": props.navmesh_agent_radius,
+        "agentMaxClimb": props.navmesh_agent_max_climb,
+        "agentMaxSlope": props.navmesh_agent_max_slope,
+    }
 
 
 def export_navmesh(
@@ -105,7 +137,8 @@ def bake_navmesh(
     try:
         with open(input_path, "w", encoding="utf-8") as handle:
             json.dump(
-                {"vertices": vertices, "triangles": triangles, "settings": BAKE_SETTINGS}, handle
+                {"vertices": vertices, "triangles": triangles, "settings": bake_settings(scene)},
+                handle,
             )
 
         result = subprocess.run(

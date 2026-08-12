@@ -234,6 +234,33 @@ def main() -> int:
         navmesh = os.path.join(DATA_DIR, "scenes", document["NavMeshFile"])
         check(os.path.exists(navmesh) and os.path.getsize(navmesh) > 0,
               "the navmesh binary was baked and is non-empty")
+
+        # -- bake button + viewport preview -------------------------------------------
+        from paradise_blender.export.navmesh_preview import find_preview_object
+
+        result = bpy.ops.paradise.bake_navmesh()
+        check(result == {"FINISHED"}, "the bake operator finishes when the bridge is available")
+
+        preview = find_preview_object()
+        check(preview is not None, "the bake operator builds a preview object")
+        if preview is not None:
+            check(len(preview.data.polygons) > 0, "the preview mesh has faces")
+            check(preview.hide_select and preview.hide_render,
+                  "the preview is unselectable and never renders")
+            check(not getattr(preview.paradise, "is_entity", False),
+                  "the preview is not an entity, so re-exports ignore it")
+            check(bpy.context.scene.paradise_project.navmesh_preview,
+                  "baking turns the preview toggle on")
+            check(not preview.hide_viewport, "a fresh bake is visible")
+
+            # The walkable surface must sit ON the ground in Blender axes (top of the ground
+            # box is z=0.25 here) — a wrong inverse conversion would tip the mesh sideways.
+            zs = [v.co.z for v in preview.data.vertices]
+            spans = (max(zs) - min(zs)) if zs else 1e9
+            check(spans < 1.0, "the preview lies flat in Blender's Z-up axes", f"z span {spans:.2f}")
+
+            bpy.context.scene.paradise_project.navmesh_preview = False
+            check(preview.hide_viewport, "turning the toggle off hides the preview")
     else:
         print("     (navmesh skipped — the .NET bridge was unavailable)")
 

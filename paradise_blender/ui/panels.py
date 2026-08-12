@@ -14,6 +14,7 @@ from bpy.types import Panel
 
 from ..authoring.collider import is_collider
 from ..authoring.entity import entity_objects, is_entity
+from ..export import navmesh_preview
 from ..export.scene import resolve_scene_name
 from ..live import session as live_session
 from ..play.host import resolve_runtime_command
@@ -60,6 +61,19 @@ class PARADISE_PT_scene(_ParadisePanel, Panel):
         row = layout.row(align=True)
         row.operator("paradise.convert_textures", icon="TEXTURE")
         row.operator("paradise.open_data_dir", text="", icon="FILE_FOLDER")
+
+        # Bake + the preview eye live on one row: the bake is what gives the eye something to
+        # show, and the pairing makes that dependency legible.
+        row = layout.row(align=True)
+        row.operator("paradise.bake_navmesh", icon="GRID")
+        row.prop(
+            settings,
+            "navmesh_preview",
+            text="",
+            icon="HIDE_OFF" if settings.navmesh_preview else "HIDE_ON",
+        )
+        if settings.navmesh_preview and navmesh_preview.find_preview_object() is None:
+            layout.label(text="No baked preview yet — Bake NavMesh.", icon="INFO")
 
         count = len(entity_objects(context.scene))
         row = layout.row()

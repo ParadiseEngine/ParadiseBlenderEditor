@@ -26,6 +26,7 @@ internal static class NavMeshCommand
     {
         string? inputPath = Program.Option(args, "--input");
         string? outputPath = Program.Option(args, "--output");
+        string? debugJsonPath = Program.Option(args, "--debug-json");
 
         if (inputPath is null || outputPath is null)
         {
@@ -71,9 +72,35 @@ internal static class NavMeshCommand
             outputPath, vertices, triangles,
             message => Console.Error.WriteLine($"[ParadiseBlenderBridge] {message}"));
 
+        if (debugJsonPath is not null)
+        {
+            WriteDebugJson(debugJsonPath, vertices, triangles);
+        }
+
         Console.WriteLine(
             $"Baked {polyMesh.npolys} polygons -> {triangles.Count / 3} triangles, {bytes} bytes.");
         return 0;
+    }
+
+    /// <summary>
+    /// Dump the exact triangulation the binary was built from, in the same shape as the input
+    /// geometry JSON (flat vertex floats + flat indices, contract axes). The Blender addon
+    /// reads this to build its viewport preview — the .bin itself is a Detour MeshSet, which
+    /// Python has no reader for, and re-deriving the surface would preview the input rather
+    /// than what Recast actually produced (erosion, doorway cuts, dropped slivers).
+    /// </summary>
+    private static void WriteDebugJson(string path, List<Vector3> vertices, List<int> triangles)
+    {
+        var flat = new float[vertices.Count * 3];
+        for (int i = 0; i < vertices.Count; i++)
+        {
+            flat[i * 3 + 0] = vertices[i].X;
+            flat[i * 3 + 1] = vertices[i].Y;
+            flat[i * 3 + 2] = vertices[i].Z;
+        }
+
+        var payload = new GeometryInput { Vertices = flat, Triangles = [.. triangles] };
+        File.WriteAllText(path, JsonSerializer.Serialize(payload, GeometryJsonContext.Default.GeometryInput));
     }
 
     private static RcPolyMesh? Bake(GeometryInput input, BakeSettings settings)

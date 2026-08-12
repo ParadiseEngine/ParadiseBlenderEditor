@@ -30,6 +30,18 @@ __all__ = [
 PACKAGE = __package__
 
 
+def _update_navmesh_preview(_self, context) -> None:
+    # Deferred import: prefs is imported by nearly every module, and importing the preview
+    # module here at load time would create a cycle through export/.
+    #
+    # Defined ABOVE the class and referenced by name: `from __future__ import annotations`
+    # turns the property definitions into strings that Blender re-evaluates, and a lambda
+    # compiled from that string loses the module globals — it raises NameError at call time.
+    from .export.navmesh_preview import sync_preview_visibility
+
+    sync_preview_visibility(context.scene)
+
+
 class ParadiseScenePreferences(PropertyGroup):
     """Project-scoped settings, stored in the .blend so they travel with the scene."""
 
@@ -59,6 +71,17 @@ class ParadiseScenePreferences(PropertyGroup):
             "matching the Godot host's rule of using the scene file's basename"
         ),
         default="",
+    )
+
+    navmesh_preview: BoolProperty(  # type: ignore[valid-type]
+        name="Preview NavMesh",
+        description=(
+            "Show the last baked navmesh as a wireframe overlay in the viewport. Bake NavMesh "
+            "(re)builds the overlay from the actual bake output, so erosion and doorway cuts "
+            "are what the runtime will see"
+        ),
+        default=False,
+        update=_update_navmesh_preview,
     )
 
 

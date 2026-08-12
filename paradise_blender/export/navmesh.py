@@ -37,7 +37,7 @@ from ..contract import axes
 from ..contract.schema import LevelData
 from ..paths import ExportPaths
 
-__all__ = ["BAKE_SETTINGS", "collect_walkable_geometry", "export_navmesh"]
+__all__ = ["BAKE_SETTINGS", "bake_navmesh", "collect_walkable_geometry", "export_navmesh"]
 
 #: Must match ``NavMeshBake.cs`` and ``NavMeshBinaryWriter``'s quantization.
 BAKE_SETTINGS = {
@@ -53,16 +53,37 @@ def export_navmesh(
     scene: bpy.types.Scene, scene_name: str, paths: ExportPaths, document: LevelData
 ) -> None:
     """Bake and record the navmesh, or leave ``NavMeshFile`` null."""
+    if bake_navmesh(scene, scene_name, paths) is None:
+        return
+
+    document.nav_mesh_file = paths.nav_mesh_file_field(scene_name)
+
+
+def bake_navmesh(
+    scene: bpy.types.Scene,
+    scene_name: str,
+    paths: ExportPaths,
+    debug_json_path: str | None = None,
+) -> str | None:
+    """Run the Recast bake and write ``scenes/<name>.navmesh.bin``.
+
+    Returns the output path, or ``None`` when there was nothing to bake or the bridge was
+    unavailable/failed — every one of which is a degraded state the caller reports, not an
+    exception (a scene with no walkable geometry is perfectly valid).
+
+    ``debug_json_path`` additionally asks the bridge for the baked triangulation (contract
+    axes) — what the viewport preview is built from.
+    """
     try:
         vertices, triangles = collect_walkable_geometry(scene)
     except Exception as error:  # a bad mesh must not abort the scene export
         log.warn(f"NavMesh geometry collection failed: {error}")
-        return
+        return None
 
     if not triangles:
         # Silent: most scenes under construction have no walkable geometry yet, and warning
         # on every export would train authors to ignore the log.
-        return
+        return None
 
     from ..pipeline.bridge import resolve_bridge_command
 
@@ -73,10 +94,13 @@ def export_navmesh(
             "in the addon preferences, or install the .NET SDK. The scene exports without a "
             "navmesh; agents will have nothing to path on."
         )
-        return
+        return None
 
     output_path = paths.nav_mesh_output_path(scene_name)
     input_path = os.path.join(tempfile.gettempdir(), f"paradise_navmesh_{scene_name}.json")
+    argv = [*command, "navmesh", "--input", input_path, "--output", output_path]
+    if debug_json_path is not None:
+        argv += ["--debug-json", debug_json_path]
 
     try:
         with open(input_path, "w", encoding="utf-8") as handle:
@@ -85,7 +109,7 @@ def export_navmesh(
             )
 
         result = subprocess.run(
-            [*command, "navmesh", "--input", input_path, "--output", output_path],
+            argv,
             capture_output=True,
             text=True,
             timeout=300,
@@ -94,14 +118,16 @@ def export_navmesh(
 
         if result.returncode != 0:
             log.warn(f"NavMesh bake failed: {result.stderr.strip() or result.stdout.strip()}")
-            return
+            return None
 
-        document.nav_mesh_file = paths.nav_mesh_file_field(scene_name)
         log.info(f"Exported navmesh: {output_path}")
+        return output_path
     except subprocess.TimeoutExpired:
         log.warn("NavMesh bake timed out after 5 minutes; the scene exports without a navmesh.")
+        return None
     except OSError as error:
         log.warn(f"NavMesh bake could not run: {error}")
+        return None
     finally:
         if os.path.exists(input_path):
             os.unlink(input_path)

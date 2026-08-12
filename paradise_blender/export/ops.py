@@ -8,6 +8,7 @@ from bpy.types import Operator
 from .. import log
 from ..pipeline import ktx
 from ..prefs import export_paths
+from .navmesh_preview import classes as navmesh_preview_classes
 from .scene import export_scene
 
 __all__ = ["classes", "register", "unregister"]
@@ -92,6 +93,7 @@ classes = (
     PARADISE_OT_export_scene,
     PARADISE_OT_convert_textures,
     PARADISE_OT_open_data_dir,
+    *navmesh_preview_classes,
 )
 
 

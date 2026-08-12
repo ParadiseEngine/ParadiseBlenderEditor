@@ -39,6 +39,18 @@ class TestConvertPoint:
         assert math.dist((0, 0, 0), converted) == pytest.approx(13.0)
 
 
+class TestConvertPointInverse:
+    def test_round_trips_through_convert_point(self):
+        # The navmesh preview depends on this being an exact inverse: bake output (contract
+        # axes) flows back into Blender through it.
+        for point in [(0.0, 0.0, 1.0), (1.0, 2.0, 3.0), (-3.5, 0.25, -12.0)]:
+            _approx(axes.convert_point_inverse(axes.convert_point(point)), point)
+            _approx(axes.convert_point(axes.convert_point_inverse(point)), point)
+
+    def test_maps_contract_up_to_blender_up(self):
+        _approx(axes.convert_point_inverse((0.0, 1.0, 0.0)), (0.0, 0.0, 1.0))
+
+
 class TestConvertMatrix:
     def test_identity_is_fixed(self):
         result = axes.convert_matrix(axes.identity())

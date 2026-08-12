@@ -74,6 +74,14 @@ An entity is any object with `object.paradise.is_entity` set. Each exports:
 | `Agent` | the agent flag and its movement fields |
 | `SpriteAnimation` | the sprite section |
 | `ParticleEmitter` | the particle section, when its kind is not None |
+| `AudioEmitter` | the audio section, when its enable flag is set |
+
+Audio event names are exported **verbatim and unvalidated**. The events exist only inside the
+audio project (a Wwise `.wproj`), which the addon has no visibility into, and the middleware
+resolves a name to an id by hashing it when banks are generated — so the exporter cannot tell a
+typo from an event nobody has authored yet, and refusing to export an unknown name would make the
+addon depend on a tool it cannot see. An unrecognized name is a silent emitter, which is what the
+audio tool does with it too.
 
 ## Verification
 

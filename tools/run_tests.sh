@@ -37,6 +37,16 @@ if command -v "$BLENDER" >/dev/null 2>&1; then
     | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2})' | tail -25
   check "${PIPESTATUS[0]}" "live preview"
 
+  step "Integration: GLB texture externalization (KTX2 sidecars)"
+  "$BLENDER" --background --factory-startup --python tests/integration/test_glb_textures.py 2>&1 \
+    | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2})' | tail -20
+  check "${PIPESTATUS[0]}" "glb textures"
+
+  step "Integration: KTX2 transcoder dialects"
+  "$BLENDER" --background --factory-startup --python tests/integration/test_ktx_pipeline.py 2>&1 \
+    | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2})' | tail -20
+  check "${PIPESTATUS[0]}" "ktx pipeline"
+
   step "Integration: play failure diagnostics"
   "$BLENDER" --background --factory-startup --python tests/integration/test_play_diagnostics.py 2>&1 \
     | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2})' | tail -20

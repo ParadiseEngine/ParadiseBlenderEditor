@@ -84,10 +84,12 @@ class ParadiseAddonPreferences(AddonPreferences):
     )
 
     ktx_path: StringProperty(  # type: ignore[valid-type]
-        name="toktx Path",
+        name="KTX Tool Path",
         description=(
-            "KTX-Software's toktx, used to transcode GLB textures to KTX2. Without it exports "
-            "still succeed, but textured meshes will not load in the runtime, which requires KTX2"
+            "KTX-Software's `ktx` (4.4+) or the legacy `toktx`, used to transcode GLB textures "
+            "to KTX2. Either is accepted; the dialect is chosen from the filename. Without one, "
+            "exports still succeed, but textured meshes will not load in the runtime, which "
+            "requires KTX2"
         ),
         subtype="FILE_PATH",
         default="",

@@ -264,9 +264,12 @@ def _texture_path(socket) -> str | None:  # bpy.types.NodeSocket | None
     paths = export_paths(bpy.context.scene)
     field = paths.data_relative_field(absolute)
     if field is None:
-        log.warn(
-            f"Texture '{image.filepath}' lives outside the data directory. The runtime only "
-            "resolves paths under it, so this texture will not load. Move the image under "
-            f"'{paths.data_dir}'."
+        # Not the alarm it used to be: mesh GLBs carry their textures regardless (embedded at
+        # export, externalized to KTX2 sidecars next to the GLB), so an authoring-side source —
+        # e.g. authoring/textures/ in a game repo — renders fine. Only the material DOCUMENT
+        # omits the reference, which matters solely to hosts that read document textures.
+        log.info(
+            f"Texture '{image.filepath}' is outside the data directory; the material document "
+            "omits it (the mesh GLB still carries the texture via its KTX2 sidecars)."
         )
     return field

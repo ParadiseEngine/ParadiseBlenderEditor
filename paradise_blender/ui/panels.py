@@ -301,6 +301,37 @@ class PARADISE_PT_entity_sprite(_ParadisePanel, Panel):
             column.prop(props, "particle_sheet_fps")
 
 
+class PARADISE_PT_entity_audio(_ParadisePanel, Panel):
+    bl_label = "Audio"
+    bl_parent_id = "PARADISE_PT_entity"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    @classmethod
+    def poll(cls, context) -> bool:
+        return context.active_object is not None and is_entity(context.active_object)
+
+    def draw(self, context) -> None:
+        layout = self.layout
+        props = context.active_object.paradise
+
+        layout.prop(props, "audio_enabled")
+        column = layout.column(align=True)
+        column.enabled = props.audio_enabled
+        column.prop(props, "audio_start_event")
+        column.prop(props, "audio_stop_event")
+        column.prop(props, "audio_play_on_start")
+        column.prop(props, "audio_is_3d")
+
+        # Attenuation is meaningless on a 2D emitter, which by definition ignores distance.
+        # Greying it out says so without hiding the field and making it look unsupported.
+        scale_row = column.row()
+        scale_row.enabled = props.audio_enabled and props.audio_is_3d
+        scale_row.prop(props, "audio_attenuation_scale")
+
+        if props.audio_enabled and not props.audio_start_event.strip():
+            column.label(text="No event: emitter is positioned but plays nothing.", icon="INFO")
+
+
 class PARADISE_PT_collider(_ParadisePanel, Panel):
     bl_label = "Collider"
     bl_idname = "PARADISE_PT_collider"
@@ -463,6 +494,7 @@ classes = (
     PARADISE_PT_entity_physics,
     PARADISE_PT_entity_agent,
     PARADISE_PT_entity_sprite,
+    PARADISE_PT_entity_audio,
     PARADISE_PT_collider,
     PARADISE_PT_world,
     PARADISE_PT_material,

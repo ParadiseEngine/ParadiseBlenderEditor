@@ -242,6 +242,47 @@ class ParadiseEntityProperties(PropertyGroup):
         min=0.0,
     )
 
+    # -- Audio emitter ------------------------------------------------------------------
+    # Event NAMES, not ids: the audio tool hashes the name when it generates banks, so storing a
+    # resolved id here would pin the scene to one bank build. Nothing validates the name -- the
+    # events live in the audio project, which Blender cannot see -- so a typo is a silent
+    # emitter rather than an export error.
+
+    audio_enabled: BoolProperty(  # type: ignore[valid-type]
+        name="Audio Emitter",
+        description="Export a positional sound source at this object's origin",
+        default=False,
+    )
+    audio_start_event: StringProperty(  # type: ignore[valid-type]
+        name="Start Event",
+        description="Audio event to post, e.g. Play_Arcade_Bed. Not validated here",
+        default="",
+    )
+    audio_stop_event: StringProperty(  # type: ignore[valid-type]
+        name="Stop Event",
+        description="Optional. Leave empty to stop the sound by its playing id instead",
+        default="",
+    )
+    audio_play_on_start: BoolProperty(  # type: ignore[valid-type]
+        name="Play On Start",
+        description="Post the start event as soon as the scene loads (ambience, machinery)",
+        default=True,
+    )
+    audio_is_3d: BoolProperty(  # type: ignore[valid-type]
+        name="3D",
+        description=(
+            "Off makes the emitter 2D: placed here for authoring convenience, but heard at "
+            "full level wherever the listener is. What music and narration want"
+        ),
+        default=True,
+    )
+    audio_attenuation_scale: FloatProperty(  # type: ignore[valid-type]
+        name="Attenuation Scale",
+        description="Scales the authored falloff distance, so one curve serves emitters of different size",
+        default=1.0,
+        min=0.01,
+    )
+
     # -- Agent --------------------------------------------------------------------------
 
     is_agent: BoolProperty(  # type: ignore[valid-type]

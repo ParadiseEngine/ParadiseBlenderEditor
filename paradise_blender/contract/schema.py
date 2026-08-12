@@ -34,6 +34,7 @@ from .matrix import flatten_column_major, quat_to_json, vec2_to_json, vec3_to_js
 __all__ = [
     "SCHEMA_VERSION",
     "AgentComponentData",
+    "AudioEmitterComponentData",
     "CameraData",
     "ColliderComponentData",
     "ColliderShapeData",
@@ -325,6 +326,42 @@ class ParticleEmitterComponentData:
 
 
 @dataclass
+class AudioEmitterComponentData:
+    """A positional sound source. Mirror of ``AudioEmitterComponentData``.
+
+    Events are carried as NAMES, not resolved ids. The audio middleware derives an id by hashing
+    the name when banks are generated, so resolving at export time would pin the scene to one
+    particular bank build; the runtime hashes instead, which survives regeneration. A name that
+    matches nothing simply plays nothing -- event names live only inside the audio project, which
+    the exporter cannot see, so a renamed event goes quiet rather than failing the export.
+    """
+
+    start_event: str | None = None
+    stop_event: str | None = None
+    play_on_start: bool = True
+    is_3d: bool = True
+    attenuation_scale: float = 1.0
+
+    def validate_and_normalize(self) -> None:
+        """Port of ``AudioEmitterComponentData.ValidateAndNormalize``.
+
+        A zero or negative scale collapses the authored attenuation curve, leaving the emitter
+        either silent everywhere or audible everywhere -- both of which read as a broken sound
+        rather than a bad number, so repair rather than trust it.
+        """
+        self.attenuation_scale = _positive_or(self.attenuation_scale, 1.0)
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "StartEvent": self.start_event,
+            "StopEvent": self.stop_event,
+            "PlayOnStart": self.play_on_start,
+            "Is3D": self.is_3d,
+            "AttenuationScale": self.attenuation_scale,
+        }
+
+
+@dataclass
 class EntityComponentsData:
     renderable: RenderableComponentData | None = None
     collider: ColliderComponentData | None = None
@@ -333,6 +370,7 @@ class EntityComponentsData:
     agent: AgentComponentData | None = None
     sprite_animation: SpriteAnimationComponentData | None = None
     particle_emitter: ParticleEmitterComponentData | None = None
+    audio_emitter: AudioEmitterComponentData | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -343,6 +381,7 @@ class EntityComponentsData:
             "Agent": _opt(self.agent),
             "SpriteAnimation": _opt(self.sprite_animation),
             "ParticleEmitter": _opt(self.particle_emitter),
+            "AudioEmitter": _opt(self.audio_emitter),
         }
 
 

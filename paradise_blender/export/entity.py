@@ -29,6 +29,7 @@ from ..contract.schema import (
     RigidbodyComponentData,
 )
 from ..paths import ExportPaths
+from .audio import build_audio_emitter
 from .collider import build_colliders
 from .sprite import build_particle_emitter, build_sprite_animation
 from .transform import decompose_contract
@@ -131,6 +132,9 @@ def _build_components(
 
     if props.particle_kind != "NONE":
         components.particle_emitter = build_particle_emitter(obj, paths)
+
+    if props.audio_enabled:
+        components.audio_emitter = build_audio_emitter(obj)
 
     return components
 

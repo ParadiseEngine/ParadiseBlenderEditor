@@ -101,6 +101,7 @@ class TestLevelEntityData:
             "Agent",
             "SpriteAnimation",
             "ParticleEmitter",
+            "AudioEmitter",
         }
         assert all(value is None for value in components.values())
 
@@ -163,6 +164,46 @@ class TestNormalization:
         emitter = schema.ParticleEmitterComponentData(spread_degrees=400.0)
         emitter.validate_and_normalize()
         assert emitter.spread_degrees == 180.0
+
+    def test_audio_attenuation_scale_rejects_non_positive(self):
+        """Zero collapses the authored falloff curve, so the emitter is either silent
+        everywhere or audible everywhere -- both read as a broken sound, not a bad number."""
+        for bad in (0.0, -3.0):
+            emitter = schema.AudioEmitterComponentData(attenuation_scale=bad)
+            emitter.validate_and_normalize()
+            assert emitter.attenuation_scale == 1.0
+
+    def test_audio_attenuation_scale_keeps_an_authored_value(self):
+        emitter = schema.AudioEmitterComponentData(attenuation_scale=4.0)
+        emitter.validate_and_normalize()
+        assert emitter.attenuation_scale == 4.0
+
+
+class TestAudioEmitter:
+    def test_field_order_and_names_match_the_csharp_record(self):
+        """System.Text.Json writes properties in declaration order, so the key ORDER is part
+        of the contract, not just the key set -- see this module's docstring."""
+        emitter = schema.AudioEmitterComponentData(
+            start_event="Play_Arcade_Bed",
+            stop_event="Stop_Arcade_Bed",
+            attenuation_scale=2.5,
+        )
+        assert list(emitter.to_json()) == [
+            "StartEvent",
+            "StopEvent",
+            "PlayOnStart",
+            "Is3D",
+            "AttenuationScale",
+        ]
+
+    def test_defaults_match_the_csharp_defaults(self):
+        assert schema.AudioEmitterComponentData().to_json() == {
+            "StartEvent": None,
+            "StopEvent": None,
+            "PlayOnStart": True,
+            "Is3D": True,
+            "AttenuationScale": 1.0,
+        }
 
 
 class TestEnvironment:

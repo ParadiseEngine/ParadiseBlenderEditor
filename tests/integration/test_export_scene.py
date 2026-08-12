@@ -214,10 +214,79 @@ def main() -> int:
     check(environment["TonemapMode"] == "Agx", "the AgX view transform maps to the Agx operator")
 
     # -- navmesh ----------------------------------------------------------------------
+    # The walkable-geometry filter must exclude DYNAMIC bodies: the ball is collidable but
+    # moves, and baking it would freeze a bump into the walkable surface at its spawn (the
+    # Godot host bakes StaticColliders only — same semantics). Ball world position converted
+    # to contract axes is (1, 3, -2); nothing in the collected geometry may be near it.
+    from paradise_blender.export.navmesh import collect_walkable_geometry
+
+    nav_vertices, nav_triangles = collect_walkable_geometry(bpy.context.scene)
+    check(len(nav_triangles) > 0, "static collidable geometry reaches the navmesh bake")
+    ball_near = any(
+        abs(nav_vertices[i] - 1.0) < 0.6
+        and abs(nav_vertices[i + 1] - 3.0) < 0.6
+        and abs(nav_vertices[i + 2] - -2.0) < 0.6
+        for i in range(0, len(nav_vertices), 3)
+    )
+    check(not ball_near, "the dynamic ball is excluded from the walkable geometry")
+
     if document["NavMeshFile"]:
         navmesh = os.path.join(DATA_DIR, "scenes", document["NavMeshFile"])
         check(os.path.exists(navmesh) and os.path.getsize(navmesh) > 0,
               "the navmesh binary was baked and is non-empty")
+
+        # -- bake button + viewport preview -------------------------------------------
+        from paradise_blender.export.navmesh_preview import find_preview_object
+
+        result = bpy.ops.paradise.bake_navmesh()
+        check(result == {"FINISHED"}, "the bake operator finishes when the bridge is available")
+
+        preview = find_preview_object()
+        check(preview is not None, "the bake operator builds a preview object")
+        if preview is not None:
+            check(len(preview.data.polygons) > 0, "the preview mesh has faces")
+            check(preview.hide_select and preview.hide_render,
+                  "the preview is unselectable and never renders")
+            check(not getattr(preview.paradise, "is_entity", False),
+                  "the preview is not an entity, so re-exports ignore it")
+            check(bpy.context.scene.paradise_project.navmesh_preview,
+                  "baking turns the preview toggle on")
+            check(not preview.hide_viewport, "a fresh bake is visible")
+
+            # The walkable surface must sit ON the ground in Blender axes (top of the ground
+            # box is z=0.25 here) — a wrong inverse conversion would tip the mesh sideways.
+            zs = [v.co.z for v in preview.data.vertices]
+            spans = (max(zs) - min(zs)) if zs else 1e9
+            check(spans < 1.0, "the preview lies flat in Blender's Z-up axes", f"z span {spans:.2f}")
+
+            bpy.context.scene.paradise_project.navmesh_preview = False
+            check(preview.hide_viewport, "turning the toggle off hides the preview")
+
+        # -- per-scene bake settings ---------------------------------------------------
+        from paradise_blender.export.navmesh import BAKE_SETTINGS, bake_settings
+
+        # Key-wise with tolerance: the properties are float32, so 0.1 does not round-trip
+        # to exactly 0.1.
+        resolved = bake_settings(bpy.context.scene)
+        check(set(resolved) == set(BAKE_SETTINGS)
+              and all(approx(resolved[key], BAKE_SETTINGS[key]) for key in BAKE_SETTINGS),
+              "an untouched scene bakes with the engine-default settings", str(resolved))
+
+        with open(navmesh, "rb") as handle:
+            default_bake = handle.read()
+
+        # A fatter agent erodes more walkable area, so the binary must change — this proves
+        # the panel settings actually reach Recast rather than dying in the JSON handoff.
+        bpy.context.scene.paradise_project.navmesh_agent_radius = 0.9
+        check(approx(bake_settings(bpy.context.scene)["agentRadius"], 0.9),
+              "the scene property feeds the bake settings")
+        result = bpy.ops.paradise.bake_navmesh()
+        check(result == {"FINISHED"}, "re-baking with custom settings finishes")
+        with open(navmesh, "rb") as handle:
+            fat_bake = handle.read()
+        check(fat_bake != default_bake,
+              "a different agent radius produces a different navmesh binary")
+        bpy.context.scene.paradise_project.navmesh_agent_radius = 0.4
     else:
         print("     (navmesh skipped — the .NET bridge was unavailable)")
 

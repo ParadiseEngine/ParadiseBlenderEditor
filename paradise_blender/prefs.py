@@ -13,7 +13,7 @@ import os
 import shutil
 
 import bpy
-from bpy.props import BoolProperty, IntProperty, StringProperty
+from bpy.props import BoolProperty, FloatProperty, IntProperty, StringProperty
 from bpy.types import AddonPreferences, PropertyGroup, Scene
 
 from .paths import ExportPaths
@@ -28,6 +28,18 @@ __all__ = [
 ]
 
 PACKAGE = __package__
+
+
+def _update_navmesh_preview(_self, context) -> None:
+    # Deferred import: prefs is imported by nearly every module, and importing the preview
+    # module here at load time would create a cycle through export/.
+    #
+    # Defined ABOVE the class and referenced by name: `from __future__ import annotations`
+    # turns the property definitions into strings that Blender re-evaluates, and a lambda
+    # compiled from that string loses the module globals — it raises NameError at call time.
+    from .export.navmesh_preview import sync_preview_visibility
+
+    sync_preview_visibility(context.scene)
 
 
 class ParadiseScenePreferences(PropertyGroup):
@@ -59,6 +71,96 @@ class ParadiseScenePreferences(PropertyGroup):
             "matching the Godot host's rule of using the scene file's basename"
         ),
         default="",
+    )
+
+    navmesh_preview: BoolProperty(  # type: ignore[valid-type]
+        name="Preview NavMesh",
+        description=(
+            "Show the last baked navmesh as a wireframe overlay in the viewport. Bake NavMesh "
+            "(re)builds the overlay from the actual bake output, so erosion and doorway cuts "
+            "are what the runtime will see"
+        ),
+        default=False,
+        update=_update_navmesh_preview,
+    )
+
+    # -- navmesh bake parameters ------------------------------------------------------------
+    #
+    # Scene-scoped, not preferences: they shape EXPORTED DATA (the .navmesh.bin every checkout
+    # of this project loads), so they must travel inside the .blend like the data directory
+    # does. Defaults mirror the Godot host's NavMeshBake.cs — a scene authored with default
+    # settings bakes identically from either tool.
+
+    navmesh_cell_size: FloatProperty(  # type: ignore[valid-type]
+        name="Cell Size",
+        description=(
+            "Voxel size on the ground plane. Smaller hugs walls and doorways more precisely "
+            "and bakes slower; it must stay well under the narrowest passage or Recast cannot "
+            "see through it"
+        ),
+        default=0.1,
+        min=0.01,
+        max=1.0,
+        subtype="DISTANCE",
+    )
+
+    navmesh_cell_height: FloatProperty(  # type: ignore[valid-type]
+        name="Cell Height",
+        description=(
+            "Voxel size vertically. Governs how precisely ledges and climb heights are "
+            "resolved; keep it at or below Max Climb"
+        ),
+        default=0.1,
+        min=0.01,
+        max=1.0,
+        subtype="DISTANCE",
+    )
+
+    navmesh_agent_radius: FloatProperty(  # type: ignore[valid-type]
+        name="Agent Radius",
+        description=(
+            "Walkable area is eroded by this much. At 0 planned paths run flush against "
+            "obstacle faces and agent capsules grind along walls — match the game's largest "
+            "agent capsule"
+        ),
+        default=0.4,
+        min=0.0,
+        max=2.0,
+        subtype="DISTANCE",
+    )
+
+    navmesh_agent_height: FloatProperty(  # type: ignore[valid-type]
+        name="Agent Height",
+        description=(
+            "Minimum vertical clearance a surface needs to count as walkable — what stops "
+            "paths from routing under low geometry"
+        ),
+        default=1.8,
+        min=0.1,
+        max=5.0,
+        subtype="DISTANCE",
+    )
+
+    navmesh_agent_max_climb: FloatProperty(  # type: ignore[valid-type]
+        name="Max Climb",
+        description=(
+            "Highest step an agent can walk up. Surfaces this far apart vertically merge into "
+            "one walkable region — a raised platform below this height is reachable without a "
+            "ramp"
+        ),
+        default=0.3,
+        min=0.0,
+        max=2.0,
+        subtype="DISTANCE",
+    )
+
+    # No ANGLE subtype: that displays radians-backed values, while Recast takes plain degrees.
+    navmesh_agent_max_slope: FloatProperty(  # type: ignore[valid-type]
+        name="Max Slope (deg)",
+        description="Steepest surface angle in degrees that still counts as walkable",
+        default=45.0,
+        min=0.0,
+        max=89.0,
     )
 
 

@@ -26,6 +26,7 @@ internal static class NavMeshCommand
     {
         string? inputPath = Program.Option(args, "--input");
         string? outputPath = Program.Option(args, "--output");
+        string? debugJsonPath = Program.Option(args, "--debug-json");
 
         if (inputPath is null || outputPath is null)
         {
@@ -71,9 +72,35 @@ internal static class NavMeshCommand
             outputPath, vertices, triangles,
             message => Console.Error.WriteLine($"[ParadiseBlenderBridge] {message}"));
 
+        if (debugJsonPath is not null)
+        {
+            WriteDebugJson(debugJsonPath, vertices, triangles);
+        }
+
         Console.WriteLine(
             $"Baked {polyMesh.npolys} polygons -> {triangles.Count / 3} triangles, {bytes} bytes.");
         return 0;
+    }
+
+    /// <summary>
+    /// Dump the exact triangulation the binary was built from, in the same shape as the input
+    /// geometry JSON (flat vertex floats + flat indices, contract axes). The Blender addon
+    /// reads this to build its viewport preview — the .bin itself is a Detour MeshSet, which
+    /// Python has no reader for, and re-deriving the surface would preview the input rather
+    /// than what Recast actually produced (erosion, doorway cuts, dropped slivers).
+    /// </summary>
+    private static void WriteDebugJson(string path, List<Vector3> vertices, List<int> triangles)
+    {
+        var flat = new float[vertices.Count * 3];
+        for (int i = 0; i < vertices.Count; i++)
+        {
+            flat[i * 3 + 0] = vertices[i].X;
+            flat[i * 3 + 1] = vertices[i].Y;
+            flat[i * 3 + 2] = vertices[i].Z;
+        }
+
+        var payload = new GeometryInput { Vertices = flat, Triangles = [.. triangles] };
+        File.WriteAllText(path, JsonSerializer.Serialize(payload, GeometryJsonContext.Default.GeometryInput));
     }
 
     private static RcPolyMesh? Bake(GeometryInput input, BakeSettings settings)
@@ -163,15 +190,19 @@ internal static class NavMeshCommand
                 corners.Add(index);
             }
 
-            // DotRecast's navmesh queries and funnel algorithm need UPWARD (+Y) face normals.
-            // Recast's polygon winding produces a downward normal under a naive fan, so the
-            // fan is emitted reversed — the same correction the Godot host applies, and
-            // verified there: the naive order makes FindStraightPath return zig-zag corridors.
+            // Emit the fan in Recast's own vertex order. Recast and Detour are one pipeline:
+            // RcPolyMesh polygons are already wound the way DtNavMesh requires (CCW viewed
+            // from +Y), so the order passes through VERBATIM. The Godot host reverses ITS fan
+            // because Godot's NavigationServer triangulation is wound the other way — copying
+            // that reversal here flipped these polys to clockwise, and the symptom is subtle:
+            // the mesh loads and FindNearestPoly works, but FindStraightPath's funnel gets its
+            // portal left/right swapped and returns zig-zag corridors, while Raycast reports
+            // an immediate hit (t=0) on open ground.
             for (int i = 2; i < corners.Count; i++)
             {
                 triangles.Add(corners[0]);
-                triangles.Add(corners[i]);
                 triangles.Add(corners[i - 1]);
+                triangles.Add(corners[i]);
             }
         }
 

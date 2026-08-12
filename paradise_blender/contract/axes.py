@@ -48,6 +48,7 @@ __all__ = [
     "convert_euler_zyx_degrees",
     "convert_matrix",
     "convert_point",
+    "convert_point_inverse",
     "convert_quaternion",
     "convert_triangle_indices",
     "from_mathutils",
@@ -127,6 +128,16 @@ def convert_point(v: Vec3) -> Vec3:
 # A direction rebases identically to a point: C is linear, and being a pure rotation it is
 # its own normal matrix (inverse-transpose == itself), so normals need no special case.
 convert_direction = convert_point
+
+
+def convert_point_inverse(v: Vec3) -> Vec3:
+    """Rebase a contract position back into Blender axes: ``(x, y, z) -> (x, -z, y)``.
+
+    The inverse of :func:`convert_point`, used when contract-space data flows INTO Blender —
+    the navmesh preview rebuilds the bridge's baked triangulation as viewport geometry.
+    """
+    x, y, z = v
+    return (x, -z, y)
 
 
 def convert_quaternion(q: Quat) -> Quat:

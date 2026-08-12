@@ -14,6 +14,7 @@ from bpy.types import Panel
 
 from ..authoring.collider import is_collider
 from ..authoring.entity import entity_objects, is_entity
+from ..export import navmesh_preview
 from ..export.scene import resolve_scene_name
 from ..live import session as live_session
 from ..play.host import resolve_runtime_command
@@ -65,6 +66,47 @@ class PARADISE_PT_scene(_ParadisePanel, Panel):
         row = layout.row()
         row.operator("paradise.select_entities", text=f"{count} Entity/Entities", icon="RESTRICT_SELECT_OFF")
         row.operator("paradise.repair_guids", text="", icon="FILE_REFRESH")
+
+
+class PARADISE_PT_scene_navmesh(_ParadisePanel, Panel):
+    bl_label = "NavMesh"
+    bl_idname = "PARADISE_PT_scene_navmesh"
+    bl_parent_id = "PARADISE_PT_scene"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    def draw(self, context) -> None:
+        layout = self.layout
+        settings = context.scene.paradise_project
+
+        # Bake + the preview eye live on one row: the bake is what gives the eye something to
+        # show, and the pairing makes that dependency legible.
+        row = layout.row(align=True)
+        row.scale_y = 1.2
+        row.operator("paradise.bake_navmesh", icon="GRID")
+        row.prop(
+            settings,
+            "navmesh_preview",
+            text="",
+            icon="HIDE_OFF" if settings.navmesh_preview else "HIDE_ON",
+        )
+        if settings.navmesh_preview and navmesh_preview.find_preview_object() is None:
+            layout.label(text="No baked preview yet — Bake NavMesh.", icon="INFO")
+
+        column = layout.column(align=True)
+        column.label(text="Agent")
+        column.prop(settings, "navmesh_agent_radius")
+        column.prop(settings, "navmesh_agent_height")
+        column.prop(settings, "navmesh_agent_max_climb")
+        column.prop(settings, "navmesh_agent_max_slope")
+
+        column = layout.column(align=True)
+        column.label(text="Voxelization")
+        column.prop(settings, "navmesh_cell_size")
+        column.prop(settings, "navmesh_cell_height")
+
+        # Stored in the .blend and applied on every bake, including export-on-save. The Godot
+        # host note matters to anyone authoring the same scene from both tools.
+        layout.label(text="Defaults mirror the Godot host's bake.", icon="INFO")
 
 
 class PARADISE_PT_play(_ParadisePanel, Panel):
@@ -415,6 +457,7 @@ def _draw_collider_list(layout, context, collection, slot: str, label: str) -> N
 
 classes = (
     PARADISE_PT_scene,
+    PARADISE_PT_scene_navmesh,
     PARADISE_PT_play,
     PARADISE_PT_entity,
     PARADISE_PT_entity_physics,

@@ -7,8 +7,11 @@ their constants because they change how bright an exported scene looks:
   power; the contract carries a unitless multiplier in Godot's convention. There is no
   physically correct conversion without also fixing an exposure model, so the ratio is chosen
   so that Blender's default light maps to Godot's default light -- defaults look the same in
-  both hosts, and an author scaling from there scales predictably. Sun lamps need no scaling:
-  Blender's sun strength is already an irradiance-like multiplier around 1.
+  both hosts, and an author scaling from there scales predictably. Sun lamps DO have an exact
+  conversion: strength is irradiance in W/m^2, and Godot folds a factor of pi into light
+  energy (its Lambert divides by pi, then energy is premultiplied by pi), so a diffuse
+  surface under a contract-energy-E sun renders ``albedo * E * NdotL`` while Blender renders
+  ``albedo * S/pi * NdotL``. Exporting ``E = S / pi`` makes the two hosts match exactly.
 
 * **Area lights.** Neither the contract nor Godot has an area light type. Rather than dropping
   them (a scene would go dark with no explanation) they export as point lights with their
@@ -103,9 +106,10 @@ def export_light(obj: bpy.types.Object) -> SceneLightData:
 def _intensity(light: bpy.types.Light) -> float:
     """Contract intensity multiplier. See :data:`WATTS_PER_INTENSITY_UNIT`."""
     if light.type == "SUN":
-        # Sun strength is irradiance in W/m^2 and already sits around 1-5, the same range the
-        # contract's multiplier uses.
-        return light.energy
+        # Sun strength is irradiance in W/m^2; the contract multiplier is Godot energy, which
+        # carries a folded-in factor of pi (see the module docstring). Dividing by pi makes a
+        # diffuse surface come out the same brightness in Blender and in the engine.
+        return light.energy / math.pi
     return light.energy / WATTS_PER_INTENSITY_UNIT
 
 

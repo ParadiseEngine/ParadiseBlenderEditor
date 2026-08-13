@@ -201,7 +201,9 @@ def main() -> int:
     check(lights["Sun"]["Type"] == "Directional", "a sun lamp exports as Directional")
     check(approx(lights["Sun"]["Direction"], [0.0, -1.0, 0.0]),
           "an unrotated sun points down in contract axes", str(lights["Sun"]["Direction"]))
-    check(approx(lights["Sun"]["Intensity"], 3.0), "sun energy passes through unscaled")
+    check(approx(lights["Sun"]["Intensity"], 3.0 / math.pi),
+          "sun W/m^2 divides by pi to match Godot's pi-folded energy convention",
+          str(lights["Sun"]["Intensity"]))
     check(lights["Spot"]["Type"] == "Spot", "a spot lamp exports as Spot")
     check(approx(lights["Spot"]["SpotAngle"], 60.0),
           "Blender's spot_size is already the full cone angle and is not doubled",

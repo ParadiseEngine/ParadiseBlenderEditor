@@ -13,6 +13,15 @@ filter here is: **entities that are not agents and do have physics colliders**. 
 no colliders is scenery you can walk through, and an agent is the thing doing the walking --
 neither belongs in the walkable surface.
 
+What gets rasterized for a qualifying entity is its **declared collider shapes, not its
+render mesh**. The runtime collides agents against the colliders, so the navmesh must
+describe that world: a shelf model full of open geometry over a solid box collider would
+otherwise bake walkable polys inside a volume the simulation treats as solid, and a planner
+corner in there wedges every agent that follows it against the real obstacle (found the hard
+way with ShiningPie's store shelves). Box colliders — the only static shape in practice —
+are emitted as twelve exact triangles; any non-box collider falls back to the entity's
+evaluated render mesh, the pre-existing behavior.
+
 Bake parameters are authored per scene (``ParadiseScenePreferences``, surfaced in the panel's
 NavMesh section) and travel inside the .blend, because they shape exported data. Their
 defaults mirror the Godot host's exactly (cell 0.1, agent height 1.8, radius 0.4, max climb
@@ -32,6 +41,7 @@ import subprocess
 import tempfile
 
 import bpy
+from mathutils import Vector
 
 from .. import log
 from ..authoring import entity as authoring
@@ -190,12 +200,66 @@ def collect_walkable_geometry(
         # gets this for free by parsing StaticColliders only; this is the same filter.
         if props.is_dynamic_body:
             continue
-        if obj.type != "MESH":
-            continue
 
-        _append_object(obj, depsgraph, vertices, triangles)
+        if not _append_colliders(obj, vertices, triangles) and obj.type == "MESH":
+            # No box collider could be emitted (non-box shapes, or dangling references):
+            # the render mesh is the best remaining approximation of what the runtime blocks.
+            _append_object(obj, depsgraph, vertices, triangles)
 
     return vertices, triangles
+
+
+#: Unit-box corner offsets (to be scaled by half-extents) and the twelve triangles over
+#: them, wound counter-clockwise seen from outside — Recast reads slope off the triangle
+#: normal, so the top face must genuinely face up.
+_BOX_CORNERS = (
+    (-1, -1, -1), (1, -1, -1), (1, 1, -1), (-1, 1, -1),
+    (-1, -1, 1), (1, -1, 1), (1, 1, 1), (-1, 1, 1),
+)
+_BOX_TRIANGLES = (
+    (0, 2, 1), (0, 3, 2),  # bottom (-z)
+    (4, 5, 6), (4, 6, 7),  # top (+z)
+    (0, 1, 5), (0, 5, 4),  # front (-y)
+    (2, 3, 7), (2, 7, 6),  # back (+y)
+    (0, 4, 7), (0, 7, 3),  # left (-x)
+    (1, 2, 6), (1, 6, 5),  # right (+x)
+)
+
+
+def _append_colliders(
+    obj: bpy.types.Object, vertices: list[float], triangles: list[int]
+) -> bool:
+    """Append world-space triangles for the entity's BOX colliders; True if any was emitted.
+
+    Triggers are not solid and are skipped, mirroring the runtime's obstacle collection. The
+    collider object's own world matrix carries every inherited rotation and scale, so the
+    emitted box is exactly the volume the contract exports.
+    """
+    from ..authoring.collider import collider_dimensions, is_collider
+    from ..contract.schema import PhysicsShapeType
+
+    emitted = False
+    for reference in obj.paradise.physics_colliders:
+        target = reference.target
+        if target is None or not is_collider(target):
+            continue
+        collider = target.paradise_collider
+        if collider.is_trigger or collider.shape != PhysicsShapeType.BOX:
+            continue
+
+        size, _, _ = collider_dimensions(target)
+        half = (size[0] / 2.0, size[1] / 2.0, size[2] / 2.0)
+        matrix = target.matrix_world
+        base = len(vertices) // 3
+        for cx, cy, cz in _BOX_CORNERS:
+            world = matrix @ Vector((cx * half[0], cy * half[1], cz * half[2]))
+            x, y, z = axes.convert_point((world.x, world.y, world.z))
+            vertices.extend((x, y, z))
+        for triangle in _BOX_TRIANGLES:
+            triangles.extend(base + index for index in triangle)
+        emitted = True
+
+    return emitted
 
 
 def _append_object(

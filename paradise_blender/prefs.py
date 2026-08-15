@@ -13,7 +13,7 @@ import os
 import shutil
 
 import bpy
-from bpy.props import BoolProperty, FloatProperty, IntProperty, StringProperty
+from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, StringProperty
 from bpy.types import AddonPreferences, PropertyGroup, Scene
 
 from .paths import ExportPaths
@@ -82,6 +82,40 @@ class ParadiseScenePreferences(PropertyGroup):
         ),
         default=False,
         update=_update_navmesh_preview,
+    )
+
+    # -- lighting ---------------------------------------------------------------------------
+    #
+    # Scene-scoped for the same reason the navmesh parameters are: it shapes exported data
+    # (the contract's Lighting.ShadowMapSize), so it must travel inside the .blend.
+
+    shadow_map_size: EnumProperty(  # type: ignore[valid-type]
+        name="Shadow Map",
+        description=(
+            "Per-layer shadow map resolution the runtime allocates for this scene. Higher "
+            "sharpens shadow edges and costs GPU memory; the sun's coverage area is fixed "
+            "around the camera, so this trades texel density directly"
+        ),
+        items=(
+            ("DEFAULT", "Engine Default", "Leave the renderer's built-in resolution"),
+            ("512", "512", "512 x 512 per shadow layer"),
+            ("1024", "1024", "1024 x 1024 per shadow layer"),
+            ("2048", "2048", "2048 x 2048 per shadow layer"),
+            ("4096", "4096", "4096 x 4096 per shadow layer"),
+        ),
+        default="DEFAULT",
+    )
+
+    shadow_blur: FloatProperty(  # type: ignore[valid-type]
+        name="Shadow Blur",
+        description=(
+            "Soft-shadow penumbra width, in shadow-map texels (the runtime's PCF disk "
+            "radius). Below ~2 the map's texel staircase shows through the filter; large "
+            "values detach contact shadows into mush"
+        ),
+        default=3.0,
+        min=0.5,
+        max=8.0,
     )
 
     # -- navmesh bake parameters ------------------------------------------------------------

@@ -43,6 +43,7 @@ class MeshExporter:
     def __init__(self) -> None:
         self._fields_by_mesh: dict[str, str] = {}
         self._failed: set[str] = set()
+        self._warned_no_transcoder = False
 
     def resolve_mesh_field(
         self, obj: bpy.types.Object, paths: ExportPaths, force: bool = False
@@ -76,11 +77,19 @@ class MeshExporter:
 
             # The engine reads textured meshes through KTX2 sidecars next to the GLB (its glTF
             # reader rejects PNG/JPEG outright), but Blender can only EMBED images — so every
-            # textured export gets post-processed into the sidecar layout here. Without a
-            # transcoder the GLB ships as exported and the existing loud warnings apply.
+            # textured export gets post-processed into the sidecar layout here. A missing
+            # transcoder must be LOUD: it once passed silently and the game refused to launch
+            # on GLBs full of PNG, hours and one confused user later.
             transcoder = ktx.resolve_transcoder()
             if transcoder is not None:
                 glb_textures.externalize(output_path, transcoder)
+            elif not self._warned_no_transcoder:
+                self._warned_no_transcoder = True
+                log.warn(
+                    "No KTX-Software CLI found (ktx/toktx): exported GLBs keep embedded "
+                    "PNG/JPEG and the runtime will REFUSE to load any textured mesh. Install "
+                    "KTX-Software or set its path in the add-on preferences, then re-export."
+                )
 
         self._fields_by_mesh[mesh_key] = field
         return field

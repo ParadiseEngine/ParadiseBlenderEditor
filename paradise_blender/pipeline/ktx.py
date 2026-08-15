@@ -105,7 +105,27 @@ def resolve_transcoder() -> Transcoder | None:
         if found:
             return Transcoder(found, modern=_is_modern(found))
 
+    # PATH is not enough: a Blender launched from the Dock/Finder gets the GUI environment,
+    # which omits /usr/local/bin and /opt/homebrew/bin — so the same scene converts fine from
+    # a terminal-launched Blender and silently ships PNG from a GUI one. Probe the standard
+    # install locations directly before giving up.
+    for candidate in _WELL_KNOWN_LOCATIONS:
+        if os.path.exists(candidate):
+            return Transcoder(candidate, modern=_is_modern(candidate))
+
     return None
+
+
+#: Standard install locations for KTX-Software's CLI, for hosts whose PATH does not carry
+#: them (GUI-launched Blender on macOS above all).
+_WELL_KNOWN_LOCATIONS = (
+    "/opt/homebrew/bin/ktx",
+    "/usr/local/bin/ktx",
+    "/opt/homebrew/bin/toktx",
+    "/usr/local/bin/toktx",
+    "C:\\Program Files\\KTX-Software\\bin\\ktx.exe",
+    "C:\\Program Files\\KTX-Software\\bin\\toktx.exe",
+)
 
 
 def _is_modern(path: str) -> bool:

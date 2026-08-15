@@ -54,6 +54,11 @@ class PARADISE_PT_scene(_ParadisePanel, Panel):
 
         layout.prop(settings, "export_on_save")
 
+        column = layout.column(align=True)
+        column.label(text="Lighting")
+        column.prop(settings, "shadow_map_size")
+        column.prop(settings, "shadow_blur")
+
         row = layout.row(align=True)
         row.scale_y = 1.4
         row.operator("paradise.export_scene", icon="EXPORT")

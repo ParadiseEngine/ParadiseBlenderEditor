@@ -671,11 +671,20 @@ class LightingStateData:
 @dataclass
 class LightingData:
     active_state: str = "Default"
+    #: Per-layer shadow map resolution the scene asks its renderer for, in texels. None leaves
+    #: the renderer's default in place. Always serialized (null included) to mirror the C#
+    #: contract's serialization exactly.
+    shadow_map_size: int | None = None
+    #: Soft-shadow blur: the PCF disk radius in shadow texels — the penumbra width of every
+    #: shadow edge. None leaves the renderer's default.
+    shadow_blur: float | None = None
     states: list[LightingStateData] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
         return {
             "ActiveState": self.active_state,
+            "ShadowMapSize": self.shadow_map_size,
+            "ShadowBlur": self.shadow_blur,
             "States": [state.to_json() for state in self.states],
         }
 

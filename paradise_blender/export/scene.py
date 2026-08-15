@@ -75,6 +75,11 @@ def build_level_data(
         document.camera = export_camera(camera, resolve_background_color(scene.world))
 
     state = document.ensure_lighting_state()
+    settings = getattr(scene, "paradise_project", None)
+    if settings is not None:
+        if settings.shadow_map_size != "DEFAULT":
+            document.lighting.shadow_map_size = int(settings.shadow_map_size)
+        document.lighting.shadow_blur = round(settings.shadow_blur, 3)
     state.environment = export_environment(scene)
     for obj in sorted(
         (o for o in scene.objects if o.type == "LIGHT"), key=lambda o: o.name

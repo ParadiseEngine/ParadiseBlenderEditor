@@ -65,6 +65,16 @@ LINEAR_TOKENS = frozenset(
     }
 )
 
+#: The subset of :data:`LINEAR_TOKENS` marking a TANGENT-SPACE NORMAL map specifically, which
+#: needs `--normal-mode` on top of the linear format. That flag switches the UASTC encoder to
+#: the two-channel "RRRG" layout (X in RGB, Y in alpha), and the runtime's transcoder ASSUMES
+#: that layout: it targets BC5-RG, and its RGBA32 fallback runs an explicit G <- alpha swizzle
+#: (`Ktx2Transcoder.SwizzleTwoChannelNormals`). Encode a normal map as plain UASTC RGB and the
+#: two sides disagree about which channel holds Y -- the shader reconstructs Z from a bogus XY,
+#: every shading normal tilts somewhere unrelated to the surface, and the model goes DARK
+#: rather than obviously broken, because N.L collapses toward the ambient term.
+NORMAL_TOKENS = frozenset({"normal", "normals", "nrm", "bump"})
+
 _TIMEOUT_SECONDS = 300
 
 
@@ -133,10 +143,19 @@ def _is_modern(path: str) -> bool:
     return "toktx" not in os.path.basename(path).lower()
 
 
+def _tokens(source_path: str) -> list[str]:
+    stem = os.path.splitext(os.path.basename(source_path))[0].lower()
+    return stem.replace("-", "_").split("_")
+
+
 def is_linear(source_path: str) -> bool:
     """Whether this texture holds data rather than colour -- see :data:`LINEAR_TOKENS`."""
-    stem = os.path.splitext(os.path.basename(source_path))[0].lower()
-    return any(token in LINEAR_TOKENS for token in stem.replace("-", "_").split("_"))
+    return any(token in LINEAR_TOKENS for token in _tokens(source_path))
+
+
+def is_normal_map(source_path: str) -> bool:
+    """Whether this texture is a tangent-space normal map -- see :data:`NORMAL_TOKENS`."""
+    return any(token in NORMAL_TOKENS for token in _tokens(source_path))
 
 
 def convert_image(source_path: str, transcoder: Transcoder, force: bool = False) -> bool:
@@ -154,14 +173,30 @@ def convert_image(source_path: str, transcoder: Transcoder, force: bool = False)
     if transcoder.modern:
         # `--format` is required, and picks the transfer function: colour is sRGB, data is not.
         # Note the argument order -- input BEFORE output, the reverse of toktx.
+        #
+        # `--assign-tf` is NOT optional decoration: an 8-bit PNG carries no transfer-function
+        # tag, and `ktx create` then ASSUMES sRGB and silently applies a "visual lossy color
+        # conversion" (its own words -- the warning lands in captured stderr nobody reads) to
+        # match a linear --format. A flat normal-map texel 128 comes out ~55, i.e. the whole
+        # map gains a constant negative X/Y bias and every shading normal tilts away from the
+        # light: the model renders uniformly DARK, not visibly broken. Roughness/ORM maps get
+        # the same silent darkening. --assign-tf pins the interpretation, pixels pass through.
         command = [
             transcoder.path,
             "create",
             "--format",
             "R8G8B8A8_UNORM" if is_linear(source_path) else "R8G8B8A8_SRGB",
+            "--assign-tf",
+            "linear" if is_linear(source_path) else "srgb",
             "--encode",
             "uastc",
             "--generate-mipmap",
+        ]
+        # Normal maps additionally need the two-channel encoder mode the runtime expects --
+        # see :data:`NORMAL_TOKENS`. Linear alone is not enough.
+        if is_normal_map(source_path):
+            command.append("--normal-mode")
+        command += [
             source_path,
             target,
         ]

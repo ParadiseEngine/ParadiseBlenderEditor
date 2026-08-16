@@ -209,6 +209,13 @@ def export_object_glb(obj: bpy.types.Object, output_path: str) -> bool:
             # this off would leave mesh data Z-up while transforms are Y-up.
             export_yup=True,
             export_apply=True,  # apply modifiers -- the runtime has no modifier stack
+            # Blender defaults this OFF, and a normal-mapped mesh without TANGENT renders DARK
+            # rather than failing: the loader default-fills a CONSTANT (1,0,0,+1) tangent, the
+            # shader's degenerate-tangent guard only trips where the normal parallels ±X, and
+            # everywhere else it builds a valid-but-meaningless TBN that tilts the shading normal
+            # away from the light. Cheap to always emit; the alternative is a silent 35% albedo
+            # loss on every asset that ships a normal map.
+            export_tangents=True,
             export_cameras=False,
             export_lights=False,
             export_extras=False,

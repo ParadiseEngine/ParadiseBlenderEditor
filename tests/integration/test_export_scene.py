@@ -292,6 +292,50 @@ def main() -> int:
     else:
         print("     (navmesh skipped — the .NET bridge was unavailable)")
 
+    # -- data-directory cleanup, and the gate in front of it --------------------------
+    # The only step of an export that DELETES. `build_scene` never touches `prune_data`, so
+    # this exercises the shipped default -- an addon update must not start removing an
+    # author's files on the next save, which with `export_on_save` on is one keystroke away.
+    orphan = os.path.join(DATA_DIR, "Models", "NoLongerReferenced.glb")
+    os.makedirs(os.path.dirname(orphan), exist_ok=True)
+
+    def plant() -> None:
+        with open(orphan, "wb") as handle:
+            handle.write(b"glTF\x02\x00\x00\x00")  # unreferenced, and not a valid GLB
+
+    plant()
+    check(not bpy.context.scene.paradise_project.prune_data,
+          "the data-directory cleanup is off unless a project opts in")
+    export_scene(bpy.context.scene)
+    check(os.path.exists(orphan),
+          "an export with the cleanup off deletes nothing, even an unreferenced file")
+
+    bpy.context.scene.paradise_project.prune_data = True
+    export_scene(bpy.context.scene)
+    check(not os.path.exists(orphan), "opting in removes the unreferenced file")
+
+    # Owned-directory and derived-artifact rules, against a live export rather than a fixture.
+    plant()
+    keep_audio = os.path.join(DATA_DIR, "audio", "Bank.bnk")
+    keep_note = os.path.join(DATA_DIR, "Models", "notes.txt")
+    keep_primitive = os.path.join(DATA_DIR, "primitives", "Cube.glb")
+    keep_sheet = os.path.join(DATA_DIR, "sprites", "Fire.png")
+    keep_sidecar = os.path.join(DATA_DIR, "sprites", "Fire.ktx2")
+    for path in (keep_audio, keep_note, keep_primitive, keep_sheet, keep_sidecar):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as handle:
+            handle.write(b"payload")
+
+    export_scene(bpy.context.scene)
+    check(not os.path.exists(orphan), "the cleanup still collects a genuine orphan")
+    check(os.path.exists(keep_audio), "Wwise banks are outside the owned directories")
+    check(os.path.exists(keep_note), "an unowned extension inside an owned directory survives")
+    check(os.path.exists(keep_primitive),
+          "generated primitives are the Godot host's, and this exporter never writes one")
+    check(os.path.exists(keep_sidecar),
+          "a KTX2 whose source image is still there is a transcode target, not an orphan")
+    bpy.context.scene.paradise_project.prune_data = False
+
     # -- side artifacts ---------------------------------------------------------------
     check(os.path.exists(os.path.join(DATA_DIR, "ProjectSettings.json")),
           "ProjectSettings.json was written")

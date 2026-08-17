@@ -17,7 +17,7 @@ from __future__ import annotations
 import os
 import shutil
 
-__all__ = ["resolve_bridge_command"]
+__all__ = ["bridge_identity", "resolve_bridge_command"]
 
 
 def resolve_bridge_command() -> list[str] | None:
@@ -62,6 +62,66 @@ def resolve_bridge_command() -> list[str] | None:
         return _dotnet_run(repo_project)
 
     return None
+
+
+def bridge_identity(command: list[str]) -> str:
+    """A string that changes when the bridge that would run changes -- for cache keys.
+
+    Callers cache the bridge's *output* (a navmesh bake) against a hash of its *input*, which is
+    only sound while the bridge itself is fixed. This adds the bridge to that key: the argv, plus
+    the size and mtime of every assembly in its build output.
+
+    **Every assembly, not just the bridge's own**, because the bake is Recast running inside
+    ``Paradise.Export`` — which sits in that same directory as a dependency. In a workspace that
+    compiles the engine from source (see the root ``Directory.Build.targets``), a change to the
+    bake belongs to the engine, and keying on ``ParadiseBlenderBridge.dll`` alone would reuse a
+    navmesh baked by the previous engine. Stats rather than content hashes: a rebuild is the
+    signal, and one unnecessary re-bake is the right direction to be wrong in.
+
+    Its limit is worth stating plainly, because the failure is silent. The assemblies are the
+    ones from the LAST build, so editing engine source and re-exporting *without building in
+    between* leaves the identity unchanged and reuses the old bake. Building moves it. The
+    panel's Bake NavMesh never consults the cache, so it is always the honest answer.
+    """
+    binary = _executed_assembly(command)
+    if binary is None:
+        return " ".join(command)
+
+    directory = os.path.dirname(binary)
+    try:
+        assemblies = sorted(n for n in os.listdir(directory) if n.endswith((".dll", ".exe")))
+        stats = [f"{name}:{s.st_size}:{int(s.st_mtime)}" for name, s in _stat_all(directory, assemblies)]
+    except OSError:
+        return " ".join(command)
+
+    return " ".join([*command, *stats])
+
+
+def _stat_all(directory: str, names: list[str]):
+    for name in names:
+        try:
+            yield name, os.stat(os.path.join(directory, name))
+        except OSError:
+            # Vanished between listing and stat (a build running concurrently). Skipping it only
+            # makes the identity coarser, which costs a re-bake at worst.
+            continue
+
+
+def _executed_assembly(command: list[str]) -> str | None:
+    """The file whose contents decide what the bridge does: the published binary, or the DLL
+    ``dotnet run`` would launch from the project's most recent build output."""
+    if "--project" not in command:
+        return command[0] if command else None
+
+    project = command[command.index("--project") + 1]
+    build_root = os.path.join(os.path.dirname(project), "bin")
+    name = os.path.splitext(os.path.basename(project))[0] + ".dll"
+    candidates = [
+        os.path.join(root, name) for root, _dirs, files in os.walk(build_root) if name in files
+    ]
+    # Newest wins. `dotnet run` launches the Debug build unless told otherwise, but Debug and
+    # Release outputs coexist and a rebuild of either says the bridge may have moved.
+    return max(candidates, key=os.path.getmtime) if candidates else None
 
 
 def _dotnet_run(project: str) -> list[str] | None:

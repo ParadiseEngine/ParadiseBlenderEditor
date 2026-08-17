@@ -30,6 +30,7 @@ from mathutils import Matrix
 from .. import log
 from ..paths import ExportPaths
 from ..pipeline import glb_textures, ktx
+from ..pipeline.cache import ArtifactCache, artifact_cache
 
 __all__ = ["MeshExporter"]
 
@@ -38,16 +39,22 @@ MESH_SUBDIR = "Models"
 
 
 class MeshExporter:
-    """Exports entity meshes to GLB, deduplicated by mesh datablock."""
+    """Exports entity meshes to GLB, deduplicated by mesh datablock.
 
-    def __init__(self) -> None:
+    ``force`` re-exports and re-encodes everything, ignoring both the staleness check and the
+    texture cache. It is the escape hatch for the one case neither can see: a change to the
+    exporter or the transcoding pipeline itself, which leaves every output stale while the
+    .blend's mtime says nothing changed.
+    """
+
+    def __init__(self, force: bool = False) -> None:
         self._fields_by_mesh: dict[str, str] = {}
         self._failed: set[str] = set()
         self._warned_no_transcoder = False
+        self._force = force
+        self._cache: ArtifactCache | None = None
 
-    def resolve_mesh_field(
-        self, obj: bpy.types.Object, paths: ExportPaths, force: bool = False
-    ) -> str | None:
+    def resolve_mesh_field(self, obj: bpy.types.Object, paths: ExportPaths) -> str | None:
         """Contract mesh field for an object, exporting the GLB on first use.
 
         Precedence mirrors the Godot host: an explicitly authored model path wins, otherwise
@@ -70,7 +77,7 @@ class MeshExporter:
         field = f"{MESH_SUBDIR}/{_safe_filename(mesh_key)}.glb"
         output_path = paths.output_path_for_field(field)
 
-        if force or _is_stale(output_path):
+        if self._force or _is_stale(output_path):
             if not export_object_glb(obj, output_path):
                 self._failed.add(mesh_key)
                 return None
@@ -80,9 +87,15 @@ class MeshExporter:
             # textured export gets post-processed into the sidecar layout here. A missing
             # transcoder must be LOUD: it once passed silently and the game refused to launch
             # on GLBs full of PNG, hours and one confused user later.
+            #
+            # Note what the staleness check above CANNOT do: a .blend save invalidates every
+            # GLB, so this runs for all of them on every export. That is why the encode itself
+            # is cached rather than gated on the GLB — see :mod:`..pipeline.cache`.
             transcoder = ktx.resolve_transcoder()
             if transcoder is not None:
-                glb_textures.externalize(output_path, transcoder)
+                glb_textures.externalize(
+                    output_path, transcoder, self._texture_cache(paths), self._force
+                )
             elif not self._warned_no_transcoder:
                 self._warned_no_transcoder = True
                 log.warn(
@@ -93,6 +106,16 @@ class MeshExporter:
 
         self._fields_by_mesh[mesh_key] = field
         return field
+
+    def _texture_cache(self, paths: ExportPaths) -> ArtifactCache:
+        """The project's artifact cache, resolved once per export.
+
+        Lazily, because the cache belongs to the project being exported and the exporter is
+        constructed before any ``ExportPaths`` is in hand.
+        """
+        if self._cache is None:
+            self._cache = artifact_cache(paths)
+        return self._cache
 
     def _resolve_authored(
         self, obj: bpy.types.Object, authored: str, paths: ExportPaths
@@ -186,7 +209,7 @@ def export_object_glb(obj: bpy.types.Object, output_path: str) -> bool:
     # to its armature, zeroing the child while the parent keeps its placement would bake the
     # armature's transform into the result instead of removing it.
     root = next((o for o in exported if o.parent not in exported), obj)
-    saved_matrix = root.matrix_world.copy()
+    saved_transform = _capture_transform(root)
     saved_hidden = [o for o in exported if o.hide_get()]
 
     try:
@@ -228,7 +251,7 @@ def export_object_glb(obj: bpy.types.Object, output_path: str) -> bool:
         log.error(f"Failed to export mesh GLB for '{obj.name}': {error}")
         return False
     finally:
-        root.matrix_world = saved_matrix
+        _restore_transform(root, saved_transform)
         for hidden in saved_hidden:
             hidden.hide_set(True)
         bpy.ops.object.select_all(action="DESELECT")
@@ -238,6 +261,42 @@ def export_object_glb(obj: bpy.types.Object, output_path: str) -> bool:
             with contextlib.suppress(RuntimeError):
                 previously.select_set(True)
         view_layer.objects.active = saved_active
+
+
+def _capture_transform(obj: bpy.types.Object) -> tuple:
+    """Snapshot an object's transform CHANNELS, so it can be put back exactly.
+
+    Not ``matrix_world``: assigning one decomposes it into location/rotation/scale and the
+    rotation half of that round trip is lossy at ~1e-6. Restoring a saved matrix therefore leaves
+    the object a couple of microns from where it started -- invisible in the viewport, and
+    permanent in the exported data. Measured on ShiningPie, one export moved 25 of 321 objects by
+    up to 2.2e-6, and the next export moved them again.
+
+    Nothing looks wrong when this happens, which is what makes it worth the extra care: the
+    exported transforms churn on every export (noise in every diff of a committed ``data/``), and
+    anything that decides "did this change?" by comparing content -- the navmesh cache in
+    :mod:`..pipeline.cache`, most obviously -- never sees an unchanged scene twice.
+
+    All four rotation representations are saved rather than the one ``rotation_mode`` selects:
+    they are separate stored fields, restoring them all is exact regardless of mode, and it costs
+    a few floats.
+    """
+    return (
+        obj.location.copy(),
+        obj.rotation_euler.copy(),
+        obj.rotation_quaternion.copy(),
+        tuple(obj.rotation_axis_angle),
+        obj.scale.copy(),
+    )
+
+
+def _restore_transform(obj: bpy.types.Object, saved: tuple) -> None:
+    location, euler, quaternion, axis_angle, scale = saved
+    obj.location = location
+    obj.rotation_euler = euler
+    obj.rotation_quaternion = quaternion
+    obj.rotation_axis_angle = axis_angle
+    obj.scale = scale
 
 
 def _safe_filename(name: str) -> str:

@@ -37,7 +37,7 @@ paradise_blender/
   contract/     ★ pure Python, imports no bpy — the contract implementation
   authoring/      property groups: how a scene declares what to export
   export/         scene walk → contract documents
-  pipeline/       KTX2 transcoding, .NET bridge invocation
+  pipeline/       KTX2 transcoding, .NET bridge invocation, artifact cache, data/ cleanup
   play/           runtime resolution and detached launch
   live/           live-preview protocol, transport, session, sync
   ui/             the Paradise sidebar tab
@@ -72,6 +72,34 @@ after the user opens another .blend.
 **Never block the main thread in `live/`.** Blender's UI is single-threaded and the peer is a
 game runtime that stalls for frames at a time. Sends go through a bounded queue drained by a
 background thread.
+
+**An export reuses unchanged artifacts, and the rule for what may be cached is strict.**
+`pipeline/cache.py` stores KTX2 transcodes and navmesh bakes under `<project>/.paradise-cache/`,
+keyed on a digest of the step's *complete* input — image bytes plus the encode's argv, or the
+geometry-and-settings payload plus the bridge's build output. On ShiningPie that takes a
+re-export from 44 s to 3.6 s. **Do not extend this to the mesh GLBs.** Their inputs are a
+transitive closure over the depsgraph (modifier stacks, geometry nodes, materials, armature
+actions, the exporter's own argv); a key that misses one does not fail, it ships last week's
+asset and reports success — and the only hash that would not miss costs as much as the 3.9 s of
+exporting it would skip. Reach for the panel's rebuild button (`paradise.export_scene(force=True)`)
+after changing the exporter itself, since no input hash can see that.
+
+**An export also DELETES, and the rules that keep that safe are not optional.**
+`pipeline/prune.py` removes artifacts no exported scene references any more — what a renamed mesh
+leaves behind. It sweeps only the directories the exporter owns and only the extensions it writes
+there (`OWNED`), so `data/audio` (Wwise), the game's own config, and an author's stray file are
+never candidates; **every** `scenes/*.json` is a root, so a `data/` shared by two .blends is safe;
+reachability is computed from string *values* rather than known keys, because a key whitelist goes
+stale the day a component gains an asset field and the cost of going stale is deleting a live
+asset. It refuses to run at all on an unreadable scene document or when no scene declares any
+entity — that second one is an export that found nothing, against which the whole directory looks
+unreachable. Per-project switch: `paradise_project.prune_data`.
+
+**Never restore an object's transform by assigning `matrix_world`.** The assignment decomposes
+into location/rotation/scale, and the rotation half of that round trip is lossy at ~1e-6, so
+save/restore leaves the object microns from where it started — 25 of ShiningPie's 321 objects
+moved on every export, which churned the exported transforms and defeated any content-keyed
+reuse. `export/mesh.py:_capture_transform` saves the channels instead.
 
 **Blender rejects empty enum identifiers.** An `EnumProperty` item with `""` as its identifier
 warns "current value '0' matches no enum" and becomes unreadable. Where the contract's value is

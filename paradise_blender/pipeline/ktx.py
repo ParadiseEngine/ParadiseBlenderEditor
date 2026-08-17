@@ -30,7 +30,15 @@ from typing import NamedTuple
 from .. import log
 from ..paths import ExportPaths
 
-__all__ = ["Transcoder", "convert_data_directory", "convert_image", "resolve_transcoder"]
+__all__ = [
+    "Transcoder",
+    "convert_data_directory",
+    "convert_image",
+    "encode_command",
+    "encode_signature",
+    "resolve_transcoder",
+    "transcoder_version",
+]
 
 #: Source formats worth transcoding. Anything else is passed over silently.
 SOURCE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".tga")
@@ -170,6 +178,34 @@ def convert_image(source_path: str, transcoder: Transcoder, force: bool = False)
     if not force and os.path.exists(target) and os.path.getmtime(target) >= os.path.getmtime(source_path):
         return False
 
+    command = encode_command(source_path, target, transcoder)
+
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        log.warn(f"{transcoder.name} failed on '{source_path}': {error}")
+        return False
+
+    if result.returncode != 0:
+        log.warn(f"{transcoder.name} failed on '{source_path}': {result.stderr.strip()}")
+        return False
+
+    return True
+
+
+def encode_command(source_path: str, target_path: str, transcoder: Transcoder) -> list[str]:
+    """The exact argv that encodes ``source_path`` -- the single source of truth for HOW.
+
+    Split out from :func:`convert_image` because it is also what :func:`encode_signature` hashes:
+    an encode is identified by its command line, so adding or changing a flag here invalidates
+    every cached artifact by construction, with no version constant to remember to bump.
+    """
     if transcoder.modern:
         # `--format` is required, and picks the transfer function: colour is sRGB, data is not.
         # Note the argument order -- input BEFORE output, the reverse of toktx.
@@ -198,7 +234,7 @@ def convert_image(source_path: str, transcoder: Transcoder, force: bool = False)
             command.append("--normal-mode")
         command += [
             source_path,
-            target,
+            target_path,
         ]
     else:
         command = [
@@ -207,27 +243,66 @@ def convert_image(source_path: str, transcoder: Transcoder, force: bool = False)
             "--encode",
             "uastc",  # high-quality transcodable format
             "--genmipmap",
-            target,
+            target_path,
             source_path,
         ]
 
+    return command
+
+
+def encode_signature(source_path: str, transcoder: Transcoder) -> str:
+    """Everything that decides an encode's OUTPUT bytes, as one string, for cache keys.
+
+    That is the argv with both file paths replaced by placeholders -- the paths themselves are
+    irrelevant to the result, while the flags derived from the file NAME (sRGB vs linear vs
+    ``--normal-mode``, see :data:`LINEAR_TOKENS`) are decisive -- plus the transcoder's version.
+
+    Keying on the name-derived flags rather than the name is what makes the cache safe to share
+    between images: two files with identical pixels but names like ``rock_BaseColor`` and
+    ``rock_Normal`` encode differently and must never resolve to one entry.
+    """
+    command = encode_command(source_path, "<target>", transcoder)
+    rendered = " ".join(
+        "<source>" if argument == source_path else argument for argument in command[1:]
+    )
+    return f"{os.path.basename(transcoder.path)} {rendered} {transcoder_version(transcoder)}"
+
+
+#: Memoized ``--version`` output per binary path. A KTX-Software upgrade changes encoder output,
+#: so it belongs in the key; running the probe once per session keeps it free.
+_versions: dict[str, str] = {}
+
+
+def transcoder_version(transcoder: Transcoder) -> str:
+    """The transcoder's reported version, or a stat-based stand-in if it will not report one."""
+    cached = _versions.get(transcoder.path)
+    if cached is not None:
+        return cached
+
+    version = ""
     try:
         result = subprocess.run(
-            command,
+            [transcoder.path, "--version"],
             capture_output=True,
             text=True,
-            timeout=_TIMEOUT_SECONDS,
+            timeout=30,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        log.warn(f"{transcoder.name} failed on '{source_path}': {error}")
-        return False
+        version = (result.stdout or result.stderr).strip().splitlines()[0] if result.returncode == 0 else ""
+    except (OSError, subprocess.TimeoutExpired, IndexError):
+        version = ""
 
-    if result.returncode != 0:
-        log.warn(f"{transcoder.name} failed on '{source_path}': {result.stderr.strip()}")
-        return False
+    if not version:
+        # No version to read: fall back to the binary's own identity. Coarser, but it still
+        # changes when the tool is replaced, which is the case that matters.
+        try:
+            stat = os.stat(transcoder.path)
+            version = f"size={stat.st_size} mtime={int(stat.st_mtime)}"
+        except OSError:
+            version = "unknown"
 
-    return True
+    _versions[transcoder.path] = version
+    return version
 
 
 def convert_data_directory(paths: ExportPaths, force: bool = False) -> tuple[int, int]:

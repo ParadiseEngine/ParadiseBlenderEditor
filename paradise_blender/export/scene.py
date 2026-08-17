@@ -28,6 +28,7 @@ from ..authoring.guid import ensure_unique_guids
 from ..contract.schema import LevelData
 from ..contract.writer import write_json_document
 from ..paths import ExportPaths
+from ..pipeline import prune
 from ..prefs import export_paths
 from . import navmesh as navmesh_export
 from . import project_settings
@@ -57,17 +58,20 @@ def resolve_scene_name(scene: bpy.types.Scene) -> str:
 
 
 def build_level_data(
-    scene: bpy.types.Scene, paths: ExportPaths, export_assets: bool = True
+    scene: bpy.types.Scene, paths: ExportPaths, export_assets: bool = True, force: bool = False
 ) -> LevelData:
     """Build the level document, optionally exporting mesh/material side artifacts.
 
     ``export_assets=False`` is the live-preview path: re-exporting every GLB on each transform
     tweak would stall Blender, and the runtime already has the meshes loaded.
+
+    ``force`` rebuilds every asset from scratch, ignoring the staleness check and the artifact
+    cache -- see :class:`.mesh.MeshExporter`.
     """
     document = LevelData()
 
     materials = MaterialExporter()
-    meshes = MeshExporter()
+    meshes = MeshExporter(force)
     prefabs = PrefabExporter(materials, meshes)
 
     camera = find_camera(scene)
@@ -97,10 +101,14 @@ def build_level_data(
     return document
 
 
-def export_scene(scene: bpy.types.Scene, operator=None) -> str | None:
+def export_scene(scene: bpy.types.Scene, operator=None, force: bool = False) -> str | None:
     """Full export: level document, materials, prefabs, project settings, navmesh.
 
     Returns the written scene JSON path, or ``None`` if the export could not run.
+
+    ``force`` rebuilds every derived artifact, which is what to reach for after changing the
+    exporter or the transcoding pipeline: those changes leave every output stale while the
+    .blend's mtime — the only staleness signal a scene export has — says nothing happened.
     """
     paths = export_paths(scene)
     paths.ensure_output_directory()
@@ -110,13 +118,17 @@ def export_scene(scene: bpy.types.Scene, operator=None) -> str | None:
         log.info(f"Minted or repaired {repaired} entity GUID(s) before export.", operator)
 
     scene_name = resolve_scene_name(scene)
-    document = build_level_data(scene, paths)
+    document = build_level_data(scene, paths, force=force)
 
     project_settings.export_project_settings(paths)
-    navmesh_export.export_navmesh(scene, scene_name, paths, document)
+    navmesh_export.export_navmesh(scene, scene_name, paths, document, force)
 
     output_path = paths.level_data_output_path(scene_name)
     write_json_document(output_path, document.to_json())
+
+    # After the document is on disk, never before: the sweep reads the scene documents as its
+    # roots, so running it earlier would judge this scene's assets against the PREVIOUS export.
+    _prune_data_directory(scene, paths, operator)
 
     log.info(
         f"Exported scene data: {output_path} "
@@ -133,3 +145,31 @@ def export_scene(scene: bpy.types.Scene, operator=None) -> str | None:
         )
 
     return output_path
+
+
+#: How many removed files to name in the log before summarizing. A first cleanup of a long-lived
+#: project can remove hundreds; a wall of paths would bury everything else the export said.
+_PRUNE_LOG_LIMIT = 20
+
+
+def _prune_data_directory(scene: bpy.types.Scene, paths: ExportPaths, operator) -> None:
+    """Delete artifacts this scene no longer references, if the project asks for it.
+
+    Reported by name rather than by count alone: this is the only step of an export that removes
+    something an author might still care about, and "3 file(s) removed" is not something you can
+    check. The files are recoverable from git, and a deleted texture comes back from the artifact
+    cache on the next export without re-encoding.
+    """
+    settings = getattr(scene, "paradise_project", None)
+    if settings is not None and not settings.prune_data:
+        return
+
+    removed = prune.prune_orphans(paths)
+    if not removed:
+        return
+
+    for field in removed[:_PRUNE_LOG_LIMIT]:
+        log.info(f"Removed unreferenced {field}")
+    if len(removed) > _PRUNE_LOG_LIMIT:
+        log.info(f"...and {len(removed) - _PRUNE_LOG_LIMIT} more")
+    log.info(f"Removed {len(removed)} unreferenced file(s) from the data directory.", operator)

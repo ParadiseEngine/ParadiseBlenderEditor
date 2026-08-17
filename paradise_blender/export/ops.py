@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import bpy
+from bpy.props import BoolProperty
 from bpy.types import Operator
 
 from .. import log
@@ -21,9 +22,19 @@ class PARADISE_OT_export_scene(Operator):
     bl_label = "Export Paradise Scene"
     bl_options = {"REGISTER"}
 
+    force: BoolProperty(  # type: ignore[valid-type]
+        name="Rebuild All",
+        description=(
+            "Re-export every mesh and re-encode every texture instead of reusing unchanged "
+            "ones. Needed after changing the exporter or the KTX pipeline itself, which leave "
+            "existing output stale without touching the scene"
+        ),
+        default=False,
+    )
+
     def execute(self, context):
         try:
-            output = export_scene(context.scene, self)
+            output = export_scene(context.scene, self, self.force)
         except Exception as error:  # surface it in the UI, not a console traceback
             log.error(f"Export failed: {error}", self)
             raise

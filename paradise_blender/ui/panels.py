@@ -53,6 +53,7 @@ class PARADISE_PT_scene(_ParadisePanel, Panel):
             box.label(text=resolve_blender_data_dir(context.scene), icon="FILE_FOLDER")
 
         layout.prop(settings, "export_on_save")
+        layout.prop(settings, "prune_data")
 
         column = layout.column(align=True)
         column.label(text="Lighting")
@@ -61,7 +62,10 @@ class PARADISE_PT_scene(_ParadisePanel, Panel):
 
         row = layout.row(align=True)
         row.scale_y = 1.4
-        row.operator("paradise.export_scene", icon="EXPORT")
+        row.operator("paradise.export_scene", icon="EXPORT").force = False
+        # The rebuild-everything variant, deliberately the small button: it costs a full
+        # re-encode of every texture, and is only needed when the exporter itself changed.
+        row.operator("paradise.export_scene", text="", icon="FILE_REFRESH").force = True
 
         row = layout.row(align=True)
         row.operator("paradise.convert_textures", icon="TEXTURE")

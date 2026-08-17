@@ -64,6 +64,17 @@ class ParadiseScenePreferences(PropertyGroup):
         default=True,
     )
 
+    prune_data: BoolProperty(  # type: ignore[valid-type]
+        name="Remove Unused Files",
+        description=(
+            "After exporting, delete meshes, textures, materials and prefab templates under the "
+            "data directory that no exported scene references any more — what a renamed or "
+            "deleted object leaves behind. Only files the exporter itself writes are considered; "
+            "audio banks and hand-placed assets are never touched"
+        ),
+        default=True,
+    )
+
     scene_name_override: StringProperty(  # type: ignore[valid-type]
         name="Scene Name",
         description=(

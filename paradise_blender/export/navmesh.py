@@ -31,6 +31,16 @@ obstacle faces and agent capsules grind along walls.
 
 A failed or skipped bake leaves ``NavMeshFile`` null rather than aborting the scene export --
 a scene with no walkable geometry is perfectly valid.
+
+**The bake ran on every export**, including the majority that move nothing walkable. It costs
+~3.5 s on ShiningPie's district -- nearly all of it ``dotnet run`` starting a process, since the
+Recast pass itself sees only 1404 collider triangles -- which is a tenth of the export but the
+whole of it once textures are cached. It is now skipped when its input is unchanged: the
+geometry-and-settings payload handed to the bridge is the COMPLETE input of the bake, so hashing
+that JSON is an exact key rather than a heuristic -- see :mod:`..pipeline.cache`. What the key
+cannot see is the bridge's own code changing underneath an unchanged scene;
+:func:`..pipeline.bridge.bridge_identity` covers its build output, and the panel's Bake NavMesh
+button always re-bakes for real.
 """
 
 from __future__ import annotations
@@ -48,6 +58,7 @@ from ..authoring import entity as authoring
 from ..contract import axes
 from ..contract.schema import LevelData
 from ..paths import ExportPaths
+from ..pipeline.cache import artifact_cache, digest
 
 __all__ = [
     "BAKE_SETTINGS",
@@ -56,6 +67,9 @@ __all__ = [
     "collect_walkable_geometry",
     "export_navmesh",
 ]
+
+#: Cache namespace for baked navmeshes.
+CACHE_KIND = "navmesh"
 
 #: The engine defaults — what ``NavMeshBake.cs`` uses on the Godot host, and the defaults of
 #: the per-scene properties below. Kept as the documented reference point (and the fallback
@@ -92,10 +106,14 @@ def bake_settings(scene: bpy.types.Scene) -> dict[str, float]:
 
 
 def export_navmesh(
-    scene: bpy.types.Scene, scene_name: str, paths: ExportPaths, document: LevelData
+    scene: bpy.types.Scene,
+    scene_name: str,
+    paths: ExportPaths,
+    document: LevelData,
+    force: bool = False,
 ) -> None:
     """Bake and record the navmesh, or leave ``NavMeshFile`` null."""
-    if bake_navmesh(scene, scene_name, paths) is None:
+    if bake_navmesh(scene, scene_name, paths, force=force) is None:
         return
 
     document.nav_mesh_file = paths.nav_mesh_file_field(scene_name)
@@ -106,12 +124,18 @@ def bake_navmesh(
     scene_name: str,
     paths: ExportPaths,
     debug_json_path: str | None = None,
+    force: bool = False,
 ) -> str | None:
     """Run the Recast bake and write ``scenes/<name>.navmesh.bin``.
 
     Returns the output path, or ``None`` when there was nothing to bake or the bridge was
     unavailable/failed — every one of which is a degraded state the caller reports, not an
     exception (a scene with no walkable geometry is perfectly valid).
+
+    An unchanged input reuses the cached bake instead of spending ~3.5 s reproducing it. Two
+    requests always bake for real: ``force``, and any request for ``debug_json_path``, since the
+    triangulation the viewport preview draws is produced by the bridge run itself and is not part
+    of the cached artifact.
 
     ``debug_json_path`` additionally asks the bridge for the baked triangulation (contract
     axes) — what the viewport preview is built from.
@@ -127,7 +151,7 @@ def bake_navmesh(
         # on every export would train authors to ignore the log.
         return None
 
-    from ..pipeline.bridge import resolve_bridge_command
+    from ..pipeline.bridge import bridge_identity, resolve_bridge_command
 
     command = resolve_bridge_command()
     if command is None:
@@ -144,12 +168,23 @@ def bake_navmesh(
     if debug_json_path is not None:
         argv += ["--debug-json", debug_json_path]
 
+    # sort_keys is not cosmetic: this string IS the cache key, so an unstable dict order would
+    # mean a fresh bake every time despite an identical scene.
+    payload = json.dumps(
+        {"vertices": vertices, "triangles": triangles, "settings": bake_settings(scene)},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    cache = artifact_cache(paths)
+    key = digest(payload, bridge_identity(command))
+
+    if not force and debug_json_path is None and cache.fetch(CACHE_KIND, key, output_path):
+        log.info(f"NavMesh unchanged; reused the cached bake: {output_path}")
+        return output_path
+
     try:
         with open(input_path, "w", encoding="utf-8") as handle:
-            json.dump(
-                {"vertices": vertices, "triangles": triangles, "settings": bake_settings(scene)},
-                handle,
-            )
+            handle.write(payload)
 
         result = subprocess.run(
             argv,
@@ -163,6 +198,7 @@ def bake_navmesh(
             log.warn(f"NavMesh bake failed: {result.stderr.strip() or result.stdout.strip()}")
             return None
 
+        cache.store(CACHE_KIND, key, output_path)
         log.info(f"Exported navmesh: {output_path}")
         return output_path
     except subprocess.TimeoutExpired:

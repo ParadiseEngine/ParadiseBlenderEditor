@@ -29,7 +29,8 @@ import bpy  # noqa: E402
 import paradise_blender  # noqa: E402
 from paradise_blender.export.mesh import MeshExporter  # noqa: E402
 from paradise_blender.paths import ExportPaths  # noqa: E402
-from paradise_blender.pipeline import ktx  # noqa: E402
+from paradise_blender.pipeline import glb_textures, ktx  # noqa: E402
+from paradise_blender.pipeline.cache import ArtifactCache  # noqa: E402
 
 
 def build_textured_cube() -> bpy.types.Object:
@@ -63,6 +64,63 @@ def build_textured_cube() -> bpy.types.Object:
 
     cube.data.materials.append(material)
     return cube
+
+
+def check_cache_reuse(check, cube: bpy.types.Object, paths: ExportPaths) -> None:
+    """Two GLBs carrying the same image must cost one transcode, not two.
+
+    This is the whole point of the cache and the case that dominates a real project: on
+    ShiningPie, 66 sidecars are written from 25 distinct images, and one 2048² encode costs
+    ~2.7 s. It is exercised with two SEPARATE GLBs rather than by re-running one, because that is
+    the shape that actually occurs — a dozen props sharing one atlas — and because a second pass
+    over an already-externalized GLB has no embedded images left to transcode at all.
+
+    The reused sidecar must also be byte-identical to the encoded one: a cache that returns
+    *something* for a key is worse than no cache, since the difference only ever shows up as a
+    texture that looks subtly wrong at runtime.
+    """
+    from paradise_blender.export.mesh import export_object_glb
+
+    transcoder = ktx.resolve_transcoder()
+    cache = ArtifactCache(os.path.join(tempfile.mkdtemp(prefix="paradise_glbtex_cache"), "cache"))
+
+    encodes: list[str] = []
+    original = ktx.convert_image
+
+    def counting(source_path, transcoder, force=False):
+        encodes.append(source_path)
+        return original(source_path, transcoder, force)
+
+    ktx.convert_image = counting
+    try:
+        first = paths.output_path_for_field("Models/CacheProbeA.glb")
+        export_object_glb(cube, first)
+        glb_textures.externalize(first, transcoder, cache)
+        cold = len(encodes)
+
+        encodes.clear()
+        second = paths.output_path_for_field("Models/CacheProbeB.glb")
+        export_object_glb(cube, second)
+        glb_textures.externalize(second, transcoder, cache)
+        warm = len(encodes)
+    finally:
+        ktx.convert_image = original
+
+    check("cold cache encodes both images", cold == 2)
+    check("warm cache encodes nothing", warm == 0)
+
+    directory = os.path.dirname(first)
+    for name in ("T_Test_BaseColor", "T_Test_Normal"):
+        encoded = os.path.join(directory, f"CacheProbeA.{name}.ktx2")
+        reused = os.path.join(directory, f"CacheProbeB.{name}.ktx2")
+        if not (os.path.exists(encoded) and os.path.exists(reused)):
+            check(f"both sidecars written for '{name}'", False)
+            continue
+        with open(encoded, "rb") as handle:
+            expected = handle.read()
+        with open(reused, "rb") as handle:
+            actual = handle.read()
+        check(f"reused sidecar for '{name}' is byte-identical", expected == actual)
 
 
 def main() -> int:
@@ -118,6 +176,8 @@ def main() -> int:
             f"accessor {index} inside the compacted buffer",
             view.get("byteOffset", 0) + view["byteLength"] <= buffer_length,
         )
+
+    check_cache_reuse(check, cube, paths)
 
     # Round-trip through Blender's own importer: it validates chunk structure, bufferView
     # bounds, and accessor consistency far more thoroughly than any hand-rolled check.

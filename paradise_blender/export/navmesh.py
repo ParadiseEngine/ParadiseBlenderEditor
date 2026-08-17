@@ -170,6 +170,12 @@ def bake_navmesh(
 
     # sort_keys is not cosmetic: this string IS the cache key, so an unstable dict order would
     # mean a fresh bake every time despite an identical scene.
+    #
+    # Vertex/triangle ORDER is deliberately left as the depsgraph yields it, and does not need to
+    # be canonicalized. The failure it could cause only runs one way: reordered geometry hashes
+    # differently, which is a cache MISS and a redundant bake, never a stale hit. A stale hit
+    # needs the opposite -- changed geometry with an unchanged digest -- which is a SHA-256
+    # collision. Sorting here would buy nothing and cost a sort of every vertex on every export.
     payload = json.dumps(
         {"vertices": vertices, "triangles": triangles, "settings": bake_settings(scene)},
         sort_keys=True,

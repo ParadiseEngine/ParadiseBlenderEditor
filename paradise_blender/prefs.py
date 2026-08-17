@@ -70,9 +70,11 @@ class ParadiseScenePreferences(PropertyGroup):
             "After exporting, delete meshes, textures, materials and prefab templates under the "
             "data directory that no exported scene references any more — what a renamed or "
             "deleted object leaves behind. Only files the exporter itself writes are considered; "
-            "audio banks and hand-placed assets are never touched"
+            "audio banks, generated primitives and hand-placed assets are never touched. "
+            "Off by default: this is the only part of an export that deletes, so it is a "
+            "deliberate per-project choice rather than something an addon update turns on"
         ),
-        default=True,
+        default=False,
     )
 
     scene_name_override: StringProperty(  # type: ignore[valid-type]

@@ -84,6 +84,15 @@ class TestOrphanRemoval:
 
         assert prune_orphans(data) == ["Models/Prop.Dropped.ktx2"]
 
+    def test_removes_a_sidecar_whose_source_image_is_gone(self, data):
+        """The shield in TestNeverTouches is keyed on the source still existing, so it must not
+        have turned sprite pruning off wholesale: a sheet deleted from disk still collects."""
+        write(field(data, "scenes/level.json"), scene_document([entity("Models/Used.glb")]))
+        write(field(data, "Models/Used.glb"), glb())
+        write(field(data, "sprites/Removed.ktx2"), b"transcoded")
+
+        assert prune_orphans(data) == ["sprites/Removed.ktx2"]
+
     def test_dry_run_reports_without_deleting(self, data):
         write(field(data, "scenes/level.json"), scene_document([entity("Models/Used.glb")]))
         write(field(data, "Models/Used.glb"), glb())
@@ -147,6 +156,40 @@ class TestNeverTouches:
         write(field(data, "scenes/level.json"), scene_document([entity(materials=["materials/m.json"])]))
         write(field(data, "materials/m.json"), json.dumps({"BaseColorTexture": "Models/Shared.ktx2"}))
         write(field(data, "Models/Shared.ktx2"), b"texture")
+
+        assert prune_orphans(data) == []
+
+    def test_generated_primitives(self, data):
+        """primitives/ is in the shared layout but the GODOT host writes it -- nothing here does.
+        Sweeping a directory this exporter cannot regenerate is how a cleanup loses an asset."""
+        write(field(data, "scenes/level.json"), scene_document([entity("Models/Used.glb")]))
+        write(field(data, "Models/Used.glb"), glb())
+        write(field(data, "primitives/Cube.glb"), glb())
+        write(field(data, "primitives/Cube.Albedo.ktx2"), b"texture")
+
+        assert prune_orphans(data) == []
+        assert os.path.exists(field(data, "primitives/Cube.glb"))
+
+    def test_a_sidecar_whose_source_image_is_still_there(self, data):
+        """`ktx.convert_data_directory` transcodes sprites/x.png -> sprites/x.ktx2 in place, and
+        the .png is not ours. Deleting only the .ktx2 half-deletes a pair and the next Convert
+        Textures restores it -- and between "drop in a sheet" and "wire it to an entity" it would
+        delete the file the author was about to use."""
+        write(field(data, "scenes/level.json"), scene_document([entity("Models/Used.glb")]))
+        write(field(data, "Models/Used.glb"), glb())
+        write(field(data, "sprites/Fire.png"), b"source")
+        write(field(data, "sprites/Fire.ktx2"), b"transcoded")
+
+        assert prune_orphans(data) == []
+        assert os.path.exists(field(data, "sprites/Fire.ktx2"))
+
+    def test_a_sidecar_whose_source_differs_only_in_extension_case(self, data):
+        """Probing `stem + ".png"` would miss `Fire.PNG` on a case-sensitive filesystem and
+        delete the sidecar -- passing on macOS and losing data on Linux CI."""
+        write(field(data, "scenes/level.json"), scene_document([entity("Models/Used.glb")]))
+        write(field(data, "Models/Used.glb"), glb())
+        write(field(data, "sprites/Fire.PNG"), b"source")
+        write(field(data, "sprites/Fire.ktx2"), b"transcoded")
 
         assert prune_orphans(data) == []
 

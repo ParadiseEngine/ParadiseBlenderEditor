@@ -134,7 +134,15 @@ class ArtifactCache:
                     os.unlink(temporary)
 
     def _entry_path(self, kind: str, key: str, like: str) -> str | None:
-        """Absolute path of the entry for ``key``, taking its extension from ``like``."""
+        """Absolute path of the entry for ``key``, taking its extension from ``like``.
+
+        The extension is cosmetic -- it makes the cache directory browsable rather than a heap of
+        hex -- but it is part of the filename, so **a kind must use one extension consistently**.
+        Storing under ``.ktx2`` and fetching with a ``.png`` destination silently misses forever
+        rather than failing. Both current kinds satisfy this by construction (a ``navmesh`` entry
+        is always a ``.bin``, a ``ktx2`` entry always a ``.ktx2``); a kind that would not should
+        fold the extension into ``kind`` instead of relying on the caller.
+        """
         if self._root is None:
             return None
         self._prepare()

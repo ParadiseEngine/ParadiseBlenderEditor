@@ -84,16 +84,30 @@ asset and reports success — and the only hash that would not miss costs as muc
 exporting it would skip. Reach for the panel's rebuild button (`paradise.export_scene(force=True)`)
 after changing the exporter itself, since no input hash can see that.
 
-**An export also DELETES, and the rules that keep that safe are not optional.**
+**An export can also DELETE, and the rules that keep that safe are not optional.**
 `pipeline/prune.py` removes artifacts no exported scene references any more — what a renamed mesh
-leaves behind. It sweeps only the directories the exporter owns and only the extensions it writes
-there (`OWNED`), so `data/audio` (Wwise), the game's own config, and an author's stray file are
-never candidates; **every** `scenes/*.json` is a root, so a `data/` shared by two .blends is safe;
-reachability is computed from string *values* rather than known keys, because a key whitelist goes
-stale the day a component gains an asset field and the cost of going stale is deleting a live
-asset. It refuses to run at all on an unreadable scene document or when no scene declares any
-entity — that second one is an export that found nothing, against which the whole directory looks
-unreachable. Per-project switch: `paradise_project.prune_data`.
+leaves behind. It is **off by default** (`paradise_project.prune_data`) and stays off for a scene
+with no property group attached: it is the only destructive step in an export, so it is a
+deliberate per-project choice rather than something an addon update switches on under an author
+who never asked for it.
+
+When it does run, five rules keep it safe and none is decoration:
+
+- Only the directories the exporter **writes** and only the extensions it writes there (`OWNED`) —
+  so `data/audio` (Wwise), the game's own config, and an author's stray file are never candidates.
+  Note `primitives/` is *not* owned: it is in the shared layout (`paths.py`) because the **Godot**
+  host generates it, and owning what you cannot regenerate is how a cleanup loses an asset.
+- **Every** `scenes/*.json` is a root, so a `data/` shared by two .blends is safe.
+- Reachability is computed from string *values* rather than known keys, because a key whitelist
+  goes stale the day a component gains an asset field, and the cost of going stale is deleting a
+  live asset. Documents are followed transitively (scene → material → texture).
+- A `.ktx2` with a source image beside it is kept, because `ktx.convert_data_directory` transcodes
+  `sprites/x.png` → `sprites/x.ktx2` in place and the `.png` is not ours — deleting one half of
+  that pair cleans nothing up and would eat a spritesheet in the window between dropping it in and
+  wiring it to an entity.
+- It refuses to run at all on an unreadable scene document, or when no scene declares any entity —
+  that second one is an export that found nothing, against which the whole directory looks
+  unreachable.
 
 **Never restore an object's transform by assigning `matrix_world`.** The assignment decomposes
 into location/rotation/scale, and the rotation half of that round trip is lossy at ~1e-6, so

@@ -159,9 +159,14 @@ def _prune_data_directory(scene: bpy.types.Scene, paths: ExportPaths, operator) 
     something an author might still care about, and "3 file(s) removed" is not something you can
     check. The files are recoverable from git, and a deleted texture comes back from the artifact
     cache on the next export without re-encoding.
+
+    Absent settings mean "do not prune", not "prune". The switch defaults to off precisely so
+    that deletion is something a project opts into, and a scene with no property group attached
+    (a non-standard scene, a tooling or test context) has opted into nothing. For a destructive
+    step the unknown case has to fall on the side that does nothing.
     """
     settings = getattr(scene, "paradise_project", None)
-    if settings is not None and not settings.prune_data:
+    if settings is None or not settings.prune_data:
         return
 
     removed = prune.prune_orphans(paths)

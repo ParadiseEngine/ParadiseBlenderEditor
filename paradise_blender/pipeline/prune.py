@@ -32,12 +32,14 @@ comes back from :mod:`.cache` on the next export without re-encoding.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 
 from .. import log
 from ..paths import ExportPaths
 from .glb_textures import external_image_uris
+from .ktx import SOURCE_EXTENSIONS
 
 __all__ = ["OWNED", "prune_orphans"]
 
@@ -47,14 +49,21 @@ __all__ = ["OWNED", "prune_orphans"]
 #: ``scenes`` lists ``.bin`` only: the navmesh binaries are ours, but the scene documents beside
 #: them are the ROOTS of the whole sweep and are never deleted -- deleting a root would make
 #: everything it referenced garbage on the next pass, which is how a cleanup turns into a wipe.
+#:
+#: ``primitives/`` is deliberately ABSENT even though it appears in the shared layout
+#: (:mod:`..paths`). That layout is the contract's, not this addon's, and generated primitive
+#: meshes come from the Godot host -- nothing here writes one. Owning a directory we cannot
+#: regenerate breaks the rule this whole module rests on: delete only the kinds of file the
+#: exporter itself writes, in the places it writes them. An unreferenced primitive is somebody
+#: else's garbage to collect.
 OWNED: dict[str, tuple[str, ...]] = {
     "Models": (".glb", ".ktx2"),
-    "primitives": (".glb", ".ktx2"),
     "materials": (".json",),
     "prefabs": (".json",),
     "sprites": (".ktx2",),
     "scenes": (".bin",),
 }
+
 
 #: Keys under which a prefab document states its own identity. A scene entity references a prefab
 #: by asset path and guid rather than by document path, so this is the one place a filename-based
@@ -96,11 +105,13 @@ def prune_orphans(paths: ExportPaths, dry_run: bool = False) -> list[str]:
     if settings_document is not None:
         seeds.append((settings, settings_document))
 
+    owned = _owned_files(paths)
     _walk_documents(paths, seeds, live, strings)
     _collect_sidecars(paths, live)
+    _collect_transcode_targets(paths, owned, live)
 
     removed: list[str] = []
-    for field in _owned_files(paths):
+    for field in owned:
         if _normalized(field) in live:
             continue
         removed.append(field)
@@ -168,6 +179,7 @@ def _walk_documents(
     """
     queue = list(seeds)
     walked: set[str] = set()
+    matched_against = 0
 
     while queue:
         path, document = queue.pop()
@@ -177,7 +189,14 @@ def _walk_documents(
         walked.add(key)
 
         _collect(document, os.path.dirname(path), paths, live, strings)
-        _mark_matching_prefabs(paths, live, strings)
+
+        # Prefabs are matched by identity against every string seen so far, so a rescan can only
+        # find something new if `strings` grew since the last one. Without this guard the walk is
+        # O(documents x prefabs) -- unnoticeable at ShiningPie's scale, but the two counts both
+        # grow with the project, so it is the product that gets away from you.
+        if len(strings) != matched_against:
+            matched_against = len(strings)
+            _mark_matching_prefabs(paths, live, strings)
 
         for field in sorted(live.values()):
             if not field.lower().endswith(".json"):
@@ -265,6 +284,47 @@ def _collect_sidecars(paths: ExportPaths, live: dict[str, str]) -> None:
             sidecar = _as_existing_field(os.path.join(os.path.dirname(field), uri), paths)
             if sidecar is not None:
                 live[_normalized(sidecar)] = sidecar
+
+
+def _collect_transcode_targets(
+    paths: ExportPaths, owned: list[str], live: dict[str, str]
+) -> None:
+    """Keep every ``.ktx2`` that has a source image beside it.
+
+    :func:`..pipeline.ktx.convert_data_directory` transcodes ``sprites/fire.png`` into
+    ``sprites/fire.ktx2`` in place, and the ``.png`` is not a file this exporter owns. Deleting
+    the ``.ktx2`` while its source stays therefore does not clean anything up -- it half-deletes
+    a pair, and the next Convert Textures puts it straight back. The unreferenced thing there is
+    the source image, which belongs to the author.
+
+    It also removes a trap in the authoring order: drop in a spritesheet, transcode it, then wire
+    it to an entity. Between those last two steps the sidecar is genuinely unreferenced, and
+    sweeping it would delete the file the author was about to use.
+
+    Mesh sidecars are unaffected -- ``Models/Prop.Colormap.ktx2`` is extracted from inside a GLB
+    and never has a sibling source -- so the case this module was written for still collects.
+    """
+    candidates = [f for f in owned if f.lower().endswith(".ktx2")]
+    if not candidates:
+        return
+
+    # Matched against a directory listing rather than by probing `stem + ".png"`, so that a
+    # source spelled `Fire.PNG` still shields `Fire.ktx2`. Probing would miss it on a
+    # case-sensitive filesystem and delete the sidecar -- the wrong direction to be wrong in.
+    sources: set[str] = set()
+    for directory in {os.path.dirname(field) for field in candidates}:
+        absolute = os.path.join(paths.data_dir, directory) if directory else paths.data_dir
+        with contextlib.suppress(OSError):
+            for name in os.listdir(absolute):
+                stem, extension = os.path.splitext(name)
+                if extension.lower() in SOURCE_EXTENSIONS:
+                    sources.add(_normalized(os.path.join(directory, stem)))
+
+    for field in candidates:
+        if _normalized(field) in live:
+            continue
+        if _normalized(os.path.splitext(field)[0]) in sources:
+            live[_normalized(field)] = field
 
 
 def _owned_files(paths: ExportPaths) -> list[str]:

@@ -15,11 +15,12 @@ from __future__ import annotations
 
 import bpy
 
+from .. import log
 from ..authoring import authored_components
 from ..authoring import entity as authoring
 from ..authoring.guid import ensure_entity_guid
+from ..contract import authoring_router
 from ..contract.schema import (
-    AgentComponentData,
     AuthoredComponentData,
     ColliderComponentData,
     EntityComponentsData,
@@ -31,10 +32,8 @@ from ..contract.schema import (
     RigidbodyComponentData,
 )
 from ..paths import ExportPaths
-from .audio import build_audio_emitter
 from .collider import build_colliders
 from .light import export_light
-from .sprite import build_particle_emitter, build_sprite_animation
 from .transform import decompose_contract
 
 __all__ = ["export_entity", "find_parent_entity"]
@@ -71,21 +70,22 @@ def export_entity(
 
     identity = prefabs.resolve_and_export(obj, paths)
 
-    return LevelEntityData(
+    entity = LevelEntityData(
         id=obj.name,
         # Mint if the object has never been saved, so a fresh entity never exports the all-zero
         # GUID -- which would collide across every such entity at runtime.
         entity_guid=ensure_entity_guid(obj),
         stable_id=obj.name,
-        kind=authoring.resolved_kind(props),
+        # Identity defaults; an authored paradise.identity component overrides them below.
+        kind="Prop",
         spawn_phase="LevelStart",
-        is_active=props.active_on_load,
+        is_active=True,
         prefab=props.model_path.strip() or None,
         prefab_asset_path=identity.prefab_asset_path,
         prefab_guid=identity.prefab_guid,
         prefab_asset_type=identity.prefab_asset_type,
         nearest_instance_root=identity.nearest_instance_root,
-        initial_animation=authoring.resolved_initial_animation(props),
+        initial_animation=None,
         parent=EntityParentData(id=parent_entity.name) if parent_entity is not None else None,
         local_position=local_position,
         local_rotation=local_rotation,
@@ -95,6 +95,8 @@ def export_entity(
         materials=materials.export_material_slots(obj),
         components=_build_components(obj, paths, meshes),
     )
+    _apply_authored_components(obj, entity, paths)
+    return entity
 
 
 def _build_components(
@@ -114,30 +116,22 @@ def _build_components(
     physics = build_colliders(obj, props.physics_colliders)
     if physics:
         components.collider = ColliderComponentData(colliders=physics)
-        components.rigidbody = _build_rigidbody(props)
+        # A derived body: a wall, a shelf, a parked car — static, no mass. An authored
+        # paradise.rigidbody replaces it wholesale, and _apply_authored_components upgrades it
+        # to Kinematic when the entity also authors an agent — the rule the old fixed flags
+        # (is_dynamic_body / is_agent) used to encode.
+        components.rigidbody = RigidbodyComponentData(
+            body_type=PhysicsBodyType.STATIC,
+            mass=0.0,
+            linear_damping=0.0,
+            layer_name="",  # the C# record's default; None would round-trip but diff noisily
+        )
 
     # Interaction collider geometry is not forwarded (the contract's interactable component
     # only carries a display name today); presence is enough to flag the component. Matches
     # the Godot host, so both produce the same document for the same scene.
     if build_colliders(obj, props.interaction_colliders):
         components.interactable = EntityInteractableComponentData(display_name=obj.name)
-
-    if props.is_agent:
-        components.agent = AgentComponentData(
-            move_speed=authoring.resolved_move_speed(props),
-            acceleration=authoring.resolved_acceleration(props),
-            idle_clip=authoring.resolved_idle_animation(props),
-            walk_clip=authoring.resolved_walk_animation(props),
-        )
-
-    if props.sprite_enabled:
-        components.sprite_animation = build_sprite_animation(obj, paths)
-
-    if props.particle_kind != "NONE":
-        components.particle_emitter = build_particle_emitter(obj, paths)
-
-    if props.audio_enabled:
-        components.audio_emitter = build_audio_emitter(obj)
 
     if obj.type == "LIGHT":
         # A lamp marked as an entity OWNS its light: it travels as Components.Light (the same
@@ -146,41 +140,42 @@ def _build_components(
         # Position and direction are world-space, exactly as the scene-level list carries them.
         components.light = export_light(obj)
 
-    # The game's own components, from the authoring schema. Absent (not an empty list) when
-    # nothing is authored -- the C# contract omits the key, and matching that keeps every
-    # pre-schema export byte-identical.
-    custom = [
-        AuthoredComponentData(id=component_id, data=payload)
-        for component_id, payload in authored_components.build_custom_components(obj, paths.data_dir)
-    ]
-    if custom:
-        components.custom = custom
-
     return components
 
 
-def _build_rigidbody(props) -> RigidbodyComponentData:
-    """Body type follows the authored flags, matching the Godot host's rule.
+def _apply_authored_components(
+    obj: bpy.types.Object, entity: LevelEntityData, paths: ExportPaths
+) -> None:
+    """Route every authored component to where the runtime expects it.
 
-    Blender's own rigid-body settings are deliberately not read: its solver's body types and
-    the contract's do not correspond, and an object can carry Blender physics purely for
-    animation baking without being a runtime dynamic body.
+    Engine ids land in their typed slots — or on the entity itself, for identity — through the
+    contract router; a game's own ids ride in ``Components.Custom``, absent (not an empty
+    list) when nothing is authored: the C# contract omits the key, and matching that keeps
+    every pre-schema export byte-identical.
     """
-    if props.is_dynamic_body:
-        body_type = PhysicsBodyType.DYNAMIC
-    elif props.is_agent:
-        body_type = PhysicsBodyType.KINEMATIC
-    else:
-        body_type = PhysicsBodyType.STATIC
+    components = entity.components
+    custom: list[AuthoredComponentData] = []
+    routed: set[str] = set()
 
-    return RigidbodyComponentData(
-        body_type=body_type,
-        # A static or kinematic body has no mass in the contract; carrying the authored value
-        # through would let a nonzero mass on a static body read as a solver hint it is not.
-        mass=props.body_mass if props.is_dynamic_body else 0.0,
-        linear_damping=props.body_linear_damping,
-        restitution=props.body_restitution,
-        friction=props.body_friction,
-        layer=0,
-        layer_name="",
-    )
+    for component_id, payload in authored_components.build_component_payloads(
+            obj, paths.data_dir):
+        if authoring_router.apply(entity, component_id, payload):
+            routed.add(component_id)
+        elif component_id.startswith("paradise."):
+            # An engine component this host derives or bakes rather than authors as a form —
+            # exporting form values would fight the pipeline that already writes the slot.
+            log.warn(
+                f"'{obj.name}' authors '{component_id}', which this host derives from the "
+                "scene itself (mesh, colliders, lamp). The authored copy is NOT exported.")
+        else:
+            custom.append(AuthoredComponentData(id=component_id, data=payload))
+
+    # An agent stands on the navmesh and is moved by the simulation, so its derived body is
+    # kinematic, not static — unless the author said otherwise with a rigidbody component.
+    if (authoring_router.RIGIDBODY not in routed
+            and components.rigidbody is not None
+            and components.agent is not None):
+        components.rigidbody.body_type = PhysicsBodyType.KINEMATIC
+
+    if custom:
+        components.custom = custom

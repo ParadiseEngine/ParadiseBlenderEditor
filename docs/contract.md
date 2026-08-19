@@ -67,14 +67,14 @@ An entity is any object with `object.paradise.is_entity` set. Each exports:
 
 | component | source |
 |---|---|
-| `Renderable` | the object's mesh, exported to a GLB, or an authored model path |
-| `Collider` | objects marked as colliders and assigned to this entity |
-| `Rigidbody` | emitted alongside colliders; type from the dynamic/agent flags |
+| `Renderable` | the object's mesh, exported to a GLB, or an authored model path — derived, never a form |
+| `Collider` | objects marked as colliders and assigned to this entity (the host's `authoredBy: shape` bake) |
+| `Rigidbody` | authored `paradise.rigidbody` component; else derived alongside colliders (static, or kinematic when the entity authors an agent) |
 | `Interactable` | presence of interaction colliders |
-| `Agent` | the agent flag and its movement fields |
-| `SpriteAnimation` | the sprite section |
-| `ParticleEmitter` | the particle section, when its kind is not None |
-| `AudioEmitter` | the audio section, when its enable flag is set |
+| `Agent` | authored `paradise.agent` component |
+| `SpriteAnimation` | not authorable in this host yet — the schema marks it host-baked (`authoredBy: sprite`), and Blender has no sprite host object |
+| `ParticleEmitter` | authored `paradise.particle-emitter` component (its `Sheet` is a host-baked asset reference, not baked here yet) |
+| `AudioEmitter` | authored `paradise.audio-emitter` component |
 | `Custom` | schema-driven authored components (below); **absent** — not `null` — when nothing is authored |
 
 ### Authored components (`Components.Custom`)
@@ -85,6 +85,13 @@ dumps their description to `<data>/authoring-schema.json`; the addon reads it
 (`authoring/authored_components.py`), and exports each enabled component as
 `{ "Id": "<schema id>", "Data": { … } }`. The engine never learns the type — the payload rides
 along verbatim and the game deserializes it through its generated readers.
+
+Entity identity (`Kind`, `IsActive`, `InitialAnimation`, `DisplayName`, `SpawnPhase`) is the
+authored `paradise.identity` component, spread onto the entity itself at export; an entity
+without one exports the defaults (`Prop`, active, `LevelStart`). The engine's own schema is
+vendored at `contract/engine_authoring_schema.json` (Python cannot read the C# constant) and
+merged in front of the game's, exactly as the Godot host merges; the bridge's `engine-schema`
+verb plus the conformance suite keep the copy honest.
 
 The wire format is pinned by the Godot host (`AuthoredEntityCore.ValueOf`) and by
 `tests/unit/test_authoring.py`: every schema field written at its schema type, defaults filling

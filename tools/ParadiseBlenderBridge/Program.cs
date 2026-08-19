@@ -14,6 +14,10 @@ namespace ParadiseBlenderBridge;
 /// binary. This lives here because DotRecast is C#-only; the Godot host gets its bake from
 /// Godot's own NavigationServer3D, and Blender has no equivalent.
 ///
+/// <b>engine-schema</b> prints <c>Paradise.Export.AuthoringSchema.Json</c> — the engine's own
+/// authored-component schema. The addon vendors a copy (it cannot load a C# assembly), and the
+/// test suite compares that copy against this output so the two cannot drift apart.
+///
 /// <b>contract-check</b> is the drift gate. The Blender addon writes the contract in pure
 /// Python, so nothing structurally guarantees it stays in step with C# <c>Paradise.Export</c>
 /// as the schema evolves. This reads a Python-produced document with the engine's own
@@ -36,6 +40,7 @@ internal static class Program
             {
                 "navmesh" => NavMeshCommand.Run(args[1..]),
                 "contract-check" => ContractCheckCommand.Run(args[1..]),
+                "engine-schema" => PrintEngineSchema(),
                 "--help" or "-h" or "help" => Usage(),
                 _ => Fail($"Unknown verb '{args[0]}'."),
             };
@@ -68,8 +73,19 @@ internal static class Program
                   Round-trip a Python-written contract document through the engine's own
                   reader and writer, and report any semantic difference. Exit code 1 means
                   the Python contract implementation has drifted.
+
+              engine-schema
+                  Print the engine's authored-component schema (the generated
+                  Paradise.Export.AuthoringSchema.Json constant). The addon's vendored copy at
+                  paradise_blender/contract/engine_authoring_schema.json must match it.
             """);
         return 2;
+    }
+
+    private static int PrintEngineSchema()
+    {
+        Console.WriteLine(Paradise.Export.AuthoringSchema.Json);
+        return 0;
     }
 
     internal static int Fail(string message)

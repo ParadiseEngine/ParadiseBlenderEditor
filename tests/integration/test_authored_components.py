@@ -134,7 +134,18 @@ def main() -> int:
     creature_obj = bpy.data.objects["Creature"]
     document = authored.schema_for_data_dir(DATA_DIR)
     check(authored.schema_load_error(DATA_DIR) is None, "the schema file loads")
-    check(len(document.components) == 2, "both components are read")
+    game_ids = {c.id for c in document.components if c.id.startswith("game.")}
+    check(game_ids == {"game.creature", "game.marker"}, "both game components are read")
+    check(
+        authored.component_by_id(document, "paradise.rigidbody") is not None,
+        "the engine's own schema is merged in",
+    )
+    check(
+        not authored.is_authorable(authored.component_by_id(document, "paradise.renderable"))
+        and not authored.is_authorable(authored.component_by_id(document, "paradise.light"))
+        and authored.is_authorable(authored.component_by_id(document, "paradise.agent")),
+        "host-owned and host-baked engine components are not offered; plain ones are",
+    )
 
     # -- storage ------------------------------------------------------------------------
     component = authored.component_by_id(document, "game.creature")

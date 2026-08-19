@@ -56,6 +56,7 @@ __all__ = [
     "flatten",
     "merge",
     "read",
+    "read_engine_schema",
     "schema_path",
     "schema_stamp",
 ]
@@ -198,6 +199,22 @@ class AuthoredComponentSchema:
 class AuthoringSchemaDocument:
     version: int = CURRENT_VERSION
     components: list[AuthoredComponentSchema] = dataclass_field(default_factory=list)
+
+
+def read_engine_schema() -> AuthoringSchemaDocument:
+    """The ENGINE's own component schema — what `Paradise.Export.AuthoringSchema.Json` holds.
+
+    Vendored as a JSON file beside this module because the constant lives in a C# assembly this
+    Python host cannot load. The copy is kept honest by the conformance suite: the bridge's
+    ``engine-schema`` verb prints the constant from the real Paradise.Export, and
+    ``tools/run_tests.sh`` fails if the two differ. Regenerate with::
+
+        dotnet run --project tools/ParadiseBlenderBridge -- engine-schema \
+            > paradise_blender/contract/engine_authoring_schema.json
+    """
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "engine_authoring_schema.json")
+    with open(path, encoding="utf-8") as file:
+        return read(file.read())
 
 
 def read(text: str) -> AuthoringSchemaDocument:

@@ -188,13 +188,10 @@ class PARADISE_PT_entity(_ParadisePanel, Panel):
         header.label(text=obj.name, icon="OBJECT_DATA")
         header.operator("paradise.clear_entity", text="", icon="X")
 
-        column = layout.column(align=True)
-        column.prop(props, "kind")
-        if props.kind == "CUSTOM":
-            column.prop(props, "custom_kind", text="")
-        column.prop(props, "active_on_load")
-        column.prop(props, "model_path")
-        column.prop(props, "initial_animation")
+        # Only the HOST data lives here (see authoring/entity.py); everything that used to be
+        # a fixed field -- kind, agent, sprite, particles, audio, body -- is a schema-driven
+        # component in the Components section below.
+        layout.prop(props, "model_path")
 
         if props.entity_guid:
             row = layout.row()
@@ -202,8 +199,13 @@ class PARADISE_PT_entity(_ParadisePanel, Panel):
             row.label(text=props.entity_guid, icon="KEYINGSET")
 
 
-class PARADISE_PT_entity_physics(_ParadisePanel, Panel):
-    bl_label = "Physics"
+class PARADISE_PT_entity_colliders(_ParadisePanel, Panel):
+    """Host-object references the exporter bakes into the collider and interactable
+    components -- this host's half of the schema's ``authoredBy: shape``. Body PROPERTIES
+    (type, mass, friction) are the paradise.rigidbody component in the Components section;
+    a derived static body is emitted automatically whenever physics colliders exist."""
+
+    bl_label = "Colliders"
     bl_parent_id = "PARADISE_PT_entity"
     bl_options = {"DEFAULT_CLOSED"}
 
@@ -214,133 +216,11 @@ class PARADISE_PT_entity_physics(_ParadisePanel, Panel):
     def draw(self, context) -> None:
         layout = self.layout
         props = context.active_object.paradise
-
-        layout.prop(props, "is_dynamic_body")
-        column = layout.column(align=True)
-        column.enabled = props.is_dynamic_body
-        column.prop(props, "body_mass")
-        column.prop(props, "body_linear_damping")
-
-        column = layout.column(align=True)
-        # Restitution and friction matter on static bodies too: they define the bounce and grip
-        # dynamic bodies get off this surface. So they stay enabled regardless.
-        column.prop(props, "body_restitution")
-        column.prop(props, "body_friction")
 
         _draw_collider_list(layout, context, props.physics_colliders, "PHYSICS", "Physics Colliders")
         _draw_collider_list(
             layout, context, props.interaction_colliders, "INTERACTION", "Interaction Colliders"
         )
-
-
-class PARADISE_PT_entity_agent(_ParadisePanel, Panel):
-    bl_label = "Agent"
-    bl_parent_id = "PARADISE_PT_entity"
-    bl_options = {"DEFAULT_CLOSED"}
-
-    @classmethod
-    def poll(cls, context) -> bool:
-        return context.active_object is not None and is_entity(context.active_object)
-
-    def draw(self, context) -> None:
-        layout = self.layout
-        props = context.active_object.paradise
-
-        layout.prop(props, "is_agent")
-        column = layout.column(align=True)
-        column.enabled = props.is_agent
-        column.prop(props, "move_speed")
-        column.prop(props, "acceleration")
-        column.prop(props, "idle_animation")
-        column.prop(props, "walk_animation")
-        if props.is_agent:
-            column.label(text="Agents are excluded from the navmesh bake.", icon="INFO")
-
-
-class PARADISE_PT_entity_sprite(_ParadisePanel, Panel):
-    bl_label = "Sprite & Particles"
-    bl_parent_id = "PARADISE_PT_entity"
-    bl_options = {"DEFAULT_CLOSED"}
-
-    @classmethod
-    def poll(cls, context) -> bool:
-        return context.active_object is not None and is_entity(context.active_object)
-
-    def draw(self, context) -> None:
-        layout = self.layout
-        props = context.active_object.paradise
-
-        box = layout.box()
-        box.prop(props, "sprite_enabled")
-        column = box.column(align=True)
-        column.enabled = props.sprite_enabled
-        column.prop(props, "sprite_sheet")
-        row = column.row(align=True)
-        row.prop(props, "sprite_columns")
-        row.prop(props, "sprite_rows")
-        column.prop(props, "sprite_frame_count")
-        column.prop(props, "sprite_fps")
-        column.prop(props, "sprite_loop")
-        column.prop(props, "sprite_billboard")
-
-        box = layout.box()
-        box.prop(props, "particle_kind")
-        if props.particle_kind == "NONE":
-            return
-
-        column = box.column(align=True)
-        column.prop(props, "particle_max_count")
-        column.prop(props, "particle_emit_rate")
-        column.prop(props, "particle_lifetime")
-        column.prop(props, "particle_speed")
-        column.prop(props, "particle_spread_degrees")
-        column.prop(props, "particle_gravity")
-        column.prop(props, "particle_drag")
-        row = column.row(align=True)
-        row.prop(props, "particle_start_size")
-        row.prop(props, "particle_end_size")
-        column.prop(props, "particle_color")
-        column.prop(props, "particle_seed")
-
-        if props.particle_kind == "Sprite":
-            column = box.column(align=True)
-            column.prop(props, "particle_sheet")
-            row = column.row(align=True)
-            row.prop(props, "particle_sheet_columns")
-            row.prop(props, "particle_sheet_rows")
-            column.prop(props, "particle_sheet_frame_count")
-            column.prop(props, "particle_sheet_fps")
-
-
-class PARADISE_PT_entity_audio(_ParadisePanel, Panel):
-    bl_label = "Audio"
-    bl_parent_id = "PARADISE_PT_entity"
-    bl_options = {"DEFAULT_CLOSED"}
-
-    @classmethod
-    def poll(cls, context) -> bool:
-        return context.active_object is not None and is_entity(context.active_object)
-
-    def draw(self, context) -> None:
-        layout = self.layout
-        props = context.active_object.paradise
-
-        layout.prop(props, "audio_enabled")
-        column = layout.column(align=True)
-        column.enabled = props.audio_enabled
-        column.prop(props, "audio_start_event")
-        column.prop(props, "audio_stop_event")
-        column.prop(props, "audio_play_on_start")
-        column.prop(props, "audio_is_3d")
-
-        # Attenuation is meaningless on a 2D emitter, which by definition ignores distance.
-        # Greying it out says so without hiding the field and making it look unsupported.
-        scale_row = column.row()
-        scale_row.enabled = props.audio_enabled and props.audio_is_3d
-        scale_row.prop(props, "audio_attenuation_scale")
-
-        if props.audio_enabled and not props.audio_start_event.strip():
-            column.label(text="No event: emitter is positioned but plays nothing.", icon="INFO")
 
 
 class PARADISE_PT_entity_components(_ParadisePanel, Panel):
@@ -593,11 +473,8 @@ classes = (
     PARADISE_PT_scene_navmesh,
     PARADISE_PT_play,
     PARADISE_PT_entity,
-    PARADISE_PT_entity_physics,
-    PARADISE_PT_entity_agent,
-    PARADISE_PT_entity_sprite,
-    PARADISE_PT_entity_audio,
     PARADISE_PT_entity_components,
+    PARADISE_PT_entity_colliders,
     PARADISE_PT_collider,
     PARADISE_PT_world,
     PARADISE_PT_material,

@@ -50,6 +50,19 @@ def approx(actual, expected, tolerance=1e-4) -> bool:
     return abs(actual - expected) <= tolerance
 
 
+def _attach(obj, component_id: str, **fields) -> None:
+    """Attach one authored engine component, as the Components panel would."""
+    from paradise_blender.authoring import authored_components
+    from paradise_blender.contract import authoring as contract_authoring
+
+    for component in contract_authoring.read_engine_schema().components:
+        if component.id == component_id:
+            authored_components.enable_component(obj, component)
+            break
+    for field, value in fields.items():
+        obj[authored_components.value_key(component_id, field)] = value
+
+
 def build_scene() -> None:
     bpy.ops.wm.read_factory_settings(use_empty=True)
     scene = bpy.context.scene
@@ -86,8 +99,7 @@ def build_scene() -> None:
     ball = bpy.context.active_object
     ball.name = "Ball"
     ball.paradise.is_entity = True
-    ball.paradise.is_dynamic_body = True
-    ball.paradise.body_mass = 2.5
+    _attach(ball, "paradise.rigidbody", BodyType="Dynamic", Mass=2.5)
 
     bpy.ops.object.empty_add(type="SPHERE", location=(1.0, 2.0, 3.0))
     ball_collider = bpy.context.active_object
@@ -102,8 +114,7 @@ def build_scene() -> None:
     agent = bpy.context.active_object
     agent.name = "Hero"
     agent.paradise.is_entity = True
-    agent.paradise.is_agent = True
-    agent.paradise.move_speed = 3.0
+    _attach(agent, "paradise.agent", MoveSpeed=3.0)
 
     # Camera at the engine's documented validation pose.
     bpy.ops.object.camera_add(location=(0, -10, 1), rotation=(math.radians(90), 0, 0))

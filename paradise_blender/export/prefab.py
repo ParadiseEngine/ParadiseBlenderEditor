@@ -126,7 +126,9 @@ def _shallow_entities(collection: bpy.types.Collection) -> list[LevelEntityData]
                 # placement by the scene exporter, and emitting one here would duplicate it.
                 id=obj.name,
                 stable_id=obj.name,
-                kind=authoring.resolved_kind(props),
+                # Identity is authored per PLACEMENT (a paradise.identity component on the
+                # scene entity); a template carries only the label every entity defaults to.
+                kind="Prop",
                 spawn_phase="LevelStart",
                 prefab=props.model_path.strip() or None,
                 local_position=position,

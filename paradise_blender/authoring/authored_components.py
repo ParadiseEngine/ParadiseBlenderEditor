@@ -34,9 +34,10 @@ from ..contract import authoring
 from ..prefs import resolve_blender_data_dir
 
 __all__ = [
-    "build_custom_components",
+    "build_component_payloads",
     "classes",
     "enabled_component_ids",
+    "has_component",
     "schema_for_data_dir",
     "schema_load_error",
     "value_key",
@@ -63,7 +64,7 @@ def schema_for_data_dir(data_dir: str) -> authoring.AuthoringSchemaDocument:
     if cached is not None and cached[0] == stamp:
         return cached[1]
 
-    document = authoring.AuthoringSchemaDocument(components=[])
+    documents = [authoring.read_engine_schema()]
     error: str | None = None
     if stamp == (0, 0):
         error = (
@@ -73,13 +74,16 @@ def schema_for_data_dir(data_dir: str) -> authoring.AuthoringSchemaDocument:
     else:
         try:
             with open(path, encoding="utf-8") as file:
-                document = authoring.merge([authoring.read(file.read())])
+                documents.append(authoring.read(file.read()))
         except (OSError, authoring.SchemaError) as failure:
             # Named loudly: the symptom of a silently skipped schema is "my component is
             # missing", which gives an author nothing to go on.
             error = f"'{path}' is not a readable authoring schema: {failure}"
             log.warn(error)
 
+    # Engine first, so a game cannot redefine an engine id — the same merge order as the
+    # Godot host's LoadSchema.
+    document = authoring.merge(documents)
     _cache[data_dir] = (stamp, document, error)
     return document
 
@@ -120,16 +124,36 @@ def value_key(component_id: str, path: str) -> str:
     return f"{VALUE_PREFIX}{component_id}/{path}"
 
 
+def has_component(obj: bpy.types.Object, component_id: str) -> bool:
+    return component_id in enabled_component_ids(obj)
+
+
+def stored_value(obj: bpy.types.Object, component_id: str, path: str, default=None):
+    """One authored value as stored, or ``default`` -- for callers that need a single field
+    (the navmesh bake asks one question of the rigidbody) without building a payload."""
+    return obj.get(value_key(component_id, path), default)
+
+
+#: Engine components this host derives from real Blender data rather than a form: the mesh
+#: pipeline owns renderable, the collider empties own collider/interactable, and the lamp
+#: datablock owns light. Authoring one of these in the panel would fight the pipeline that
+#: already writes it.
+HOST_OWNED_IDS = frozenset({
+    "paradise.renderable",
+    "paradise.collider",
+    "paradise.interactable",
+    "paradise.light",
+})
+
+
 def is_authorable(component: authoring.AuthoredComponentSchema) -> bool:
     """A component authored entirely by pointing at a host object (``authoredBy`` on the
-    component itself) has nothing this host can fill in yet -- offering it would export an
-    empty payload that reads back as all defaults, which looks authored but is not.
-
-    ``paradise.*`` ids are excluded too: they are the engine's own components, which this host
-    authors through its typed panels and which the engine's ``AuthoredComponentRouter`` would
-    route OUT of ``Custom`` on the Godot side -- a game schema declaring one is a game bug,
-    and exporting it here would author the same component twice."""
-    return component.authored_by is None and not component.id.startswith("paradise.")
+    component itself — light, sprite-animation) has nothing this host can fill in as a form,
+    and the HOST-OWNED ids are derived from real Blender data (see ``HOST_OWNED_IDS``).
+    Everything else — the game's components AND the engine's plain-field ones (identity,
+    agent, rigidbody, audio, particles) — is authored in the Components panel and routed by
+    ``contract.authoring_router`` at export."""
+    return component.authored_by is None and component.id not in HOST_OWNED_IDS
 
 
 def enable_component(obj: bpy.types.Object, component: authoring.AuthoredComponentSchema) -> None:
@@ -254,9 +278,10 @@ def is_field_visible(obj: bpy.types.Object, component_id: str, field: authoring.
 # --------------------------------------------------------------------------------------
 
 
-def build_custom_components(obj: bpy.types.Object, data_dir: str) -> list:
-    """Every enabled component as ``(id, payload)`` pairs for ``Components.Custom``, in
-    schema (id) order so two exports of an unchanged scene are identical.
+def build_component_payloads(obj: bpy.types.Object, data_dir: str) -> list:
+    """Every enabled component as ``(id, payload)`` pairs, in schema (id) order so two exports
+    of an unchanged scene are identical. The exporter routes each pair: engine ids into their
+    typed slots (``contract.authoring_router``), game ids into ``Components.Custom``.
 
     A component enabled on the object but missing from the current schema is skipped WITH a
     warning -- it means the game removed or renamed the type, and silently dropping the

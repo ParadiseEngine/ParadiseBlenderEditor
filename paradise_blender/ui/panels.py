@@ -58,6 +58,12 @@ class PARADISE_PT_scene(_ParadisePanel, Panel):
         layout.prop(settings, "prune_data")
 
         column = layout.column(align=True)
+        column.prop(settings, "game_project")
+        row = column.row()
+        row.enabled = bool(settings.game_project.strip())
+        row.prop(settings, "watch_game_project")
+
+        column = layout.column(align=True)
         column.label(text="Lighting")
         column.prop(settings, "shadow_map_size")
         column.prop(settings, "shadow_blur")
@@ -247,9 +253,11 @@ class PARADISE_PT_entity_components(_ParadisePanel, Panel):
 
         if authored.schema_load_error(data_dir) is not None:
             box = layout.box()
-            box.label(text="No authoring schema found.", icon="INFO")
+            box.label(text="No game authoring schema found.", icon="INFO")
             box.label(text="Build the game project to dump it (see console).")
-            return
+            box.operator("paradise.build_game_schema", icon="FILE_REFRESH")
+            # The engine's own components are still available below: the vendored engine
+            # schema needs no game build.
 
         stale: list[str] = []
         for component_id in authored.enabled_component_ids(obj):

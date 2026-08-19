@@ -55,6 +55,34 @@ class ParadiseScenePreferences(PropertyGroup):
         default="//data",
     )
 
+    game_project: StringProperty(  # type: ignore[valid-type]
+        # The blend-relative option only exists from Blender 4.4; without the guard the class
+        # fails to register on the manifest's 4.2 floor. Older Blenders still RESOLVE a stored
+        # "//" path fine (bpy.path.abspath is plain string handling) — they just warn when a
+        # script assigns one.
+        **({"options": {"PATH_SUPPORTS_BLEND_RELATIVE"}}
+           if bpy.app.version >= (4, 4, 0) else {}),
+        name="Game Project",
+        description=(
+            "The game's .csproj whose build dumps the authoring schema (its "
+            "ParadiseAuthoringSchemaPath). Set it and the addon can rebuild the game when its "
+            "C# changes, so new [Authored] components appear in the Components panel without "
+            "leaving Blender"
+        ),
+        subtype="FILE_PATH",
+        default="",
+    )
+
+    watch_game_project: BoolProperty(  # type: ignore[valid-type]
+        name="Rebuild On Code Change",
+        description=(
+            "Watch the game project's C# sources and run `dotnet build` in the background when "
+            "they change (and once on open, if the dumped schema is older than the sources). "
+            "The Components panel hot-reloads the schema when the build lands"
+        ),
+        default=True,
+    )
+
     export_on_save: BoolProperty(  # type: ignore[valid-type]
         name="Export On Save",
         description=(

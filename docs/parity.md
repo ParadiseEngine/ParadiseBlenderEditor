@@ -42,6 +42,7 @@ Legend: **✔** full parity · **≈** parity with a documented difference · **
 | | Godot host | Blender host |
 |---|---|---|
 | Export on save | ✔ | ✔ |
+| Game rebuild on code change | ✔ editor Build button | ✔ background watcher (`pipeline/schema_build.py`), when the scene names its Game Project |
 | Manual export | ✔ | ✔ |
 | Play in the .NET runtime | ✔ | ✔ |
 | **Live preview** | ✖ | ✔ *(Blender side; needs the engine listener — see `live-preview.md`)* |

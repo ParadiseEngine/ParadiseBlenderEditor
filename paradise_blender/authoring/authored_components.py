@@ -396,6 +396,32 @@ def _enum_value_items(self, context):
     return _enum_items_cache
 
 
+class PARADISE_OT_build_game_schema(Operator):
+    """Build the game project now, so its [Authored] components reach the schema"""
+
+    bl_idname = "paradise.build_game_schema"
+    bl_label = "Build Game Project"
+
+    @classmethod
+    def poll(cls, context) -> bool:
+        from ..pipeline import schema_build
+
+        return schema_build.resolved_project(context.scene) is not None
+
+    def execute(self, context):
+        from ..pipeline import schema_build
+
+        project = schema_build.resolved_project(context.scene)
+        if project is None:
+            self.report({"WARNING"}, "Set the scene's Game Project first (Scene panel).")
+            return {"CANCELLED"}
+        if not schema_build.start_build(project, "requested from the panel"):
+            self.report({"WARNING"}, "A build is already running, or no dotnet CLI was found.")
+            return {"CANCELLED"}
+        self.report({"INFO"}, "Building in the background; the schema hot-reloads when it lands.")
+        return {"FINISHED"}
+
+
 class PARADISE_OT_sync_authored_component(Operator):
     """Create the ID properties for schema fields this component gained since it was enabled"""
 
@@ -440,6 +466,7 @@ class PARADISE_OT_set_authored_enum(Operator):
 
 classes = [
     PARADISE_OT_add_authored_component,
+    PARADISE_OT_build_game_schema,
     PARADISE_OT_remove_authored_component,
     PARADISE_OT_sync_authored_component,
     PARADISE_OT_set_authored_enum,

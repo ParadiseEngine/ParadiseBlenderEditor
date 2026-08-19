@@ -52,6 +52,7 @@ def _collect():
     from .authoring import ops as authoring_ops
     from .export import ops as export_ops
     from .live import ops as live_ops
+    from .pipeline import schema_build
     from .play import ops as play_ops
     from .ui import panels
 
@@ -79,7 +80,7 @@ def _collect():
         prefs,
     ]
 
-    handler_modules = [authoring_guid, export_ops]
+    handler_modules = [authoring_guid, export_ops, schema_build]
 
     return classes, pointer_modules, handler_modules
 

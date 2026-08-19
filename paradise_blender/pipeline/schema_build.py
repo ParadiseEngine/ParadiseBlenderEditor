@@ -33,6 +33,7 @@ __all__ = [
     "is_schema_stale",
     "register",
     "source_stamp",
+    "status_line",
     "unregister",
 ]
 
@@ -98,6 +99,7 @@ def dotnet_executable() -> str | None:
 # --------------------------------------------------------------------------------------
 
 _timer_registered = False
+_status = "off"
 _last_stamp: tuple[int, int] | None = None
 _pending_stamp: tuple[int, int] | None = None
 _pending_since = 0.0
@@ -125,6 +127,27 @@ def unregister() -> None:
     _timer_registered = False
     # A build in flight is left to finish: it is a detached OS process writing to the game's
     # own build output, and killing it halfway could leave a torn obj/ for the next build.
+
+
+def status_line() -> str:
+    """One human-readable line for the UI — a GUI-launched Blender never shows stdout, so the
+    watcher's state has to be visible where the author is looking."""
+    return _status
+
+
+def _active_scene():
+    """The scene to watch. Timer callbacks run with a RESTRICTED context — ``bpy.context.scene``
+    is not guaranteed there — so fall back to the first open window's scene, which is where the
+    author is working."""
+    import bpy
+
+    scene = getattr(bpy.context, "scene", None)
+    if scene is not None:
+        return scene
+    for manager in bpy.data.window_managers:
+        for window in manager.windows:
+            return window.scene
+    return next(iter(bpy.data.scenes), None)
 
 
 def resolved_project(scene) -> str | None:
@@ -173,14 +196,17 @@ def _finish_build() -> None:
 
     global _build, _build_log_path
 
+    global _status
     elapsed = time.monotonic() - _build_started
     failed = _build.returncode != 0
     if failed:
         tail = _read_tail(_build_log_path)
+        _status = f"build FAILED ({elapsed:.1f}s) — see console"
         log.warn(
             f"Game build FAILED ({elapsed:.1f}s) — the schema (and the Components dropdown) is "
             f"still the last successful build's. Compiler output:\n{tail}")
     else:
+        _status = f"build ok ({elapsed:.1f}s)"
         log.info(f"Game build finished ({elapsed:.1f}s); the authoring schema is fresh.")
 
     if _build_log_path is not None:
@@ -205,23 +231,42 @@ def _read_tail(path: str | None, lines: int = 12) -> str:
 
 
 def _tick() -> float:
-    import bpy
+    """The registered timer. A timer that raises is silently unregistered by Blender — the
+    watcher would die on its first hiccup and every later save would do nothing, which is the
+    failure the author cannot see. So the real work is guarded, reported, and the timer lives."""
+    global _status
+    try:
+        return _tick_guarded()
+    except Exception as error:
+        _status = f"watcher error: {error} (see console)"
+        import traceback
 
-    global _last_stamp, _pending_stamp, _pending_since, _built_stamp
+        log.warn(f"Schema watcher tick failed; still watching. {traceback.format_exc()}")
+        return 5.0
+
+
+def _tick_guarded() -> float:
+    global _last_stamp, _pending_stamp, _pending_since, _built_stamp, _status
 
     if _build is not None:
         if _build.poll() is None:
+            _status = "building…"
             return 0.5
         _finish_build()
         return POLL_SECONDS
 
-    scene = getattr(bpy.context, "scene", None)
+    scene = _active_scene()
     settings = getattr(scene, "paradise_project", None) if scene else None
     if settings is None or not settings.watch_game_project:
+        _status = "off"
         return 2.0
     project = resolved_project(scene)
     if project is None:
+        _status = (
+            "no project — set Game Project to a .csproj" if not settings.game_project.strip()
+            else f"Game Project not found: {settings.game_project}")
         return 2.0
+    _status = f"watching {os.path.basename(project)}"
 
     project_dir = os.path.dirname(project)
     stamp = source_stamp(project_dir)

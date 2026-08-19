@@ -62,6 +62,12 @@ class PARADISE_PT_scene(_ParadisePanel, Panel):
         row = column.row()
         row.enabled = bool(settings.game_project.strip())
         row.prop(settings, "watch_game_project")
+        if settings.watch_game_project and settings.game_project.strip():
+            from ..pipeline import schema_build
+
+            status = column.row()
+            status.enabled = False
+            status.label(text=schema_build.status_line(), icon="TIME")
 
         column = layout.column(align=True)
         column.label(text="Lighting")

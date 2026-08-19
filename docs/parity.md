@@ -27,13 +27,14 @@ Legend: **✔** full parity · **≈** parity with a documented difference · **
 | Prefabs | ✔ `PackedScene` | ≈ | Collection instances. `PrefabGuid` for a *local* collection derives from its name — Blender has no persistent datablock id (see below). |
 | Prefab overrides | ✖ (no Godot API) | ✖ (not expressible) | Both emit `PrefabOverrideData` empty. |
 | Camera | ✔ | ≈ | `ortho_scale` is a full span, halved to the contract's half-height. |
-| Lights | ✔ | ≈ | Watts → multiplier is a calibration constant; area lights export as point lights. Spot angle is not doubled. |
+| Lights | ✔ | ≈ | Watts → multiplier is a calibration constant; area lights export as point lights. Spot angle is not doubled. A lamp marked as an entity exports as that entity's `Components.Light` and leaves the scene-level list. |
 | Environment / tone mapping | ✔ Godot `Environment` | ≈ | Tone mapping and background read from Blender; sky gradient, SSAO, glow, fog authored explicitly (§"What Blender cannot express"). |
 | Ambient SH | ✔ | ✔ | Same integration and L2 projection code, ported. |
 | Navmesh | ✔ `NavigationServer3D` | ✔ | Baked by `tools/ParadiseBlenderBridge` with DotRecast — the same library, same parameters, same binary. |
 | `ProjectSettings.json` | ✔ | ✔ | Contract defaults; no Blender counterpart for any field. |
 | KTX2 texture pipeline | ✔ | ✔ | Same `toktx` invocation. |
 | UI asset staging | ✔ | ✖ | The Godot host stages `res://ui/**` into `data/ui/`. Noesis XAML is authored in Noesis Studio, not Blender, so there is nothing for this host to stage. |
+| Authored components (`Components.Custom`) | ✔ `AuthoredEntityNode` | ≈ | Same `authoring-schema.json`, same wire format, hot-reloaded on game rebuild. Host-object references (`authoredBy`: shape/node/sprite/asset baking) are not authored in Blender yet — those fields export absent, which the reader treats as unauthored. |
 
 ## Workflow
 

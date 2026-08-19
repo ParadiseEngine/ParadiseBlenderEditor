@@ -75,6 +75,26 @@ An entity is any object with `object.paradise.is_entity` set. Each exports:
 | `SpriteAnimation` | the sprite section |
 | `ParticleEmitter` | the particle section, when its kind is not None |
 | `AudioEmitter` | the audio section, when its enable flag is set |
+| `Custom` | schema-driven authored components (below); **absent** — not `null` — when nothing is authored |
+
+### Authored components (`Components.Custom`)
+
+The game's own components, declared once as C# records marked `[Authored]`. Building the game
+dumps their description to `<data>/authoring-schema.json`; the addon reads it
+(`contract/authoring.py`), draws it in the entity panel's *Components* section
+(`authoring/authored_components.py`), and exports each enabled component as
+`{ "Id": "<schema id>", "Data": { … } }`. The engine never learns the type — the payload rides
+along verbatim and the game deserializes it through its generated readers.
+
+The wire format is pinned by the Godot host (`AuthoredEntityCore.ValueOf`) and by
+`tests/unit/test_authoring.py`: every schema field written at its schema type, defaults filling
+unset ones; enums by member name; vectors as float arrays; colours as `{r,g,b,a}`; an empty
+string with no declared default as `null`. Fields the schema marks `authoredBy` (host-object
+bakes: shapes, node references, assets) are not authored in this host yet and export absent,
+which the reader treats as unauthored.
+
+The schema hot-reloads whenever the file's (mtime, size) stamp moves, so a game rebuild shows
+up in the panel without restarting Blender.
 
 Audio event names are exported **verbatim and unvalidated**. The events exist only inside the
 audio project (a Wwise `.wproj`), which the addon has no visibility into, and the middleware

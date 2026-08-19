@@ -12,8 +12,10 @@ import os
 import bpy
 from bpy.types import Panel
 
+from ..authoring import authored_components as authored
 from ..authoring.collider import is_collider
 from ..authoring.entity import entity_objects, is_entity
+from ..contract import authoring as contract_authoring
 from ..export import navmesh_preview
 from ..export.scene import resolve_scene_name
 from ..live import session as live_session
@@ -341,6 +343,97 @@ class PARADISE_PT_entity_audio(_ParadisePanel, Panel):
             column.label(text="No event: emitter is positioned but plays nothing.", icon="INFO")
 
 
+class PARADISE_PT_entity_components(_ParadisePanel, Panel):
+    """The game's own components, driven by ``<data>/authoring-schema.json``.
+
+    The Blender counterpart of the Godot host's AuthoredEntityNode inspector: the game declares
+    a component once (a C# record marked [Authored]), a build dumps the schema, and this panel
+    draws it -- no addon change per component. See ``authoring/authored_components.py``.
+    """
+
+    bl_label = "Components"
+    bl_parent_id = "PARADISE_PT_entity"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    @classmethod
+    def poll(cls, context) -> bool:
+        return context.active_object is not None and is_entity(context.active_object)
+
+    def draw(self, context) -> None:
+        layout = self.layout
+        obj = context.active_object
+        data_dir = resolve_blender_data_dir(context.scene)
+        document = authored.schema_for_data_dir(data_dir)
+
+        if authored.schema_load_error(data_dir) is not None:
+            box = layout.box()
+            box.label(text="No authoring schema found.", icon="INFO")
+            box.label(text="Build the game project to dump it (see console).")
+            return
+
+        stale: list[str] = []
+        for component_id in authored.enabled_component_ids(obj):
+            component = authored.component_by_id(document, component_id)
+            if component is None:
+                stale.append(component_id)
+                continue
+            self._draw_component(layout, obj, component)
+
+        for component_id in stale:
+            box = layout.box()
+            row = box.row(align=True)
+            row.label(text=f"{component_id} — not in the current schema", icon="ERROR")
+            remove = row.operator("paradise.remove_authored_component", text="", icon="X")
+            remove.component = component_id
+            box.label(text="Not exported. Rebuild the game, or remove it here.")
+
+        layout.operator("paradise.add_authored_component", icon="ADD")
+
+    @staticmethod
+    def _draw_component(layout, obj, component) -> None:
+        box = layout.box()
+        header = box.row(align=True)
+        header.label(text=component.display_name, icon="PROPERTIES")
+        remove = header.operator("paradise.remove_authored_component", text="", icon="X")
+        remove.component = component.id
+
+        fields, hosts = contract_authoring.flatten(component)
+        missing = [f for f in fields if authored.value_key(component.id, f.path) not in obj]
+        if missing:
+            # The schema grew since this component was enabled. Draw() may not write ID data,
+            # so the fields are created by an operator click rather than silently here.
+            sync = box.operator(
+                "paradise.sync_authored_component",
+                text=f"Schema gained {len(missing)} field(s) — click to edit",
+                icon="FILE_REFRESH",
+            )
+            sync.component = component.id
+
+        column = box.column(align=True)
+        for field in fields:
+            if not authored.is_field_visible(obj, component.id, field):
+                continue
+            key = authored.value_key(component.id, field.path)
+            if key not in obj:
+                continue  # pending the sync click above
+            if field.type == contract_authoring.TYPE_ENUM:
+                row = column.row(align=True)
+                row.label(text=field.path)
+                picker = row.operator(
+                    "paradise.set_authored_enum", text=str(obj.get(key, "")), icon="DOWNARROW_HLT"
+                )
+                picker.component = component.id
+                picker.path = field.path
+            else:
+                column.prop(obj, f'["{key}"]', text=field.path)
+
+        for host in hosts:
+            row = box.row()
+            row.enabled = False
+            row.label(text=f"{host.path} — baked from {host.kind}; not authored in Blender yet",
+                      icon="DECORATE_LINKED")
+
+
 class PARADISE_PT_collider(_ParadisePanel, Panel):
     bl_label = "Collider"
     bl_idname = "PARADISE_PT_collider"
@@ -504,6 +597,7 @@ classes = (
     PARADISE_PT_entity_agent,
     PARADISE_PT_entity_sprite,
     PARADISE_PT_entity_audio,
+    PARADISE_PT_entity_components,
     PARADISE_PT_collider,
     PARADISE_PT_world,
     PARADISE_PT_material,

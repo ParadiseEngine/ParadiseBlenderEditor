@@ -88,6 +88,8 @@ def build_level_data(
     for obj in sorted(
         (o for o in scene.objects if o.type == "LIGHT"), key=lambda o: o.name
     ):
+        if authoring.is_entity(obj):
+            continue  # travels as that entity's Components.Light instead (export/entity.py)
         state.lights.append(export_light(obj))
 
     for obj in authoring.entity_objects(scene):

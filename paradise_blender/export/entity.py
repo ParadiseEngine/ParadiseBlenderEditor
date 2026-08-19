@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import bpy
 
+from ..authoring import authored_components
 from ..authoring import entity as authoring
 from ..authoring.guid import ensure_entity_guid
 from ..contract.schema import (
     AgentComponentData,
+    AuthoredComponentData,
     ColliderComponentData,
     EntityComponentsData,
     EntityInteractableComponentData,
@@ -31,6 +33,7 @@ from ..contract.schema import (
 from ..paths import ExportPaths
 from .audio import build_audio_emitter
 from .collider import build_colliders
+from .light import export_light
 from .sprite import build_particle_emitter, build_sprite_animation
 from .transform import decompose_contract
 
@@ -135,6 +138,23 @@ def _build_components(
 
     if props.audio_enabled:
         components.audio_emitter = build_audio_emitter(obj)
+
+    if obj.type == "LIGHT":
+        # A lamp marked as an entity OWNS its light: it travels as Components.Light (the same
+        # entity-owned slot the Godot host authors by pointing at a light) and is left out of
+        # the scene-level Lighting state (see scene.py), or the runtime would light it twice.
+        # Position and direction are world-space, exactly as the scene-level list carries them.
+        components.light = export_light(obj)
+
+    # The game's own components, from the authoring schema. Absent (not an empty list) when
+    # nothing is authored -- the C# contract omits the key, and matching that keeps every
+    # pre-schema export byte-identical.
+    custom = [
+        AuthoredComponentData(id=component_id, data=payload)
+        for component_id, payload in authored_components.build_custom_components(obj, paths.data_dir)
+    ]
+    if custom:
+        components.custom = custom
 
     return components
 

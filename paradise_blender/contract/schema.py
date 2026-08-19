@@ -35,6 +35,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "AgentComponentData",
     "AudioEmitterComponentData",
+    "AuthoredComponentData",
     "CameraData",
     "ColliderComponentData",
     "ColliderShapeData",
@@ -362,6 +363,24 @@ class AudioEmitterComponentData:
 
 
 @dataclass
+class AuthoredComponentData:
+    """One game-defined component riding along with an entity: a stable id and an opaque
+    payload.
+
+    ``data`` is a plain dict on purpose -- the mirror of the C# side carrying it as a raw
+    ``JsonElement``. The engine cannot name the type (that is the entire point of the
+    mechanism), so neither does this mirror: the payload is built by
+    :func:`.authoring.build_payload` from the game's authoring schema and travels untouched.
+    """
+
+    id: str = ""
+    data: dict[str, Any] = field(default_factory=dict)
+
+    def to_json(self) -> dict[str, Any]:
+        return {"Id": self.id, "Data": dict(self.data)}
+
+
+@dataclass
 class EntityComponentsData:
     renderable: RenderableComponentData | None = None
     collider: ColliderComponentData | None = None
@@ -371,9 +390,11 @@ class EntityComponentsData:
     sprite_animation: SpriteAnimationComponentData | None = None
     particle_emitter: ParticleEmitterComponentData | None = None
     audio_emitter: AudioEmitterComponentData | None = None
+    light: SceneLightData | None = None
+    custom: list[AuthoredComponentData] | None = None
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        result: dict[str, Any] = {
             "Renderable": _opt(self.renderable),
             "Collider": _opt(self.collider),
             "Rigidbody": _opt(self.rigidbody),
@@ -383,6 +404,14 @@ class EntityComponentsData:
             "ParticleEmitter": _opt(self.particle_emitter),
             "AudioEmitter": _opt(self.audio_emitter),
         }
+        # Unlike every key above, Light and Custom are ABSENT when unauthored -- the C# side
+        # marks both JsonIgnore(WhenWritingNull), which is what keeps every scene exported
+        # before they existed byte-identical.
+        if self.light is not None:
+            result["Light"] = self.light.to_json()
+        if self.custom:
+            result["Custom"] = [component.to_json() for component in self.custom]
+        return result
 
 
 # --------------------------------------------------------------------------------------

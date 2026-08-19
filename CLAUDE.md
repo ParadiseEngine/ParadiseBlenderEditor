@@ -133,6 +133,11 @@ every game rebuild, and property-group fields are class-level and registered onc
 Two consequences: never write ID data inside a `draw()` (Blender forbids it — that is why new
 schema fields appear behind a sync button), and the wire format is pinned by the Godot host's
 `AuthoredEntityCore.ValueOf`, mirrored in `contract/authoring.py` and its unit tests.
+Colliders are the one component whose body is OBJECT REFERENCES rather than form fields
+(`HOST_LIST_IDS`): the panel draws the entity's pointer collections as the Collider /
+Interactable components, presence is "marker or a non-empty list" (build scripts fill lists
+without markers), and removing the component clears the references — while renderable and
+light stay read-only derived rows.
 
 **Blender rejects empty enum identifiers.** An `EnumProperty` item with `""` as its identifier
 warns "current value '0' matches no enum" and becomes unreadable. Where the contract's value is

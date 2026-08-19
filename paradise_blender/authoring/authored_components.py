@@ -38,6 +38,8 @@ __all__ = [
     "classes",
     "enabled_component_ids",
     "has_component",
+    "host_list_collection",
+    "is_present",
     "schema_for_data_dir",
     "schema_load_error",
     "value_key",
@@ -134,32 +136,67 @@ def stored_value(obj: bpy.types.Object, component_id: str, path: str, default=No
     return obj.get(value_key(component_id, path), default)
 
 
-#: Engine components this host derives from real Blender data rather than a form: the mesh
-#: pipeline owns renderable, the collider empties own collider/interactable, and the lamp
-#: datablock owns light. Authoring one of these in the panel would fight the pipeline that
-#: already writes it.
+#: Engine components this host DERIVES from real Blender data with no authoring at all: the
+#: mesh pipeline owns renderable, the lamp datablock owns light. The Components panel shows
+#: them as read-only rows so the panel lists everything the entity exports, but authoring one
+#: as a form would fight the pipeline that already writes it.
 HOST_OWNED_IDS = frozenset({
     "paradise.renderable",
-    "paradise.collider",
-    "paradise.interactable",
     "paradise.light",
 })
+
+#: Engine components whose body is a HOST-OBJECT LIST rather than form fields: the entity's
+#: collider references — this host's implementation of the schema's ``authoredBy: shape``.
+#: They are added and removed in the Components panel like any component, but their data
+#: lives in the entity property group's pointer collections (ID properties cannot carry a
+#: list of object references), and their export derives from those lists, never from a
+#: payload. Maps each id to the collection's attribute name on ``obj.paradise``.
+HOST_LIST_IDS = {
+    "paradise.collider": "physics_colliders",
+    "paradise.interactable": "interaction_colliders",
+}
 
 
 def is_authorable(component: authoring.AuthoredComponentSchema) -> bool:
     """A component authored entirely by pointing at a host object (``authoredBy`` on the
     component itself — light, sprite-animation) has nothing this host can fill in as a form,
-    and the HOST-OWNED ids are derived from real Blender data (see ``HOST_OWNED_IDS``).
-    Everything else — the game's components AND the engine's plain-field ones (identity,
-    agent, rigidbody, audio, particles) — is authored in the Components panel and routed by
-    ``contract.authoring_router`` at export."""
+    and the HOST-OWNED ids are derived outright (see ``HOST_OWNED_IDS``). Everything else —
+    the game's components, the engine's plain-field ones (identity, agent, rigidbody, audio,
+    particles), and the host-list ones (collider, interactable) — is authored in the
+    Components panel."""
     return component.authored_by is None and component.id not in HOST_OWNED_IDS
+
+
+def host_list_collection(obj: bpy.types.Object, component_id: str):
+    """The pointer collection backing a host-list component, or None for every other id."""
+    attribute = HOST_LIST_IDS.get(component_id)
+    if attribute is None:
+        return None
+    props = getattr(obj, "paradise", None)
+    return getattr(props, attribute, None) if props is not None else None
+
+
+def is_present(obj: bpy.types.Object, component: authoring.AuthoredComponentSchema) -> bool:
+    """Whether the Components panel should show this component on this entity. Form components
+    are present when enabled; a host-list component is ALSO present when its collection has
+    entries, because build scripts (and every pre-unification .blend) fill the lists without
+    ever touching the marker — and the export is driven by the lists either way."""
+    if component.id in enabled_component_ids(obj):
+        return True
+    collection = host_list_collection(obj, component.id)
+    return collection is not None and len(collection) > 0
 
 
 def enable_component(obj: bpy.types.Object, component: authoring.AuthoredComponentSchema) -> None:
     enabled = enabled_component_ids(obj)
     if component.id not in enabled:
         obj[ENABLED_KEY] = [*enabled, component.id]
+
+    if component.id in HOST_LIST_IDS:
+        # The body is the pointer collection, not form fields — creating ID properties here
+        # would grow a second copy of data the collider objects already are. (Interactable's
+        # DisplayName stays derived from the object's name, matching the export.)
+        return
 
     fields, _ = authoring.flatten(component)
     for field in fields:
@@ -183,6 +220,12 @@ def disable_component(obj: bpy.types.Object, component_id: str) -> None:
     # Snapshot the keys first: deleting while iterating an IDProperty group is undefined.
     for key in [key for key in obj.keys() if key.startswith(prefix)]:  # noqa: SIM118 -- IDPropertyGroup supports `in` only via .keys()
         del obj[key]
+
+    # A host-list component's data is its collection; removing the component and leaving the
+    # references would keep exporting it, which makes "remove" a lie.
+    collection = host_list_collection(obj, component_id)
+    if collection is not None:
+        collection.clear()
 
 
 def values_for(obj: bpy.types.Object, component: authoring.AuthoredComponentSchema) -> dict:
@@ -296,6 +339,8 @@ def build_component_payloads(obj: bpy.types.Object, data_dir: str) -> list:
     for component in document.components:  # already id-ordered by merge()
         if component.id not in enabled:
             continue
+        if component.id in HOST_LIST_IDS:
+            continue  # exported from the entity's collider lists, never from a payload
         if not is_authorable(component):
             log.warn(
                 f"'{obj.name}' authors '{component.id}', which is not exportable from this "
@@ -329,11 +374,10 @@ def _addable_items(self, context):
     global _enum_items_cache
     obj = context.active_object
     document = schema_for(context)
-    enabled = set(enabled_component_ids(obj)) if obj is not None else set()
     _enum_items_cache = [
         (component.id, component.display_name, component.id)
         for component in document.components
-        if is_authorable(component) and component.id not in enabled
+        if is_authorable(component) and obj is not None and not is_present(obj, component)
     ] or [("NONE", "(nothing to add)", "")]
     return _enum_items_cache
 

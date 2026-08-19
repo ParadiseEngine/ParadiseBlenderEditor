@@ -68,7 +68,7 @@ An entity is any object with `object.paradise.is_entity` set. Each exports:
 | component | source |
 |---|---|
 | `Renderable` | the object's mesh, exported to a GLB, or an authored model path — derived, never a form |
-| `Collider` | objects marked as colliders and assigned to this entity (the host's `authoredBy: shape` bake) |
+| `Collider` | objects marked as colliders and assigned to this entity (the host's `authoredBy: shape` bake, drawn as a component in the Components panel) |
 | `Rigidbody` | authored `paradise.rigidbody` component; else derived alongside colliders (static, or kinematic when the entity authors an agent) |
 | `Interactable` | presence of interaction colliders |
 | `Agent` | authored `paradise.agent` component |

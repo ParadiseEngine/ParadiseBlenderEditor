@@ -216,30 +216,6 @@ class PARADISE_PT_entity(_ParadisePanel, Panel):
             row.label(text=props.entity_guid, icon="KEYINGSET")
 
 
-class PARADISE_PT_entity_colliders(_ParadisePanel, Panel):
-    """Host-object references the exporter bakes into the collider and interactable
-    components -- this host's half of the schema's ``authoredBy: shape``. Body PROPERTIES
-    (type, mass, friction) are the paradise.rigidbody component in the Components section;
-    a derived static body is emitted automatically whenever physics colliders exist."""
-
-    bl_label = "Colliders"
-    bl_parent_id = "PARADISE_PT_entity"
-    bl_options = {"DEFAULT_CLOSED"}
-
-    @classmethod
-    def poll(cls, context) -> bool:
-        return context.active_object is not None and is_entity(context.active_object)
-
-    def draw(self, context) -> None:
-        layout = self.layout
-        props = context.active_object.paradise
-
-        _draw_collider_list(layout, context, props.physics_colliders, "PHYSICS", "Physics Colliders")
-        _draw_collider_list(
-            layout, context, props.interaction_colliders, "INTERACTION", "Interaction Colliders"
-        )
-
-
 class PARADISE_PT_entity_components(_ParadisePanel, Panel):
     """The game's own components, driven by ``<data>/authoring-schema.json``.
 
@@ -280,14 +256,22 @@ class PARADISE_PT_entity_components(_ParadisePanel, Panel):
             # The engine's own components are still available below: the vendored engine
             # schema needs no game build.
 
-        stale: list[str] = []
-        for component_id in authored.enabled_component_ids(obj):
-            component = authored.component_by_id(document, component_id)
-            if component is None:
-                stale.append(component_id)
-                continue
-            self._draw_component(layout, obj, component)
+        # One list, everything the entity exports: derived components as read-only rows,
+        # host-list components (colliders) with their reference lists, form components with
+        # their schema fields — in the schema's stable id order.
+        for component in document.components:
+            if component.id in authored.HOST_OWNED_IDS:
+                _draw_derived_components(layout, obj, component)
+            elif component.id in authored.HOST_LIST_IDS:
+                if authored.is_present(obj, component):
+                    _draw_host_list_component(layout, context, obj, component)
+            elif component.id in authored.enabled_component_ids(obj):
+                self._draw_component(layout, obj, component)
 
+        stale = [
+            component_id for component_id in authored.enabled_component_ids(obj)
+            if authored.component_by_id(document, component_id) is None
+        ]
         for component_id in stale:
             box = layout.box()
             row = box.row(align=True)
@@ -344,7 +328,10 @@ class PARADISE_PT_entity_components(_ParadisePanel, Panel):
 
 
 class PARADISE_PT_collider(_ParadisePanel, Panel):
-    bl_label = "Collider"
+    """The selected collider OBJECT's own shape — not to be confused with an entity's Collider
+    component, which is the list of these objects and lives in the Components section."""
+
+    bl_label = "Collider Shape"
     bl_idname = "PARADISE_PT_collider"
     bl_options = {"DEFAULT_CLOSED"}
 
@@ -478,23 +465,62 @@ class PARADISE_PT_material(Panel):
             column.prop(props, "color_b")
 
 
-def _draw_collider_list(layout, context, collection, slot: str, label: str) -> None:
-    box = layout.box()
-    row = box.row()
-    row.label(text=label)
-    operator = row.operator("paradise.assign_colliders", text="", icon="ADD")
-    operator.slot = slot
+#: Which assign/remove slot each host-list component's operators use.
+_HOST_LIST_SLOTS = {"paradise.collider": "PHYSICS", "paradise.interactable": "INTERACTION"}
 
-    if not len(collection):
-        box.label(text="None", icon="BLANK1")
+
+def _draw_derived_components(layout, obj, component) -> None:
+    """A read-only row for a component this host derives outright, so the panel is a complete
+    inventory of what the entity exports even for the parts nobody authors."""
+    if component.id == "paradise.renderable":
+        props = obj.paradise
+        if props.model_path.strip():
+            source = f"from model '{props.model_path.strip()}'"
+        elif obj.type == "MESH" and obj.data is not None:
+            source = f"from mesh '{obj.data.name}'"
+        else:
+            return  # nothing renderable; a row saying so on every marker empty is noise
+    elif component.id == "paradise.light":
+        if obj.type != "LIGHT":
+            return
+        source = f"baked from this {obj.data.type.lower()} lamp"
+    else:
         return
 
+    row = layout.row()
+    row.enabled = False
+    row.label(text=f"{component.display_name} — {source}", icon="DECORATE_LINKED")
+
+
+def _draw_host_list_component(layout, context, obj, component) -> None:
+    """A component whose body is object references: the entity's collider lists — this host's
+    half of the schema's ``authoredBy: shape``. Same box, header and remove button as every
+    other component; the fields are just pointers you assign instead of values you type."""
+    slot = _HOST_LIST_SLOTS[component.id]
+    collection = authored.host_list_collection(obj, component.id)
+
+    box = layout.box()
+    header = box.row(align=True)
+    header.label(text=component.display_name, icon="PROPERTIES")
+    assign = header.operator("paradise.assign_colliders", text="", icon="ADD")
+    assign.slot = slot
+    remove = header.operator("paradise.remove_authored_component", text="", icon="X")
+    remove.component = component.id
+
+    if component.id == "paradise.interactable":
+        note = box.row()
+        note.enabled = False
+        note.label(text="DisplayName — the object's name", icon="DECORATE_LINKED")
+
+    if collection is None or not len(collection):
+        box.label(text="Select collider objects and press +", icon="BLANK1")
+        return
     for index, item in enumerate(collection):
         row = box.row(align=True)
         row.label(text=item.target.name if item.target else "<missing>", icon="MESH_CUBE")
-        remove = row.operator("paradise.remove_collider", text="", icon="X")
-        remove.slot = slot
-        remove.index = index
+        drop = row.operator("paradise.remove_collider", text="", icon="X")
+        drop.slot = slot
+        drop.index = index
 
 
 classes = (
@@ -503,7 +529,6 @@ classes = (
     PARADISE_PT_play,
     PARADISE_PT_entity,
     PARADISE_PT_entity_components,
-    PARADISE_PT_entity_colliders,
     PARADISE_PT_collider,
     PARADISE_PT_world,
     PARADISE_PT_material,

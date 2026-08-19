@@ -220,6 +220,59 @@ def main() -> int:
     )
     bpy.data.objects.remove(duplicate, do_unlink=True)
 
+    # -- host-list components: colliders live in the same panel now ----------------------
+    merged = authored.schema_for_data_dir(DATA_DIR)
+    collider_component = authored.component_by_id(merged, "paradise.collider")
+    check(authored.is_authorable(collider_component), "the collider component is offered")
+    check(
+        not authored.is_present(creature_obj, collider_component),
+        "absent with no marker and an empty list",
+    )
+
+    authored.enable_component(creature_obj, collider_component)
+    check(
+        authored.is_present(creature_obj, collider_component)
+        and not [k for k in creature_obj.keys() if "paradise.collider/" in k],  # noqa: SIM118
+        "adding it sets the marker and creates NO form fields",
+    )
+    export_scene(bpy.context.scene)
+    check(
+        exported_entities()["Creature"]["Components"]["Collider"] is None,
+        "the marker alone exports nothing — the references are the data",
+    )
+
+    bpy.ops.object.empty_add(type="CUBE", location=(0, 0, 1))
+    shape = bpy.context.active_object
+    shape.name = "CreatureCollider"
+    shape.paradise_collider.is_collider = True
+    shape.paradise_collider.shape = "Box"
+    shape.paradise_collider.size_source = "EXPLICIT"
+    shape.paradise_collider.size = (1.0, 1.0, 1.0)
+    shape.parent = creature_obj
+    creature_obj.paradise.physics_colliders.add().target = shape
+    export_scene(bpy.context.scene)
+    components = exported_entities()["Creature"]["Components"]
+    check(
+        components["Collider"] is not None and len(components["Collider"]["Colliders"]) == 1,
+        "an assigned reference exports the collider",
+    )
+    check(
+        components["Rigidbody"] is not None and components["Rigidbody"]["BodyType"] == "Static",
+        "the derived static body still rides along",
+    )
+
+    authored.disable_component(creature_obj, "paradise.collider")
+    check(
+        len(creature_obj.paradise.physics_colliders) == 0,
+        "removing the component clears the references too",
+    )
+    bpy.data.objects.remove(shape, do_unlink=True)
+
+    check(
+        not authored.is_authorable(authored.component_by_id(merged, "paradise.renderable")),
+        "derived components stay read-only rows, never addable",
+    )
+
     # -- hot reload ---------------------------------------------------------------------
     grown = json.loads(json.dumps(SCHEMA))
     grown["components"][0]["fields"].append({"name": "Grumpy", "type": "bool", "default": False})

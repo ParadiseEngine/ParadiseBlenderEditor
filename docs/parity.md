@@ -17,7 +17,7 @@ Legend: **✔** full parity · **≈** parity with a documented difference · **
 | Materials | ✔ `BaseMaterial3D` | ≈ | Principled BSDF. Colour space is inverted (§2) — Blender is already linear. |
 | Material slot order | ✔ | ✔ | Slot order, matching the GLB's primitive order. |
 | Procedural recipes, transmission | ✔ resource metadata | ✔ | Property group on the material. |
-| Colliders (box/sphere/capsule) | ✔ typed shapes | ≈ | Blender has no collision primitives; shape is marked and dimensions come from bounds or explicit values. |
+| Colliders (box/sphere/capsule) | ✔ typed shapes | ≈ | Blender has no collision primitives; shape is marked and dimensions come from bounds or explicit values. The entity's reference lists are drawn as the Collider / Interactable components in the Components panel. |
 | Collider scale folding | ✔ | ✔ | Same `ColliderScaleFold` rules, ported. |
 | Collision layers | ✔ mask → index | ≈ | Authored as an index directly, making the lossy multi-layer case unrepresentable rather than merely warned about. |
 | Rigidbody | ✔ | ✔ | Authored `paradise.rigidbody` wins; a derived body (static, or kinematic with an agent) is emitted alongside colliders. |

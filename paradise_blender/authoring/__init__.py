@@ -9,11 +9,10 @@ see :mod:`.entity` for why, and what that costs.
 * :mod:`.material_props` -- contract-only material parameters (recipes, transmission)
 * :mod:`.guid`           -- stable per-placement identity, minted and de-duplicated on save
 * :mod:`.ops`            -- operators for marking and finding entities
-* :mod:`.defaults`       -- values shared with the Unity and Godot authoring layers
 """
 
 from __future__ import annotations
 
-from . import collider, defaults, entity, guid, material_props, ops
+from . import authored_components, collider, entity, guid, material_props, ops
 
-__all__ = ["collider", "defaults", "entity", "guid", "material_props", "ops"]
+__all__ = ["authored_components", "collider", "entity", "guid", "material_props", "ops"]

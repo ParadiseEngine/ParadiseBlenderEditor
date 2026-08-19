@@ -115,6 +115,30 @@ save/restore leaves the object microns from where it started — 25 of ShiningPi
 moved on every export, which churned the exported transforms and defeated any content-keyed
 reuse. `export/mesh.py:_capture_transform` saves the channels instead.
 
+**The entity property group holds HOST data only.** `ParadiseEntityProperties` is
+deliberately five members (`is_entity`, `entity_guid`, `model_path`, the two collider lists);
+every component — the engine's identity/agent/rigidbody/audio/particles included — is authored
+through the schema in the Components panel and routed to its typed slot by
+`contract/authoring_router.py`. Do not add fixed fields back: the ~40-field mirror this
+replaced is exactly the thing a schema change silently drifts away from. The engine's schema
+is a vendored JSON (`contract/engine_authoring_schema.json`) because Python cannot read the C#
+constant — the conformance suite compares it against the bridge's `engine-schema` verb, and a
+drift there means "regenerate the file", not "patch it by hand".
+
+**Authored components live in ID properties, not a PropertyGroup.** The game's own components
+(`<data>/authoring-schema.json` → `Components.Custom`) are schema-driven data that changes on
+every game rebuild, and property-group fields are class-level and registered once. So
+`authoring/authored_components.py` stores them as per-object ID properties
+(`obj["paradise:<id>/<Field/Path>"]`) and the panel draws them from the schema at draw time.
+Two consequences: never write ID data inside a `draw()` (Blender forbids it — that is why new
+schema fields appear behind a sync button), and the wire format is pinned by the Godot host's
+`AuthoredEntityCore.ValueOf`, mirrored in `contract/authoring.py` and its unit tests.
+Colliders are the one component whose body is OBJECT REFERENCES rather than form fields
+(`HOST_LIST_IDS`): the panel draws the entity's pointer collections as the Collider /
+Interactable components, presence is "marker or a non-empty list" (build scripts fill lists
+without markers), and removing the component clears the references — while renderable and
+light stay read-only derived rows.
+
 **Blender rejects empty enum identifiers.** An `EnumProperty` item with `""` as its identifier
 warns "current value '0' matches no enum" and becomes unreadable. Where the contract's value is
 `""` (e.g. `MaterialKind`), use a `NONE` sentinel and map it back at export — see

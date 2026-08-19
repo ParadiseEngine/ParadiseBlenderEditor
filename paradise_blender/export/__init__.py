@@ -10,7 +10,6 @@ everything else is a piece it dispatches to.
 * :mod:`.material`         -- Principled BSDF -> ``LevelMaterialData``
 * :mod:`.mesh`             -- entity geometry -> GLB under ``data/Models/``
 * :mod:`.camera` :mod:`.light` :mod:`.world` -- scene-level data
-* :mod:`.sprite`           -- sprite-animation and particle components
 * :mod:`.prefab`           -- collection instances -> prefab identity and templates
 * :mod:`.navmesh`          -- walkable geometry -> the .NET bridge -> DotRecast binary
 * :mod:`.project_settings` -- ``data/ProjectSettings.json``
@@ -31,7 +30,6 @@ from . import (
     prefab,
     project_settings,
     scene,
-    sprite,
     transform,
     world,
 )
@@ -48,7 +46,6 @@ __all__ = [
     "prefab",
     "project_settings",
     "scene",
-    "sprite",
     "transform",
     "world",
 ]

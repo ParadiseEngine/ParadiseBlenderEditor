@@ -12,8 +12,10 @@ import os
 import bpy
 from bpy.types import Panel
 
+from ..authoring import authored_components as authored
 from ..authoring.collider import is_collider
 from ..authoring.entity import entity_objects, is_entity
+from ..contract import authoring as contract_authoring
 from ..export import navmesh_preview
 from ..export.scene import resolve_scene_name
 from ..live import session as live_session
@@ -54,6 +56,23 @@ class PARADISE_PT_scene(_ParadisePanel, Panel):
 
         layout.prop(settings, "export_on_save")
         layout.prop(settings, "prune_data")
+
+        column = layout.column(align=True)
+        column.prop(settings, "game_project")
+        row = column.row()
+        row.enabled = bool(settings.game_project.strip())
+        row.prop(settings, "watch_game_project")
+        if settings.watch_game_project and settings.game_project.strip():
+            from ..pipeline import schema_build
+
+            status = column.row()
+            status.enabled = False
+            status.label(text=schema_build.status_line(), icon="TIME")
+            if schema_build.last_failure():
+                alert = column.row(align=True)
+                alert.alert = True
+                alert.operator("paradise.show_build_errors",
+                               text="Game build failed — show errors", icon="ERROR")
 
         column = layout.column(align=True)
         column.label(text="Lighting")
@@ -186,13 +205,10 @@ class PARADISE_PT_entity(_ParadisePanel, Panel):
         header.label(text=obj.name, icon="OBJECT_DATA")
         header.operator("paradise.clear_entity", text="", icon="X")
 
-        column = layout.column(align=True)
-        column.prop(props, "kind")
-        if props.kind == "CUSTOM":
-            column.prop(props, "custom_kind", text="")
-        column.prop(props, "active_on_load")
-        column.prop(props, "model_path")
-        column.prop(props, "initial_animation")
+        # Only the HOST data lives here (see authoring/entity.py); everything that used to be
+        # a fixed field -- kind, agent, sprite, particles, audio, body -- is a schema-driven
+        # component in the Components section below.
+        layout.prop(props, "model_path")
 
         if props.entity_guid:
             row = layout.row()
@@ -200,8 +216,15 @@ class PARADISE_PT_entity(_ParadisePanel, Panel):
             row.label(text=props.entity_guid, icon="KEYINGSET")
 
 
-class PARADISE_PT_entity_physics(_ParadisePanel, Panel):
-    bl_label = "Physics"
+class PARADISE_PT_entity_components(_ParadisePanel, Panel):
+    """The game's own components, driven by ``<data>/authoring-schema.json``.
+
+    The Blender counterpart of the Godot host's AuthoredEntityNode inspector: the game declares
+    a component once (a C# record marked [Authored]), a build dumps the schema, and this panel
+    draws it -- no addon change per component. See ``authoring/authored_components.py``.
+    """
+
+    bl_label = "Components"
     bl_parent_id = "PARADISE_PT_entity"
     bl_options = {"DEFAULT_CLOSED"}
 
@@ -211,138 +234,104 @@ class PARADISE_PT_entity_physics(_ParadisePanel, Panel):
 
     def draw(self, context) -> None:
         layout = self.layout
-        props = context.active_object.paradise
+        obj = context.active_object
+        data_dir = resolve_blender_data_dir(context.scene)
+        document = authored.schema_for_data_dir(data_dir)
 
-        layout.prop(props, "is_dynamic_body")
-        column = layout.column(align=True)
-        column.enabled = props.is_dynamic_body
-        column.prop(props, "body_mass")
-        column.prop(props, "body_linear_damping")
+        from ..pipeline import schema_build
 
-        column = layout.column(align=True)
-        # Restitution and friction matter on static bodies too: they define the bounce and grip
-        # dynamic bodies get off this surface. So they stay enabled regardless.
-        column.prop(props, "body_restitution")
-        column.prop(props, "body_friction")
+        if schema_build.last_failure():
+            # This panel is where a stale dropdown is NOTICED — the author is looking for a
+            # component that is not here — so the failure that explains it belongs here too.
+            alert = layout.row(align=True)
+            alert.alert = True
+            alert.operator("paradise.show_build_errors",
+                           text="Game build failed — components may be stale", icon="ERROR")
 
-        _draw_collider_list(layout, context, props.physics_colliders, "PHYSICS", "Physics Colliders")
-        _draw_collider_list(
-            layout, context, props.interaction_colliders, "INTERACTION", "Interaction Colliders"
-        )
+        if authored.schema_load_error(data_dir) is not None:
+            box = layout.box()
+            box.label(text="No game authoring schema found.", icon="INFO")
+            box.label(text="Build the game project to dump it (see console).")
+            box.operator("paradise.build_game_schema", icon="FILE_REFRESH")
+            # The engine's own components are still available below: the vendored engine
+            # schema needs no game build.
 
+        # One list, everything the entity exports: derived components as read-only rows,
+        # host-list components (colliders) with their reference lists, form components with
+        # their schema fields — in the schema's stable id order.
+        for component in document.components:
+            if component.id in authored.HOST_OWNED_IDS:
+                _draw_derived_components(layout, obj, component)
+            elif component.id in authored.HOST_LIST_IDS:
+                if authored.is_present(obj, component):
+                    _draw_host_list_component(layout, context, obj, component)
+            elif component.id in authored.enabled_component_ids(obj):
+                self._draw_component(layout, obj, component)
 
-class PARADISE_PT_entity_agent(_ParadisePanel, Panel):
-    bl_label = "Agent"
-    bl_parent_id = "PARADISE_PT_entity"
-    bl_options = {"DEFAULT_CLOSED"}
+        stale = [
+            component_id for component_id in authored.enabled_component_ids(obj)
+            if authored.component_by_id(document, component_id) is None
+        ]
+        for component_id in stale:
+            box = layout.box()
+            row = box.row(align=True)
+            row.label(text=f"{component_id} — not in the current schema", icon="ERROR")
+            remove = row.operator("paradise.remove_authored_component", text="", icon="X")
+            remove.component = component_id
+            box.label(text="Not exported. Rebuild the game, or remove it here.")
 
-    @classmethod
-    def poll(cls, context) -> bool:
-        return context.active_object is not None and is_entity(context.active_object)
+        layout.operator("paradise.add_authored_component", icon="ADD")
 
-    def draw(self, context) -> None:
-        layout = self.layout
-        props = context.active_object.paradise
-
-        layout.prop(props, "is_agent")
-        column = layout.column(align=True)
-        column.enabled = props.is_agent
-        column.prop(props, "move_speed")
-        column.prop(props, "acceleration")
-        column.prop(props, "idle_animation")
-        column.prop(props, "walk_animation")
-        if props.is_agent:
-            column.label(text="Agents are excluded from the navmesh bake.", icon="INFO")
-
-
-class PARADISE_PT_entity_sprite(_ParadisePanel, Panel):
-    bl_label = "Sprite & Particles"
-    bl_parent_id = "PARADISE_PT_entity"
-    bl_options = {"DEFAULT_CLOSED"}
-
-    @classmethod
-    def poll(cls, context) -> bool:
-        return context.active_object is not None and is_entity(context.active_object)
-
-    def draw(self, context) -> None:
-        layout = self.layout
-        props = context.active_object.paradise
-
+    @staticmethod
+    def _draw_component(layout, obj, component) -> None:
         box = layout.box()
-        box.prop(props, "sprite_enabled")
+        header = box.row(align=True)
+        header.label(text=component.display_name, icon="PROPERTIES")
+        remove = header.operator("paradise.remove_authored_component", text="", icon="X")
+        remove.component = component.id
+
+        fields, hosts = contract_authoring.flatten(component)
+        missing = [f for f in fields if authored.value_key(component.id, f.path) not in obj]
+        if missing:
+            # The schema grew since this component was enabled. Draw() may not write ID data,
+            # so the fields are created by an operator click rather than silently here.
+            sync = box.operator(
+                "paradise.sync_authored_component",
+                text=f"Schema gained {len(missing)} field(s) — click to edit",
+                icon="FILE_REFRESH",
+            )
+            sync.component = component.id
+
         column = box.column(align=True)
-        column.enabled = props.sprite_enabled
-        column.prop(props, "sprite_sheet")
-        row = column.row(align=True)
-        row.prop(props, "sprite_columns")
-        row.prop(props, "sprite_rows")
-        column.prop(props, "sprite_frame_count")
-        column.prop(props, "sprite_fps")
-        column.prop(props, "sprite_loop")
-        column.prop(props, "sprite_billboard")
+        for field in fields:
+            if not authored.is_field_visible(obj, component.id, field):
+                continue
+            key = authored.value_key(component.id, field.path)
+            if key not in obj:
+                continue  # pending the sync click above
+            if field.type == contract_authoring.TYPE_ENUM:
+                row = column.row(align=True)
+                row.label(text=field.path)
+                picker = row.operator(
+                    "paradise.set_authored_enum", text=str(obj.get(key, "")), icon="DOWNARROW_HLT"
+                )
+                picker.component = component.id
+                picker.path = field.path
+            else:
+                column.prop(obj, f'["{key}"]', text=field.path)
 
-        box = layout.box()
-        box.prop(props, "particle_kind")
-        if props.particle_kind == "NONE":
-            return
-
-        column = box.column(align=True)
-        column.prop(props, "particle_max_count")
-        column.prop(props, "particle_emit_rate")
-        column.prop(props, "particle_lifetime")
-        column.prop(props, "particle_speed")
-        column.prop(props, "particle_spread_degrees")
-        column.prop(props, "particle_gravity")
-        column.prop(props, "particle_drag")
-        row = column.row(align=True)
-        row.prop(props, "particle_start_size")
-        row.prop(props, "particle_end_size")
-        column.prop(props, "particle_color")
-        column.prop(props, "particle_seed")
-
-        if props.particle_kind == "Sprite":
-            column = box.column(align=True)
-            column.prop(props, "particle_sheet")
-            row = column.row(align=True)
-            row.prop(props, "particle_sheet_columns")
-            row.prop(props, "particle_sheet_rows")
-            column.prop(props, "particle_sheet_frame_count")
-            column.prop(props, "particle_sheet_fps")
-
-
-class PARADISE_PT_entity_audio(_ParadisePanel, Panel):
-    bl_label = "Audio"
-    bl_parent_id = "PARADISE_PT_entity"
-    bl_options = {"DEFAULT_CLOSED"}
-
-    @classmethod
-    def poll(cls, context) -> bool:
-        return context.active_object is not None and is_entity(context.active_object)
-
-    def draw(self, context) -> None:
-        layout = self.layout
-        props = context.active_object.paradise
-
-        layout.prop(props, "audio_enabled")
-        column = layout.column(align=True)
-        column.enabled = props.audio_enabled
-        column.prop(props, "audio_start_event")
-        column.prop(props, "audio_stop_event")
-        column.prop(props, "audio_play_on_start")
-        column.prop(props, "audio_is_3d")
-
-        # Attenuation is meaningless on a 2D emitter, which by definition ignores distance.
-        # Greying it out says so without hiding the field and making it look unsupported.
-        scale_row = column.row()
-        scale_row.enabled = props.audio_enabled and props.audio_is_3d
-        scale_row.prop(props, "audio_attenuation_scale")
-
-        if props.audio_enabled and not props.audio_start_event.strip():
-            column.label(text="No event: emitter is positioned but plays nothing.", icon="INFO")
+        for host in hosts:
+            row = box.row()
+            row.enabled = False
+            row.label(text=f"{host.path} — baked from {host.kind}; not authored in Blender yet",
+                      icon="DECORATE_LINKED")
 
 
 class PARADISE_PT_collider(_ParadisePanel, Panel):
-    bl_label = "Collider"
+    """The selected collider OBJECT's own shape — not to be confused with an entity's Collider
+    component, which is the list of these objects and lives in the Components section."""
+
+    bl_label = "Collider Shape"
     bl_idname = "PARADISE_PT_collider"
     bl_options = {"DEFAULT_CLOSED"}
 
@@ -476,23 +465,62 @@ class PARADISE_PT_material(Panel):
             column.prop(props, "color_b")
 
 
-def _draw_collider_list(layout, context, collection, slot: str, label: str) -> None:
-    box = layout.box()
-    row = box.row()
-    row.label(text=label)
-    operator = row.operator("paradise.assign_colliders", text="", icon="ADD")
-    operator.slot = slot
+#: Which assign/remove slot each host-list component's operators use.
+_HOST_LIST_SLOTS = {"paradise.collider": "PHYSICS", "paradise.interactable": "INTERACTION"}
 
-    if not len(collection):
-        box.label(text="None", icon="BLANK1")
+
+def _draw_derived_components(layout, obj, component) -> None:
+    """A read-only row for a component this host derives outright, so the panel is a complete
+    inventory of what the entity exports even for the parts nobody authors."""
+    if component.id == "paradise.renderable":
+        props = obj.paradise
+        if props.model_path.strip():
+            source = f"from model '{props.model_path.strip()}'"
+        elif obj.type == "MESH" and obj.data is not None:
+            source = f"from mesh '{obj.data.name}'"
+        else:
+            return  # nothing renderable; a row saying so on every marker empty is noise
+    elif component.id == "paradise.light":
+        if obj.type != "LIGHT":
+            return
+        source = f"baked from this {obj.data.type.lower()} lamp"
+    else:
         return
 
+    row = layout.row()
+    row.enabled = False
+    row.label(text=f"{component.display_name} — {source}", icon="DECORATE_LINKED")
+
+
+def _draw_host_list_component(layout, context, obj, component) -> None:
+    """A component whose body is object references: the entity's collider lists — this host's
+    half of the schema's ``authoredBy: shape``. Same box, header and remove button as every
+    other component; the fields are just pointers you assign instead of values you type."""
+    slot = _HOST_LIST_SLOTS[component.id]
+    collection = authored.host_list_collection(obj, component.id)
+
+    box = layout.box()
+    header = box.row(align=True)
+    header.label(text=component.display_name, icon="PROPERTIES")
+    assign = header.operator("paradise.assign_colliders", text="", icon="ADD")
+    assign.slot = slot
+    remove = header.operator("paradise.remove_authored_component", text="", icon="X")
+    remove.component = component.id
+
+    if component.id == "paradise.interactable":
+        note = box.row()
+        note.enabled = False
+        note.label(text="DisplayName — the object's name", icon="DECORATE_LINKED")
+
+    if collection is None or not len(collection):
+        box.label(text="Select collider objects and press +", icon="BLANK1")
+        return
     for index, item in enumerate(collection):
         row = box.row(align=True)
         row.label(text=item.target.name if item.target else "<missing>", icon="MESH_CUBE")
-        remove = row.operator("paradise.remove_collider", text="", icon="X")
-        remove.slot = slot
-        remove.index = index
+        drop = row.operator("paradise.remove_collider", text="", icon="X")
+        drop.slot = slot
+        drop.index = index
 
 
 classes = (
@@ -500,10 +528,7 @@ classes = (
     PARADISE_PT_scene_navmesh,
     PARADISE_PT_play,
     PARADISE_PT_entity,
-    PARADISE_PT_entity_physics,
-    PARADISE_PT_entity_agent,
-    PARADISE_PT_entity_sprite,
-    PARADISE_PT_entity_audio,
+    PARADISE_PT_entity_components,
     PARADISE_PT_collider,
     PARADISE_PT_world,
     PARADISE_PT_material,

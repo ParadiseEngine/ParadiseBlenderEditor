@@ -54,8 +54,9 @@ import bpy
 from mathutils import Vector
 
 from .. import log
+from ..authoring import authored_components
 from ..authoring import entity as authoring
-from ..contract import axes
+from ..contract import authoring_router, axes
 from ..contract.schema import LevelData
 from ..paths import ExportPaths
 from ..pipeline.cache import artifact_cache, digest
@@ -235,12 +236,15 @@ def collect_walkable_geometry(
 
     for obj in authoring.entity_objects(scene):
         props = obj.paradise
-        if props.is_agent or not len(props.physics_colliders):
+        # An agent stands ON the navmesh; baking its capsule would punch a hole where it spawns.
+        if authored_components.has_component(obj, authoring_router.AGENT):
+            continue
+        if not len(props.physics_colliders):
             continue
         # Dynamic bodies move; baking one freezes it into the walkable surface at its SPAWN --
         # the car would leave a permanent hole in the navmesh where it started. The Godot host
         # gets this for free by parsing StaticColliders only; this is the same filter.
-        if props.is_dynamic_body:
+        if authored_components.stored_value(obj, authoring_router.RIGIDBODY, "BodyType") == "Dynamic":
             continue
 
         if not _append_colliders(obj, vertices, triangles) and obj.type == "MESH":

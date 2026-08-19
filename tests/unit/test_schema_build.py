@@ -55,6 +55,33 @@ class TestSourceStamp:
         assert schema_build.source_stamp(str(tmp_path))[1] == 1
 
 
+class TestFailureSummary:
+    MSBUILD = (
+        "  Determining projects to restore...\n"
+        "  ShiningPie.Core -> /x/bin/Debug/net10.0/ShiningPie.Core.dll\n"
+        "/x/A.cs(38,1): error CS0116: A namespace cannot directly contain members [/x/Core.csproj]\n"
+        "/x/A.cs(38,1): error CS0116: A namespace cannot directly contain members [/x/Core.csproj]\n"
+        '/x/P.targets(37,5): error MSB3073: The command "dotnet exec" exited with code 127.\n'
+        "\nBuild FAILED.\n    0 Warning(s)\n    2 Error(s)\n"
+    )
+
+    def test_extracts_compiler_errors_deduped_in_order(self):
+        lines = schema_build.failure_summary(self.MSBUILD)
+        assert len(lines) == 2
+        assert "CS0116" in lines[0]
+        assert "MSB3073" in lines[1]
+
+    def test_falls_back_to_the_tail_when_nothing_matches_the_error_shape(self):
+        """A crash or a missing SDK prints no MSBuild-formatted error line; showing nothing
+        would tell the author less than the raw tail does."""
+        lines = schema_build.failure_summary("something went wrong\nno SDK found\n")
+        assert lines == ["something went wrong", "no SDK found"]
+
+    def test_caps_the_line_count(self):
+        output = "\n".join(f"/x/F.cs({i},1): error CS{i:04d}: boom" for i in range(30))
+        assert len(schema_build.failure_summary(output)) == 10
+
+
 class TestSchemaStaleness:
     def test_a_missing_dump_is_stale(self, tmp_path):
         write(tmp_path / "A.cs")

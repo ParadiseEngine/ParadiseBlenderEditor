@@ -422,6 +422,43 @@ class PARADISE_OT_build_game_schema(Operator):
         return {"FINISHED"}
 
 
+class PARADISE_OT_show_build_errors(Operator):
+    """Show the last failed game build's compiler errors, and copy them to the clipboard"""
+
+    bl_idname = "paradise.show_build_errors"
+    bl_label = "Show Build Errors"
+
+    @classmethod
+    def poll(cls, context) -> bool:
+        from ..pipeline import schema_build
+
+        return bool(schema_build.last_failure())
+
+    def invoke(self, context, _event):
+        return context.window_manager.invoke_props_dialog(self, width=720)
+
+    def draw(self, context) -> None:
+        from ..pipeline import schema_build
+
+        column = self.layout.column(align=True)
+        for line in schema_build.last_failure():
+            column.label(text=line[:160], icon="ERROR")
+        if schema_build.last_failure_log():
+            self.layout.separator()
+            self.layout.label(text=f"Full output: {schema_build.last_failure_log()}")
+        self.layout.label(text="OK copies the errors (and the log path) to the clipboard.")
+
+    def execute(self, context):
+        from ..pipeline import schema_build
+
+        lines = list(schema_build.last_failure())
+        if schema_build.last_failure_log():
+            lines.append(f"full output: {schema_build.last_failure_log()}")
+        context.window_manager.clipboard = "\n".join(lines)
+        self.report({"INFO"}, "Build errors copied to the clipboard.")
+        return {"FINISHED"}
+
+
 class PARADISE_OT_sync_authored_component(Operator):
     """Create the ID properties for schema fields this component gained since it was enabled"""
 
@@ -467,6 +504,7 @@ class PARADISE_OT_set_authored_enum(Operator):
 classes = [
     PARADISE_OT_add_authored_component,
     PARADISE_OT_build_game_schema,
+    PARADISE_OT_show_build_errors,
     PARADISE_OT_remove_authored_component,
     PARADISE_OT_sync_authored_component,
     PARADISE_OT_set_authored_enum,

@@ -68,6 +68,11 @@ class PARADISE_PT_scene(_ParadisePanel, Panel):
             status = column.row()
             status.enabled = False
             status.label(text=schema_build.status_line(), icon="TIME")
+            if schema_build.last_failure():
+                alert = column.row(align=True)
+                alert.alert = True
+                alert.operator("paradise.show_build_errors",
+                               text="Game build failed — show errors", icon="ERROR")
 
         column = layout.column(align=True)
         column.label(text="Lighting")
@@ -256,6 +261,16 @@ class PARADISE_PT_entity_components(_ParadisePanel, Panel):
         obj = context.active_object
         data_dir = resolve_blender_data_dir(context.scene)
         document = authored.schema_for_data_dir(data_dir)
+
+        from ..pipeline import schema_build
+
+        if schema_build.last_failure():
+            # This panel is where a stale dropdown is NOTICED — the author is looking for a
+            # component that is not here — so the failure that explains it belongs here too.
+            alert = layout.row(align=True)
+            alert.alert = True
+            alert.operator("paradise.show_build_errors",
+                           text="Game build failed — components may be stale", icon="ERROR")
 
         if authored.schema_load_error(data_dir) is not None:
             box = layout.box()

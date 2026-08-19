@@ -30,7 +30,10 @@ from .. import log
 
 __all__ = [
     "dotnet_executable",
+    "failure_summary",
     "is_schema_stale",
+    "last_failure",
+    "last_failure_log",
     "register",
     "source_stamp",
     "status_line",
@@ -100,6 +103,8 @@ def dotnet_executable() -> str | None:
 
 _timer_registered = False
 _status = "off"
+_failure_lines: list[str] = []
+_failure_log_path: str | None = None
 _last_stamp: tuple[int, int] | None = None
 _pending_stamp: tuple[int, int] | None = None
 _pending_since = 0.0
@@ -127,6 +132,30 @@ def unregister() -> None:
     _timer_registered = False
     # A build in flight is left to finish: it is a detached OS process writing to the game's
     # own build output, and killing it halfway could leave a torn obj/ for the next build.
+
+
+def failure_summary(output: str, limit: int = 10) -> list[str]:
+    """The lines an author needs from a failed build's output: the compiler errors, deduped,
+    in order — or the tail when nothing matches (a crash, a missing SDK). Pure, so the parsing
+    that decides what a popup shows is pinned by unit tests rather than discovered live."""
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    errors: list[str] = []
+    for line in lines:
+        is_error = ": error " in line or line.startswith("error ") or "error MSB" in line
+        if is_error and line not in errors:
+            errors.append(line)
+    return (errors or lines[-4:])[:limit]
+
+
+def last_failure() -> list[str]:
+    """The retained error lines of the most recent FAILED build; empty after a success."""
+    return _failure_lines
+
+
+def last_failure_log() -> str | None:
+    """Path of the full compiler output of the last failed build, kept on disk until the next
+    build starts or the failure clears."""
+    return _failure_log_path
 
 
 def status_line() -> str:
@@ -176,6 +205,7 @@ def start_build(project: str, reason: str) -> bool:
             "install locations. Build manually and the schema will hot-reload.")
         return False
 
+    _discard_failure_log()
     handle, _build_log_path = tempfile.mkstemp(prefix="paradise_schema_build_", suffix=".log")
     _build = subprocess.Popen(
         [dotnet, "build", project],
@@ -196,21 +226,27 @@ def _finish_build() -> None:
 
     global _build, _build_log_path
 
-    global _status
+    global _status, _failure_lines, _failure_log_path
     elapsed = time.monotonic() - _build_started
     failed = _build.returncode != 0
     if failed:
-        tail = _read_tail(_build_log_path)
-        _status = f"build FAILED ({elapsed:.1f}s) — see console"
+        tail = _read_tail(_build_log_path, lines=40)
+        _failure_lines = failure_summary(tail)
+        # The full output is KEPT: the summary is for the popup, but a template error or a
+        # NuGet failure needs the whole log, and stdout is invisible to a Dock-launched Blender.
+        _failure_log_path = _build_log_path
+        _status = f"build FAILED ({elapsed:.1f}s)"
         log.warn(
             f"Game build FAILED ({elapsed:.1f}s) — the schema (and the Components dropdown) is "
-            f"still the last successful build's. Compiler output:\n{tail}")
+            f"still the last successful build's. Full output: {_failure_log_path}\n"
+            + "\n".join(_failure_lines))
+        _announce_failure()
     else:
         _status = f"build ok ({elapsed:.1f}s)"
+        _failure_lines = []
+        _discard_failure_log()
         log.info(f"Game build finished ({elapsed:.1f}s); the authoring schema is fresh.")
-
-    if _build_log_path is not None:
-        with contextlib.suppress(OSError):
+        with contextlib.suppress(OSError, TypeError):
             os.unlink(_build_log_path)
     _build = None
     _build_log_path = None
@@ -218,6 +254,30 @@ def _finish_build() -> None:
     for window in bpy.context.window_manager.windows:
         for area in window.screen.areas:
             area.tag_redraw()
+
+
+def _discard_failure_log() -> None:
+    global _failure_log_path
+    if _failure_log_path is not None:
+        with contextlib.suppress(OSError):
+            os.unlink(_failure_log_path)
+    _failure_log_path = None
+
+
+def _announce_failure() -> None:
+    """A popup the moment the build fails. Best-effort: timers run without a window in
+    headless sessions, and a failure must never take the watcher down with it — the panel
+    alert (drawn from :func:`last_failure`) is the persistent fallback either way."""
+    import bpy
+
+    def draw(menu, _context):
+        for line in _failure_lines[:8]:
+            menu.layout.label(text=line[:130])
+        menu.layout.separator()
+        menu.layout.operator("paradise.show_build_errors", icon="COPYDOWN")
+
+    with contextlib.suppress(Exception):
+        bpy.context.window_manager.popup_menu(draw, title="Game build failed", icon="ERROR")
 
 
 def _read_tail(path: str | None, lines: int = 12) -> str:

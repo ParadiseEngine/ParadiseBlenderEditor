@@ -57,6 +57,11 @@ if command -v "$BLENDER" >/dev/null 2>&1; then
     | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2})' | tail -30
   check "${PIPESTATUS[0]}" "authored components"
 
+  step "Integration: config documents (file-backed authored components)"
+  "$BLENDER" --background --factory-startup --python tests/integration/test_config_documents.py 2>&1 \
+    | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2})' | tail -30
+  check "${PIPESTATUS[0]}" "config documents"
+
   step "Integration: full scene export"
   "$BLENDER" --background --factory-startup --python tests/integration/test_export_scene.py 2>&1 \
     | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2})' | tail -30

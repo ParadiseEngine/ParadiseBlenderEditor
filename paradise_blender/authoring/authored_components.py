@@ -34,6 +34,7 @@ from ..contract import authoring
 from ..prefs import resolve_blender_data_dir
 
 __all__ = [
+    "apply_ui_metadata",
     "build_component_payloads",
     "classes",
     "enabled_component_ids",
@@ -42,6 +43,7 @@ __all__ = [
     "is_present",
     "schema_for_data_dir",
     "schema_load_error",
+    "storage_value",
     "value_key",
     "values_for",
 ]
@@ -203,8 +205,8 @@ def enable_component(obj: bpy.types.Object, component: authoring.AuthoredCompone
         key = value_key(component.id, field.path)
         if key in obj:
             continue  # re-enabling keeps previously authored values
-        obj[key] = _storage_value(field)
-        _apply_ui_metadata(obj, key, field)
+        obj[key] = storage_value(field)
+        apply_ui_metadata(obj, key, field)
 
 
 def disable_component(obj: bpy.types.Object, component_id: str) -> None:
@@ -244,10 +246,18 @@ def values_for(obj: bpy.types.Object, component: authoring.AuthoredComponentSche
     return values
 
 
-def _storage_value(field: authoring.FlatField):
-    """A field's initial ID-property value. The stored TYPE is load-bearing: an ID property is
-    typed by first assignment, and Blender draws (and keeps) that type from then on."""
-    default = field.default
+def storage_value(field: authoring.FlatField, value=None):
+    """A value coerced to the field's schema type, ready to store as an ID property.
+
+    The stored TYPE is load-bearing: an ID property is typed by first assignment, and Blender
+    draws (and keeps) that type from then on.
+
+    ``value`` defaults to the field's own default, which is what enabling a component on an
+    entity wants. The Game Config panel passes a value read from the config document instead --
+    and passes ``None`` for a member the payload omits or spells as JSON null, which lands back
+    on the default because an ID property cannot hold nothing.
+    """
+    default = field.default if value is None else value
     if field.type == authoring.TYPE_BOOL:
         return bool(default)
     if field.type == authoring.TYPE_INT:
@@ -266,9 +276,11 @@ def _storage_value(field: authoring.FlatField):
     return float(default) if isinstance(default, (int, float)) else 0.0
 
 
-def _apply_ui_metadata(obj: bpy.types.Object, key: str, field: authoring.FlatField) -> None:
+def apply_ui_metadata(store: bpy.types.ID, key: str, field: authoring.FlatField) -> None:
+    """Attach doc/range/subtype to an ID property. Takes any ID datablock, not just an Object:
+    the Game Config panel keeps the same kind of store on the Scene."""
     try:
-        ui = obj.id_properties_ui(key)
+        ui = store.id_properties_ui(key)
     except TypeError:
         return  # strings and some array types carry no UI metadata; nothing to attach
 
@@ -298,7 +310,7 @@ def _apply_ui_metadata(obj: bpy.types.Object, key: str, field: authoring.FlatFie
             log.warn(f"Could not apply UI metadata to '{key}': {error}")
 
 
-def is_field_visible(obj: bpy.types.Object, component_id: str, field: authoring.FlatField) -> bool:
+def is_field_visible(obj: bpy.types.ID, component_id: str, field: authoring.FlatField) -> bool:
     """Honor ``visibleWhen``: the sibling is resolved within the same group, because the
     attribute references a property of the same record and a nested record is its own group."""
     condition = field.visible_when

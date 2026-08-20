@@ -20,11 +20,13 @@ from .paths import ExportPaths
 
 __all__ = [
     "ParadiseAddonPreferences",
+    "ParadiseConfigDocument",
     "ParadiseScenePreferences",
     "classes",
     "export_paths",
     "get_preferences",
     "resolve_blender_data_dir",
+    "resolve_config_document_path",
 ]
 
 PACKAGE = __package__
@@ -40,6 +42,42 @@ def _update_navmesh_preview(_self, context) -> None:
     from .export.navmesh_preview import sync_preview_visibility
 
     sync_preview_visibility(context.scene)
+
+
+class ParadiseConfigDocument(PropertyGroup):
+    """One authored JSON document this project edits in the Config panel.
+
+    A project declares as many as it likes: a game's tunables, a level's settings, whatever else
+    it keeps as authored payloads. The addon attaches no meaning to any of them -- it reads the
+    ids each file declares and draws them from the authoring schema.
+    """
+
+    label: StringProperty(  # type: ignore[valid-type]
+        name="Label",
+        description="What to call this document in the list. Empty shows the file name",
+        default="",
+    )
+
+    file: StringProperty(  # type: ignore[valid-type]
+        name="File",
+        description=(
+            "The document this row edits, relative to the data directory. Chosen from the "
+            "config documents found there rather than typed, so it cannot name a file the "
+            "runtime could not reach"
+        ),
+        default="",
+    )
+
+    key: IntProperty(  # type: ignore[valid-type]
+        name="Key",
+        description=(
+            "Stable per-document id, assigned when the entry is added. Namespaces this "
+            "document's edited values, so reordering the list cannot make one document's "
+            "values appear under another"
+        ),
+        default=0,
+        options={"HIDDEN"},
+    )
 
 
 class ParadiseScenePreferences(PropertyGroup):
@@ -71,6 +109,16 @@ class ParadiseScenePreferences(PropertyGroup):
         ),
         subtype="FILE_PATH",
         default="",
+    )
+
+    config_documents: bpy.props.CollectionProperty(  # type: ignore[valid-type]
+        type=ParadiseConfigDocument,
+        name="Config Documents",
+    )
+
+    active_config_document: IntProperty(  # type: ignore[valid-type]
+        name="Active Config Document",
+        default=0,
     )
 
     watch_game_project: BoolProperty(  # type: ignore[valid-type]
@@ -359,11 +407,24 @@ def resolve_blender_data_dir(scene: bpy.types.Scene) -> str:
     return os.path.abspath(bpy.path.abspath(raw))
 
 
+def resolve_config_document_path(scene: bpy.types.Scene, document) -> str:
+    """Absolute path of one config document, or "" when the row names no file yet.
+
+    The row stores a DATA-RELATIVE field, so this is the data directory plus that field -- which
+    means a .blend keeps working in a checkout that lives somewhere else, the same property every
+    other contract path has.
+    """
+    field = document.file
+    if not field or not field.strip():
+        return ""
+    return os.path.join(resolve_blender_data_dir(scene), field.replace("/", os.sep))
+
+
 def export_paths(scene: bpy.types.Scene) -> ExportPaths:
     return ExportPaths(resolve_blender_data_dir(scene))
 
 
-classes = (ParadiseScenePreferences, ParadiseAddonPreferences)
+classes = (ParadiseConfigDocument, ParadiseScenePreferences, ParadiseAddonPreferences)
 
 
 def register_pointers() -> None:

@@ -45,7 +45,7 @@ def _collect():
     Deferred to call time -- see the module docstring for why this is not at module scope.
     """
     from . import prefs
-    from .authoring import authored_components, material_props, world_props
+    from .authoring import authored_components, config_store, material_props, world_props
     from .authoring import collider as authoring_collider
     from .authoring import entity as authoring_entity
     from .authoring import guid as authoring_guid
@@ -66,6 +66,7 @@ def _collect():
         # Then operators, then the panels that invoke them.
         *authoring_ops.classes,
         *authored_components.classes,
+        *config_store.classes,
         *export_ops.classes,
         *play_ops.classes,
         *live_ops.classes,

@@ -13,14 +13,16 @@ import bpy
 from bpy.types import Panel
 
 from ..authoring import authored_components as authored
+from ..authoring import config_store
 from ..authoring.collider import is_collider
 from ..authoring.entity import entity_objects, is_entity
 from ..contract import authoring as contract_authoring
+from ..contract import config_document
 from ..export import navmesh_preview
 from ..export.scene import resolve_scene_name
 from ..live import session as live_session
 from ..play.host import resolve_runtime_command
-from ..prefs import get_preferences, resolve_blender_data_dir
+from ..prefs import get_preferences, resolve_blender_data_dir, resolve_config_document_path
 
 __all__ = ["classes"]
 
@@ -135,6 +137,136 @@ class PARADISE_PT_scene_navmesh(_ParadisePanel, Panel):
         # Stored in the .blend and applied on every bake, including export-on-save. The Godot
         # host note matters to anyone authoring the same scene from both tools.
         layout.label(text="Defaults mirror the Godot host's bake.", icon="INFO")
+
+
+class PARADISE_UL_config_documents(bpy.types.UIList):
+    """One row per configured document: its label, and the file it edits."""
+
+    def draw_item(self, _context, layout, _data, item, _icon, _active_data, _active_prop, _index):
+        row = layout.row(align=True)
+        row.label(text=item.label.strip() or item.file or "(no file)", icon="TEXT")
+        if item.label.strip() and item.file:
+            sub = row.row()
+            sub.enabled = False
+            sub.label(text=item.file)
+
+
+class PARADISE_PT_config(_ParadisePanel, Panel):
+    """Authored components that live in FILES rather than on entities.
+
+    A project declares any number of JSON documents here -- a game's tunables, a level's
+    settings, whatever else it keeps as authored payloads -- and each is drawn from the same
+    ``data/authoring-schema.json`` the Components panel uses. The addon attaches no meaning to
+    any of them: it reads the component ids a file declares and draws whatever the schema says
+    those are. A tunable added in the game's C# appears here on the next build.
+
+    Load and Save are buttons rather than automatic on purpose: ``draw()`` may not write ID data,
+    and an automatic write would let a stale panel overwrite hand edits to a file that is the
+    game's source of truth, not ours.
+    """
+
+    bl_label = "Config"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    def draw(self, context) -> None:
+        layout = self.layout
+        scene = context.scene
+        settings = scene.paradise_project
+
+        row = layout.row()
+        row.template_list(
+            "PARADISE_UL_config_documents", "", settings, "config_documents",
+            settings, "active_config_document", rows=2)
+        side = row.column(align=True)
+        side.operator("paradise.pick_config_document", text="", icon="ADD").index = -1
+        side.operator("paradise.remove_config_document", text="", icon="REMOVE")
+
+        entry = config_store.active_document(scene)
+        if entry is None:
+            box = layout.box()
+            box.label(text="No config documents in this project.", icon="INFO")
+            box.label(text="Press + to pick one from the data directory.")
+            return
+
+        # The file is CHOSEN, not typed: the picker lists the config documents actually under
+        # the data directory, so a row cannot name a file the runtime could not reach.
+        column = layout.column(align=True)
+        chooser = column.row(align=True)
+        chooser.operator("paradise.pick_config_document",
+                         text=entry.file or "Choose a document…",
+                         icon="FILE").index = settings.active_config_document
+        column.prop(entry, "label")
+
+        path = resolve_config_document_path(scene, entry)
+        if not path:
+            layout.label(text="Choose a document for this row.", icon="INFO")
+            return
+        if not os.path.exists(path):
+            box = layout.box()
+            box.label(text="File not found:", icon="ERROR")
+            box.label(text=path)
+            return
+
+        prefix = config_store.prefix_for(entry)
+        loaded = config_store.loaded_stamp(scene, prefix)
+        if loaded is None:
+            layout.operator("paradise.load_config_document", icon="IMPORT")
+            return
+
+        if loaded != config_document.config_stamp(path):
+            # Someone edited the file since it was loaded -- a hand edit, a git checkout, a
+            # rebuild. Saving now would overwrite whatever that was.
+            alert = layout.row(align=True)
+            alert.alert = True
+            alert.operator("paradise.load_config_document",
+                           text="File changed on disk — reload", icon="ERROR")
+
+        try:
+            with open(path, encoding="utf-8") as file:
+                document = config_document.read(file.read())
+        except (OSError, config_document.ConfigError) as failure:
+            # Reported in the panel rather than logged: log.* prints on every redraw.
+            box = layout.box()
+            box.label(text="Document could not be read:", icon="ERROR")
+            box.label(text=str(failure)[:120])
+            return
+
+        schema = authored.schema_for_data_dir(resolve_blender_data_dir(scene))
+        for component_id in config_document.declared_ids(document):
+            component = authored.component_by_id(schema, component_id)
+            if component is None:
+                box = layout.box()
+                box.label(text=f"{component_id} — not in the current schema", icon="ERROR")
+                box.label(text="Not editable, and left untouched on save. Rebuild the game.")
+                continue
+            self._draw_group(layout, scene, prefix, component)
+
+        row = layout.row(align=True)
+        row.operator("paradise.save_config_document", icon="EXPORT")
+        row.operator("paradise.load_config_document", text="Reload", icon="FILE_REFRESH")
+
+    @staticmethod
+    def _draw_group(layout, scene, prefix, component) -> None:
+        box = layout.box()
+        box.label(text=component.display_name, icon="PROPERTIES")
+
+        column = box.column(align=True)
+        for field in contract_authoring.flatten(component)[0]:
+            if not authored.is_field_visible(scene, component.id, field):
+                continue
+            key = config_store.config_value_key(prefix, component.id, field.path)
+            if key not in scene:
+                continue  # the schema gained a field since the load; Reload picks it up
+            if field.type == contract_authoring.TYPE_ENUM:
+                row = column.row(align=True)
+                row.label(text=field.path)
+                picker = row.operator(
+                    "paradise.set_config_enum", text=str(scene.get(key, "")), icon="DOWNARROW_HLT")
+                picker.prefix = prefix
+                picker.component = component.id
+                picker.path = field.path
+            else:
+                column.prop(scene, f'["{key}"]', text=field.path)
 
 
 class PARADISE_PT_play(_ParadisePanel, Panel):
@@ -526,6 +658,8 @@ def _draw_host_list_component(layout, context, obj, component) -> None:
 classes = (
     PARADISE_PT_scene,
     PARADISE_PT_scene_navmesh,
+    PARADISE_UL_config_documents,
+    PARADISE_PT_config,
     PARADISE_PT_play,
     PARADISE_PT_entity,
     PARADISE_PT_entity_components,

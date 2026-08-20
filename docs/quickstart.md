@@ -83,6 +83,32 @@ renderer.
 
 If the window does not appear, the launch log is at `$TMPDIR/paradise_play.log`.
 
+## 7b. Tune the game
+
+Authored components live in two places, both drawn from the same `data/authoring-schema.json`
+your game's build dumps:
+
+| Where | What it is | Where you edit it |
+|---|---|---|
+| On an entity | the object's own `Components.Custom` | **Components** panel |
+| In a file | a JSON document of authored payloads | **Config** panel |
+
+If your game keeps tunables in a JSON document — a `Components` array of `{"Id", "Data"}`
+payloads, the same shape components travel in on an entity — press **+** in the **Config** panel
+and pick it. The picker lists the config documents it finds under your data directory, so there is
+no path to type and no way to name a file the runtime could not reach; scene exports, material
+documents and the authoring schema are not offered. The panel then draws every group with the
+units, ranges and tooltips the game declared in C#.
+
+The list takes as many documents as you like: a game's tunables and a level's settings are two
+rows, not two features. Each row keeps its own edited values, so two documents declaring the same
+component id never collide.
+
+Load and Save are buttons rather than automatic, deliberately: those files are the game's source
+of truth and are edited by hand as well, so nothing writes to them behind you. A save merges into
+the document rather than rebuilding it, so comments and any sections the addon does not understand
+are left exactly as they were.
+
 ## 8. Live preview
 
 Press **Start Live Preview** instead of Play. The runtime launches and then follows your edits

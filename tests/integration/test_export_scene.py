@@ -27,6 +27,7 @@ sys.path.insert(0, REPO)
 import bpy  # noqa: E402
 
 import paradise_blender  # noqa: E402
+from paradise_blender.contract import component_ids  # noqa: E402
 from paradise_blender.export.scene import export_scene  # noqa: E402
 
 DATA_DIR = os.path.join(tempfile.gettempdir(), "paradise_export_test")
@@ -55,10 +56,17 @@ def _attach(obj, component_id: str, **fields) -> None:
     from paradise_blender.authoring import authored_components
     from paradise_blender.contract import authoring as contract_authoring
 
+    matched = False
+
     for component in contract_authoring.read_engine_schema().components:
         if component.id == component_id:
             authored_components.enable_component(obj, component)
+            matched = True
             break
+    # Louder than the silent no-op this used to be: an id the engine schema does not declare
+    # means the vendored constants and the vendored schema disagree, and every assertion below
+    # would then fail for a reason that has nothing to do with what it tests.
+    assert matched, f"{component_id} is not in the engine schema"
     for field, value in fields.items():
         obj[authored_components.value_key(component_id, field)] = value
 
@@ -99,7 +107,7 @@ def build_scene() -> None:
     ball = bpy.context.active_object
     ball.name = "Ball"
     ball.paradise.is_entity = True
-    _attach(ball, "paradise.rigidbody", BodyType="Dynamic", Mass=2.5)
+    _attach(ball, component_ids.RIGIDBODY, BodyType="Dynamic", Mass=2.5)
 
     bpy.ops.object.empty_add(type="SPHERE", location=(1.0, 2.0, 3.0))
     ball_collider = bpy.context.active_object
@@ -114,7 +122,7 @@ def build_scene() -> None:
     agent = bpy.context.active_object
     agent.name = "Hero"
     agent.paradise.is_entity = True
-    _attach(agent, "paradise.agent", MoveSpeed=3.0)
+    _attach(agent, component_ids.AGENT, MoveSpeed=3.0)
 
     # Camera at the engine's documented validation pose.
     bpy.ops.object.camera_add(location=(0, -10, 1), rotation=(math.radians(90), 0, 0))

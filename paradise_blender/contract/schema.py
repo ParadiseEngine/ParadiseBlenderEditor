@@ -374,10 +374,21 @@ class AuthoredComponentData:
     """
 
     id: str = ""
+
+    #: Fully qualified CLR name of the record, copied verbatim from the authoring schema. Read by
+    #: the engine only when :attr:`id` fails to resolve, but written whenever it is known: a
+    #: payload that loaded as nothing tells whoever is reading it precisely nothing without this.
+    #: Optional on the wire, so it is omitted rather than sent empty.
+    type: str | None = None
+
     data: dict[str, Any] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, Any]:
-        return {"Id": self.id, "Data": dict(self.data)}
+        document: dict[str, Any] = {"Id": self.id}
+        if self.type:
+            document["Type"] = self.type
+        document["Data"] = dict(self.data)
+        return document
 
 
 @dataclass

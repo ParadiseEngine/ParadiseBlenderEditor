@@ -19,7 +19,7 @@ from .. import log
 from ..authoring import authored_components
 from ..authoring import entity as authoring
 from ..authoring.guid import ensure_entity_guid
-from ..contract import authoring_router
+from ..contract import authoring_router, component_ids
 from ..contract.schema import (
     AuthoredComponentData,
     ColliderComponentData,
@@ -157,18 +157,22 @@ def _apply_authored_components(
     custom: list[AuthoredComponentData] = []
     routed: set[str] = set()
 
-    for component_id, payload in authored_components.build_component_payloads(
+    for component_id, component_type, payload in authored_components.build_component_payloads(
             obj, paths.data_dir):
         if authoring_router.apply(entity, component_id, payload):
             routed.add(component_id)
-        elif component_id.startswith("paradise."):
+        # Membership, NOT a prefix test. This was `component_id.startswith("paradise.")` when ids
+        # were names; a GUID has no prefix, so that branch would never fire again and every
+        # host-derived engine component would fall silently into Components.Custom below.
+        elif component_id in component_ids.ENGINE_IDS:
             # An engine component this host derives or bakes rather than authors as a form —
             # exporting form values would fight the pipeline that already writes the slot.
             log.warn(
                 f"'{obj.name}' authors '{component_id}', which this host derives from the "
                 "scene itself (mesh, colliders, lamp). The authored copy is NOT exported.")
         else:
-            custom.append(AuthoredComponentData(id=component_id, data=payload))
+            custom.append(AuthoredComponentData(
+                id=component_id, type=component_type, data=payload))
 
     # An agent stands on the navmesh and is moved by the simulation, so its derived body is
     # kinematic, not static — unless the author said otherwise with a rigidbody component.

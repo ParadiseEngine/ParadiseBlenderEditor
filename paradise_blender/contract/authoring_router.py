@@ -2,18 +2,21 @@
 
 Python mirror of ``Paradise.Export.Data.AuthoredComponentRouter``, for the subset of engine
 components this host authors through the schema. An editor knows only ids and JSON — it has no
-idea that ``paradise.rigidbody`` belongs in ``Components.Rigidbody`` — so the mapping lives on
+idea that the rigidbody component belongs in ``Components.Rigidbody`` — so the mapping lives on
 the contract, where both halves can see it.
+
+Components are named in words below and spelled as GUIDs in the code: identity is
+``0c068bf4-…``, and the ids come from :mod:`.component_ids` so there is one place they are
+written down. A component's id says nothing about what it is any more, which is exactly why the
+prose has to.
 
 The subset is deliberate, and the split is this host's, not the schema's:
 
-* **Routed here** (plain fields, authored in the Components panel): ``paradise.identity``,
-  ``paradise.agent``, ``paradise.rigidbody``, ``paradise.audio-emitter``,
-  ``paradise.particle-emitter``.
+* **Routed here** (plain fields, authored in the Components panel): identity, agent, rigidbody,
+  audio-emitter, particle-emitter.
 * **Host-owned** (this host derives them from real Blender data, so authoring them as a form
-  would fight the pipeline): ``paradise.renderable`` (the mesh datablock),
-  ``paradise.collider`` / ``paradise.interactable`` (the collider empties),
-  ``paradise.light`` (the lamp datablock). The schema marks light and sprite-animation as
+  would fight the pipeline): renderable (the mesh datablock), collider / interactable (the
+  collider empties), light (the lamp datablock). The schema marks light and sprite-animation as
   host-baked anyway (component-level ``authoredBy``).
 
 Payloads arrive as the WIRE dicts :func:`.authoring.build_payload` produces — schema defaults
@@ -27,6 +30,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import component_ids
 from .color import Color32
 from .schema import (
     AgentComponentData,
@@ -38,11 +42,11 @@ from .schema import (
 
 __all__ = ["ROUTED_IDS", "apply"]
 
-IDENTITY = "paradise.identity"
-AGENT = "paradise.agent"
-RIGIDBODY = "paradise.rigidbody"
-AUDIO_EMITTER = "paradise.audio-emitter"
-PARTICLE_EMITTER = "paradise.particle-emitter"
+IDENTITY = component_ids.IDENTITY
+AGENT = component_ids.AGENT
+RIGIDBODY = component_ids.RIGIDBODY
+AUDIO_EMITTER = component_ids.AUDIO_EMITTER
+PARTICLE_EMITTER = component_ids.PARTICLE_EMITTER
 
 #: The engine ids this router places. Anything else is either a game's own component (the
 #: caller carries it in ``Components.Custom``) or an engine component this host does not

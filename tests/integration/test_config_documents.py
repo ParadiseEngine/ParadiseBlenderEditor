@@ -47,11 +47,17 @@ def check(condition: bool, description: str, detail: str = "") -> None:
         failures.append(description)
 
 
+PLAYER_ID = "a17c9d02-4e6b-4f31-9d58-3c0b7e2a6194"
+CAMERA_ID = "6b3e5f81-0c94-4a27-b6de-72f1849cad05"
+#: Declared by the config file but not by the schema — a group the game deleted.
+GONE_ID = "f4a8b217-3e05-4c96-8b7d-1e6045d9a3c2"
+
 SCHEMA = {
-    "version": 2,
+    "version": 3,
     "components": [
         {
-            "id": "game.tuning.player",
+            "id": PLAYER_ID,
+            "type": "Game.Tuning.PlayerConfig",
             "displayName": "Player tuning",
             "fields": [
                 {"name": "MaxSpeed", "type": "float", "unit": "meters",
@@ -61,7 +67,8 @@ SCHEMA = {
             ],
         },
         {
-            "id": "game.tuning.camera",
+            "id": CAMERA_ID,
+            "type": "Game.Tuning.CameraConfig",
             "displayName": "Camera tuning",
             "fields": [
                 {
@@ -82,8 +89,8 @@ SCHEMA = {
 CONFIG = {
     "// note": "Every gameplay tunable lives here.",
     "Components": [
-        {"Id": "game.tuning.player", "Data": {"MaxSpeed": 6.5, "Lives": 5, "Mode": "Chase"}},
-        {"Id": "game.tuning.camera", "Data": {"OnFoot": {"YawDegrees": 130.0, "Distance": 12.0}}},
+        {"Id": PLAYER_ID, "Data": {"MaxSpeed": 6.5, "Lives": 5, "Mode": "Chase"}},
+        {"Id": CAMERA_ID, "Data": {"OnFoot": {"YawDegrees": 130.0, "Distance": 12.0}}},
     ],
     "// LootTables": "Weighted drop tables; not an authored payload.",
     "LootTables": [{"Table": "Rubble", "Entries": [{"Item": "metal", "Weight": 5}]}],
@@ -127,14 +134,14 @@ def main() -> int:
     key = config_store.config_value_key
     prefix = config_store.prefix_for(entry)
     check(
-        abs(scene[key(prefix, "game.tuning.player", "MaxSpeed")] - 6.5) < 1e-6,
+        abs(scene[key(prefix, PLAYER_ID, "MaxSpeed")] - 6.5) < 1e-6,
         "the file's value wins over the schema default",
-        str(scene.get(key(prefix, "game.tuning.player", "MaxSpeed"))),
+        str(scene.get(key(prefix, PLAYER_ID, "MaxSpeed"))),
     )
-    check(scene[key(prefix, "game.tuning.player", "Lives")] == 5, "int keeps its type")
-    check(scene[key(prefix, "game.tuning.player", "Mode")] == "Chase", "enum loads by name")
+    check(scene[key(prefix, PLAYER_ID, "Lives")] == 5, "int keeps its type")
+    check(scene[key(prefix, PLAYER_ID, "Mode")] == "Chase", "enum loads by name")
     check(
-        abs(scene[key(prefix, "game.tuning.camera", "OnFoot/Distance")] - 12.0) < 1e-6,
+        abs(scene[key(prefix, CAMERA_ID, "OnFoot/Distance")] - 12.0) < 1e-6,
         "a nested group loads by slash path",
     )
     check(
@@ -142,28 +149,28 @@ def main() -> int:
         "the loaded stamp matches the file",
     )
 
-    ui = scene.id_properties_ui(key(prefix, "game.tuning.player", "MaxSpeed"))
+    ui = scene.id_properties_ui(key(prefix, PLAYER_ID, "MaxSpeed"))
     check(ui.as_dict().get("description") == "Top walking speed.", "schema doc reaches the tooltip")
     check(ui.as_dict().get("max") == 50, "schema range reaches the slider")
 
     # ---- edit and save --------------------------------------------------------------------
-    scene[key(prefix, "game.tuning.player", "MaxSpeed")] = 9.25
-    scene[key(prefix, "game.tuning.camera", "OnFoot/Distance")] = 20.0
+    scene[key(prefix, PLAYER_ID, "MaxSpeed")] = 9.25
+    scene[key(prefix, CAMERA_ID, "OnFoot/Distance")] = 20.0
     check(bpy.ops.paradise.save_config_document() == {"FINISHED"}, "save operator reports FINISHED")
 
     with open(CONFIG_PATH, encoding="utf-8") as file:
         saved = config_document.read(file.read())
 
     check(
-        config_document.payload_of(saved, "game.tuning.player")["MaxSpeed"] == 9.25,
+        config_document.payload_of(saved, PLAYER_ID)["MaxSpeed"] == 9.25,
         "the edited value reached the file",
     )
     check(
-        config_document.payload_of(saved, "game.tuning.camera")["OnFoot"]["Distance"] == 20.0,
+        config_document.payload_of(saved, CAMERA_ID)["OnFoot"]["Distance"] == 20.0,
         "a nested group re-nests on save",
     )
     check(
-        config_document.payload_of(saved, "game.tuning.player")["Mode"] == "Chase",
+        config_document.payload_of(saved, PLAYER_ID)["Mode"] == "Chase",
         "an untouched field is written, not dropped",
     )
 
@@ -179,22 +186,22 @@ def main() -> int:
 
     # ---- a group the schema no longer declares --------------------------------------------
     stale = dict(CONFIG)
-    stale["Components"] = [*CONFIG["Components"], {"Id": "game.tuning.gone", "Data": {"X": 1}}]
+    stale["Components"] = [*CONFIG["Components"], {"Id": GONE_ID, "Data": {"X": 1}}]
     write(CONFIG_PATH, stale)
     bpy.ops.paradise.load_config_document()
     bpy.ops.paradise.save_config_document()
     with open(CONFIG_PATH, encoding="utf-8") as file:
         after = config_document.read(file.read())
     check(
-        config_document.payload_of(after, "game.tuning.gone") == {"X": 1},
+        config_document.payload_of(after, GONE_ID) == {"X": 1},
         "a group the schema dropped is left untouched rather than rewritten",
     )
 
     # ---- a second document in the same list -------------------------------------------------
     # Two rows must not share a namespace: the values of one are not the values of the other.
     second_path = os.path.join(DATA_DIR, "game", "other.json")
-    write(second_path, {"Components": [{"Id": "game.tuning.player", "Data": {"MaxSpeed": 1.5}}]})
-    before = scene[key(prefix, "game.tuning.player", "MaxSpeed")]
+    write(second_path, {"Components": [{"Id": PLAYER_ID, "Data": {"MaxSpeed": 1.5}}]})
+    before = scene[key(prefix, PLAYER_ID, "MaxSpeed")]
     bpy.ops.paradise.pick_config_document(index=-1, file="game/other.json")
     second = config_store.active_document(scene)
     check(second.file == "game/other.json", "the second row stores its own file")
@@ -202,19 +209,19 @@ def main() -> int:
     second_prefix = config_store.prefix_for(second)
     check(second_prefix != prefix, "each document gets its own namespace")
     check(
-        abs(scene[key(second_prefix, "game.tuning.player", "MaxSpeed")] - 1.5) < 1e-6,
+        abs(scene[key(second_prefix, PLAYER_ID, "MaxSpeed")] - 1.5) < 1e-6,
         "the second document loads its own values",
     )
     check(
-        abs(scene[key(prefix, "game.tuning.player", "MaxSpeed")] - before) < 1e-6,
+        abs(scene[key(prefix, PLAYER_ID, "MaxSpeed")] - before) < 1e-6,
         "the first document's values are untouched by the second",
-        f"was {before}, now {scene[key(prefix, 'game.tuning.player', 'MaxSpeed')]}",
+        f"was {before}, now {scene[key(prefix, PLAYER_ID, 'MaxSpeed')]}",
     )
 
     # ---- removing a row forgets its values --------------------------------------------------
     check(bpy.ops.paradise.remove_config_document() == {"FINISHED"}, "remove reports FINISHED")
     check(
-        key(second_prefix, "game.tuning.player", "MaxSpeed") not in scene,
+        key(second_prefix, PLAYER_ID, "MaxSpeed") not in scene,
         "removing a document drops its stored values",
     )
     check(os.path.exists(second_path), "removing a document leaves its FILE alone")

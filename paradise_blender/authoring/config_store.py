@@ -53,9 +53,10 @@ __all__ = [
 #: stay separate.
 #:
 #: Terse on purpose. Blender caps an ID property NAME at 63 characters and a key is
-#: ``prefix + component id + "/" + field path`` -- ShiningPie's longest,
-#: ``shiningpie.tuning.camera/FollowYawSmoothingSeconds``, is already 51 of them. Every
-#: character spent here is one a project cannot spend on a readable field name.
+#: ``prefix + <compacted id> + "/" + field path``. The id is a GUID and would be 36 characters
+#: spent verbatim, so it goes through :func:`.authored_components.key_token` first and costs 22 --
+#: without that, ShiningPie's ``FollowYawSmoothingSeconds`` alone would not fit. Every character
+#: spent on the prefix is still one a project cannot spend on a readable field name.
 PREFIX_FORMAT = "pc{key}:"
 
 
@@ -84,7 +85,7 @@ class ConfigStoreError(RuntimeError):
 
 
 def config_value_key(prefix: str, component_id: str, path: str) -> str:
-    return f"{prefix}{component_id}/{path}"
+    return f"{prefix}{authored.key_token(component_id)}/{path}"
 
 
 def loaded_stamp(store, prefix: str) -> tuple[int, int] | None:

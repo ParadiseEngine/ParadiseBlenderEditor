@@ -1,5 +1,5 @@
 # Development tooling only. The addon itself ships as a Blender extension
-# (see blender_manifest.toml) and is never pip-installed.
+# (see paradise_blender/blender_manifest.toml) and is never pip-installed.
 
 [project]
 name = "paradise-blender-editor"

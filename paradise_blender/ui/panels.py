@@ -250,23 +250,133 @@ class PARADISE_PT_config(_ParadisePanel, Panel):
         box = layout.box()
         box.label(text=component.display_name, icon="PROPERTIES")
 
-        column = box.column(align=True)
-        for field in contract_authoring.flatten(component)[0]:
-            if not authored.is_field_visible(scene, component.id, field):
-                continue
-            key = config_store.config_value_key(prefix, component.id, field.path)
-            if key not in scene:
-                continue  # the schema gained a field since the load; Reload picks it up
-            if field.type == contract_authoring.TYPE_ENUM:
-                row = column.row(align=True)
-                row.label(text=field.path)
-                picker = row.operator(
-                    "paradise.set_config_enum", text=str(scene.get(key, "")), icon="DOWNARROW_HLT")
-                picker.prefix = prefix
-                picker.component = component.id
-                picker.path = field.path
-            else:
-                column.prop(scene, f'["{key}"]', text=field.path)
+        counts = config_store.counts_for_store(scene, prefix, component.id)
+        plan = contract_authoring.outline(component, counts)
+        _draw_container(box, scene, prefix, component, _RowIndex.of(plan), container="")
+
+
+class _RowIndex:
+    """Which leaves and which lists hang directly off each ROW.
+
+    Keyed by the nearest enclosing row (``Tables/0/Entries/1``), not by every object level: a
+    plain composed field keeps drawing flat under its slash path (``Box/SizeX``) exactly as it
+    always has, because changing that would churn every existing panel for a feature about lists.
+
+    Built once per group so drawing a row is a lookup rather than a scan of the whole outline.
+    """
+
+    def __init__(self, leaves, arrays) -> None:
+        self.leaves = leaves
+        self.arrays = arrays
+
+    @classmethod
+    def of(cls, plan) -> _RowIndex:
+        leaves: dict[str, list] = {}
+        arrays: dict[str, list] = {}
+        for field in plan.fields:
+            leaves.setdefault(contract_authoring.row_container_of(field.path), []).append(field)
+        for array in plan.arrays:
+            arrays.setdefault(contract_authoring.row_container_of(array.path), []).append(array)
+        return cls(leaves, arrays)
+
+    def leaf_at(self, path: str):
+        """The single leaf of a scalar row (``Tags/0``), whose container is the row itself."""
+        for field in self.leaves.get(contract_authoring.row_container_of(path), ()):
+            if field.path == path:
+                return field
+        return None
+
+
+def _draw_container(layout, scene, prefix, component, index, container: str) -> None:
+    """One row's own leaves, then the lists nested inside it. ``container=""`` is the component."""
+    column = layout.column(align=True)
+    for field in index.leaves.get(container, ()):
+        _draw_leaf(
+            column, scene, prefix, component, field,
+            label=contract_authoring.relative_to(field.path, container))
+    for array in index.arrays.get(container, ()):
+        _draw_array(layout, scene, prefix, component, index, array)
+
+
+def _draw_leaf(layout, scene, prefix, component, field, label: str) -> None:
+    if field is None or not authored.is_field_visible(scene, component.id, field):
+        return
+    key = config_store.config_value_key(prefix, component.id, field.path)
+    if key not in scene:
+        return  # the schema gained a field since the load; Reload picks it up
+    if field.type == contract_authoring.TYPE_ENUM:
+        # An ID property cannot drive an enum widget, so the value is picked through an operator.
+        row = layout.row(align=True)
+        row.label(text=label)
+        picker = row.operator(
+            "paradise.set_config_enum", text=str(scene.get(key, "")), icon="DOWNARROW_HLT")
+        picker.prefix = prefix
+        picker.component = component.id
+        picker.path = field.path
+    else:
+        layout.prop(scene, f'["{key}"]', text=label)
+
+
+def _draw_array(layout, scene, prefix, component, index, array) -> None:
+    """A list: a header with its Add button, then one box per row.
+
+    Drawn by hand rather than with ``template_list`` because that needs an RNA
+    ``CollectionProperty`` of registered structs. These rows live in ID properties keyed by
+    string, on a schema that changes every game build, and a row here is a whole sub-form rather
+    than one line. The pattern instead follows ``_draw_host_list_component`` below: a box, a row
+    per item, and operators carrying an index.
+    """
+    box = layout.box()
+    header = box.row(align=True)
+    header.label(text=f"{array.label}  ({array.count})", icon="LINENUMBERS_ON")
+    add = header.operator("paradise.config_row_add", text="", icon="ADD")
+    add.prefix, add.component, add.path = prefix, component.id, array.path
+
+    if array.count == 0:
+        # Said explicitly: an empty list and a list the panel cannot draw look identical
+        # otherwise, and the author has no way to tell which they are looking at.
+        note = box.row()
+        note.enabled = False
+        note.label(text="Empty — press + to add a row", icon="BLANK1")
+        return
+
+    for row_index in range(array.count):
+        row_path = f"{array.path}/{row_index}"
+        row_box = box.box()
+        head = row_box.row(align=True)
+        head.label(text=f"{row_index}   {_row_title(scene, prefix, component, array, row_path)}")
+
+        buttons = head.row(align=True)
+        up = buttons.row(align=True)
+        up.enabled = row_index > 0
+        move_up = up.operator("paradise.config_row_move", text="", icon="TRIA_UP")
+        move_up.prefix, move_up.component, move_up.path = prefix, component.id, array.path
+        move_up.index, move_up.direction = row_index, "UP"
+
+        down = buttons.row(align=True)
+        down.enabled = row_index < array.count - 1
+        move_down = down.operator("paradise.config_row_move", text="", icon="TRIA_DOWN")
+        move_down.prefix, move_down.component, move_down.path = prefix, component.id, array.path
+        move_down.index, move_down.direction = row_index, "DOWN"
+
+        drop = buttons.operator("paradise.config_row_remove", text="", icon="X")
+        drop.prefix, drop.component, drop.path = prefix, component.id, array.path
+        drop.index = row_index
+
+        if array.rows_are_records:
+            _draw_container(row_box, scene, prefix, component, index, container=row_path)
+        else:
+            # A scalar row IS one widget; there is no container to walk into.
+            _draw_leaf(row_box, scene, prefix, component, index.leaf_at(row_path), label="")
+
+
+def _row_title(scene, prefix, component, array, row_path: str) -> str:
+    """A row's own name, so the header reads "0  Rubble" rather than just "0"."""
+    if not array.row_title_path:
+        return ""
+    key = config_store.config_value_key(
+        prefix, component.id, f"{row_path}/{array.row_title_path}")
+    return str(scene.get(key, "") or "")
 
 
 class PARADISE_PT_play(_ParadisePanel, Panel):
@@ -456,6 +566,16 @@ class PARADISE_PT_entity_components(_ParadisePanel, Panel):
             row = box.row()
             row.enabled = False
             row.label(text=f"{host.path} — baked from {host.kind}; not authored in Blender yet",
+                      icon="DECORATE_LINKED")
+
+        # Authorable lists are editable in CONFIG DOCUMENTS but not on an entity: an entity's key
+        # budget is tighter, and exporting rows from here would change what every scene emits.
+        # Said out loud regardless, because this panel's job is to be a complete inventory of what
+        # the entity exports -- a member that simply vanished from it would read as "not there".
+        for array in contract_authoring.outline(component).arrays:
+            row = box.row()
+            row.enabled = False
+            row.label(text=f"{array.path} — a list; editable in config documents only",
                       icon="DECORATE_LINKED")
 
 

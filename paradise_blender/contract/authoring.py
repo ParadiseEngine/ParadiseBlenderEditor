@@ -22,10 +22,17 @@ The wire format, stated once (reference: ``AuthoredEntityCore.ValueOf``):
 * Composition is a tree: the schema flattens to slash paths (``"Box/SizeX"``) for editing, and
   the payload builder re-nests them. Path and tree cannot disagree because one is derived from
   the other.
+* A LIST extends the same grammar with an index segment: ``"Tables/0/Entries/1/Weight"``. The
+  schema declares that a member *is* a list and can say nothing about how long it is, so the
+  row count is DATA and arrives from the caller -- see :func:`outline` and :func:`counts_of`.
+  A numeric segment re-nests into a JSON array rather than an object, which is the only place
+  the two halves of this module need to agree about a spelling.
 * Fields (or whole components) with ``authoredBy`` are host-object *references* that the Godot
   host bakes into values at export. This host does not bake any of them yet; such fields are
   skipped, which the reader treats as unauthored. :func:`flatten` reports them so the UI can
-  say so instead of drawing a control that exports nothing.
+  say so instead of drawing a control that exports nothing. An ``authoredBy`` LIST stays a
+  reference for the same reason: a row editor over a collider's shapes would be a second,
+  lying copy of the pointer list the entity already holds.
 
 No ``bpy`` import: this module is pure data and is unit-tested standalone.
 """
@@ -40,7 +47,9 @@ from dataclasses import field as dataclass_field
 from typing import Any
 
 __all__ = [
+    "COUNT_SUFFIX",
     "CURRENT_VERSION",
+    "MAX_ROWS",
     "MINIMUM_SUPPORTED_VERSION",
     "SCHEMA_FILE_NAME",
     "AuthoredComponentSchema",
@@ -48,17 +57,28 @@ __all__ = [
     "AuthoredGizmoSchema",
     "AuthoredVisibilitySchema",
     "AuthoringSchemaDocument",
+    "FlatArray",
     "FlatField",
+    "FlatOutline",
     "HostRef",
     "SchemaError",
     "build_payload",
+    "counts_of",
     "default_of",
     "flatten",
     "merge",
+    "outline",
     "read",
     "read_engine_schema",
+    "relative_to",
+    "removal_mapping",
+    "renumber",
+    "row_container_of",
+    "row_index_of",
     "schema_path",
     "schema_stamp",
+    "swap_mapping",
+    "value_at",
 ]
 
 # AuthoringSchemaDocument.CurrentVersion / MinimumSupportedVersion. Bump only in lockstep with
@@ -91,6 +111,26 @@ TYPE_COLOR = "color"
 # AuthoredBySources. (v1 spelled this kind "nativeShape" and it was normalized on read; the v3
 # floor makes such a document unreadable, so the alias is gone rather than dead.)
 SOURCE_SHAPE = "shape"
+
+#: Ceiling on the rows one list may hold.
+#:
+#: A clamp, not a policy. A row count reaches :func:`outline` from a store an author can hand-edit
+#: in Blender's Custom Properties panel and from a file the game writes; a ``draw()`` that loops a
+#: billion times hangs Blender with no way back to the button that would fix it. Far above any
+#: real authored list, so nothing legitimate ever meets it.
+MAX_ROWS = 4096
+
+#: Suffix marking a stored row COUNT rather than a value: ``Tables#`` holds how many rows
+#: ``Tables`` has, ``Tables/0/Entries#`` how many the entries of table 0 has.
+#:
+#: This is storage naming, and it lives here only because the path algebra is forced to recognize
+#: it: :func:`renumber` has to carry ``Tables/2/Entries#`` along with ``Tables/2/Entries/0/Weight``
+#: when row 2 moves, which it cannot do without knowing the suffix exists. It never reaches a file.
+#:
+#: ONE character, deliberately -- see ``config_store`` for the budget it is spent against. ``#``
+#: is safe because it cannot occur in a C# member name and is not in base64url's alphabet, so no
+#: field path and no component token can ever produce one.
+COUNT_SUFFIX = "#"
 
 
 class SchemaError(ValueError):
@@ -331,58 +371,313 @@ class HostRef:
     is_list: bool = False
 
 
-def flatten(component: AuthoredComponentSchema) -> tuple[list[FlatField], list[HostRef]]:
-    """The component's field tree as leaf paths, plus the host references it wants baked.
+@dataclass
+class FlatArray:
+    """One authored LIST, addressed by the instance path its rows hang under.
 
-    Mirrors ``AuthoredEntityCore.ReadFields``: composed fields recurse with a path prefix,
-    ``authoredBy`` fields become host references rather than editable leaves, and an array is
-    only a host-reference list (a list of typed rows has no author asking for it yet).
+    ``path`` is an INSTANCE path, not a schema path: the ``Entries`` of table 0 and of table 1 are
+    two ``FlatArray`` entries (``Tables/0/Entries``, ``Tables/1/Entries``) because they hold
+    different numbers of rows. No schema path can express that, which is the whole reason
+    :func:`outline` takes counts instead of deriving them.
+
+    Reported separately from fields and host refs because a list is neither: an empty one has no
+    leaves at all, and the UI still has to draw its header and its Add button.
     """
-    fields: list[FlatField] = []
-    hosts: list[HostRef] = []
-    _flatten_into(component.fields, "", fields, hosts)
-    return fields, hosts
+
+    path: str
+    #: The declaring member's name, for a panel header. The last segment of ``path`` for a list
+    #: nested inside a row, where the schema's own ``name`` is empty.
+    label: str
+    count: int
+    #: ``items.fields`` -- False for a scalar list (``List<string>``), where a row IS one widget
+    #: and there is no container to walk into.
+    rows_are_records: bool
+    #: First string-ish leaf of a row, RELATIVE to the row (``"Table"``), so a panel can title a
+    #: row by its content rather than by its index alone. None when a row has no such leaf.
+    row_title_path: str | None = None
+    doc: str | None = None
 
 
-def _flatten_into(
+@dataclass
+class FlatOutline:
+    """Everything :func:`outline` found: the editable leaves, the host references, the lists.
+
+    ``sequence`` is the leaves and lists INTERLEAVED in declaration order, and it is the primary
+    result -- ``fields`` and ``arrays`` are filtered views of it, materialized once, so the three
+    can never drift out of step. The interleaving is what keeps a written payload's keys in
+    schema order: seeding every list before every leaf would hoist each row's nested list above
+    its siblings, turning a no-op save into a whole-file diff.
+    """
+
+    sequence: list[FlatField | FlatArray] = dataclass_field(default_factory=list)
+    hosts: list[HostRef] = dataclass_field(default_factory=list)
+    fields: list[FlatField] = dataclass_field(default_factory=list)
+    arrays: list[FlatArray] = dataclass_field(default_factory=list)
+
+
+def outline(
+    component: AuthoredComponentSchema, counts: Mapping[str, int] | None = None
+) -> FlatOutline:
+    """The component's field tree as leaf paths, the host references it wants baked, and the
+    lists it declares -- expanded to ``counts`` rows apiece.
+
+    Mirrors ``AuthoredEntityCore.ReadFields``: composed fields recurse with a path prefix and
+    ``authoredBy`` fields become host references rather than editable leaves. Beyond it, a list
+    expands to one subtree per row, at indexed paths.
+
+    ``counts`` maps an array's INSTANCE path to its row count. Absent (or ``None``) means every
+    list is empty, which is what a schema alone can say. Callers with data derive it: from a
+    payload with :func:`counts_of`, or from a store with ``config_store.counts_for_store``.
+
+    ``arrays`` comes out parent-before-child and rows in ascending index -- ``Tables``, then
+    ``Tables/0/Entries``, then ``Tables/1/Entries``. :func:`build_payload` seeds in that order and
+    depends on it: a nested list can only be created once the row holding it exists.
+    """
+    plan = FlatOutline()
+    _walk(component.fields, "", counts or {}, plan)
+    plan.fields = [item for item in plan.sequence if isinstance(item, FlatField)]
+    plan.arrays = [item for item in plan.sequence if isinstance(item, FlatArray)]
+    return plan
+
+
+def flatten(
+    component: AuthoredComponentSchema, counts: Mapping[str, int] | None = None
+) -> tuple[list[FlatField], list[HostRef]]:
+    """The two-tuple facade over :func:`outline`.
+
+    Kept because most call sites read exactly these two lists, and widening the arity would touch
+    every one of them to no purpose. Reach for :func:`outline` when you need ``arrays`` too.
+    """
+    plan = outline(component, counts)
+    return plan.fields, plan.hosts
+
+
+def _walk(
     source: list[AuthoredFieldSchema],
     prefix: str,
-    fields: list[FlatField],
-    hosts: list[HostRef],
+    counts: Mapping[str, int],
+    plan: FlatOutline,
 ) -> None:
     for field in source:
-        path = prefix + field.name
+        _walk_field(field, prefix + field.name, counts, plan)
 
-        if field.type == TYPE_ARRAY:
-            if field.items is not None and field.items.authored_by is not None:
-                hosts.append(HostRef(path=path, kind=field.items.authored_by, is_list=True))
-            else:
-                hosts.append(HostRef(path=path, kind="rows", is_list=True))
-            continue
 
-        if field.authored_by is not None:
-            hosts.append(HostRef(path=path, kind=field.authored_by))
-            continue
+def _walk_field(
+    field: AuthoredFieldSchema, path: str, counts: Mapping[str, int], plan: FlatOutline
+) -> None:
+    """One field at an already-built path.
 
-        if field.fields:
-            _flatten_into(field.fields, path + "/", fields, hosts)
-            continue
-
-        fields.append(
-            FlatField(
+    The path is a PARAMETER rather than derived from ``field.name``, and that is the trick the
+    whole list expansion rests on: an array element's schema (``field.items``) has an empty name,
+    so passing its indexed path lets a row take the exact same branch as a named field. A list of
+    records, a list of scalars and a list of lists then need no separate code between them.
+    """
+    if field.type == TYPE_ARRAY:
+        items = field.items
+        if items is None or items.authored_by is not None:
+            # Still a host reference: the Godot host bakes these from objects the entity points
+            # at, and a row editor over them would be a second, lying copy of that pointer list.
+            plan.hosts.append(
+                HostRef(path=path, kind=items.authored_by if items else "rows", is_list=True)
+            )
+            return
+        count = _row_count(counts, path)
+        plan.sequence.append(
+            FlatArray(
                 path=path,
-                type=field.type,
-                unit=field.unit,
+                label=field.name or path.rsplit("/", 1)[-1],
+                count=count,
+                rows_are_records=bool(items.fields),
+                row_title_path=_title_path(items),
                 doc=field.doc,
-                minimum=field.minimum,
-                maximum=field.maximum,
-                values=field.values,
-                visible_when=field.visible_when,
-                default=default_of(field),
-                has_default=field.has_default,
-                asset_kinds=field.asset_kinds,
             )
         )
+        for index in range(count):
+            _walk_field(items, f"{path}/{index}", counts, plan)
+        return
+
+    if field.authored_by is not None:
+        plan.hosts.append(HostRef(path=path, kind=field.authored_by))
+        return
+
+    if field.fields:
+        _walk(field.fields, path + "/", counts, plan)
+        return
+
+    plan.sequence.append(
+        FlatField(
+            path=path,
+            type=field.type,
+            unit=field.unit,
+            doc=field.doc,
+            minimum=field.minimum,
+            maximum=field.maximum,
+            values=field.values,
+            visible_when=field.visible_when,
+            default=default_of(field),
+            has_default=field.has_default,
+            asset_kinds=field.asset_kinds,
+        )
+    )
+
+
+def _row_count(counts: Mapping[str, int], path: str) -> int:
+    """How many rows to expand, clamped to :data:`MAX_ROWS` and floored at zero.
+
+    Clamped rather than trusted -- see :data:`MAX_ROWS`. A count that is not a number at all reads
+    as an empty list rather than raising: the store it came from is hand-editable, and refusing to
+    draw the whole panel over one bad key would hide the field that says which key.
+    """
+    try:
+        value = int(counts.get(path, 0))
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(value, MAX_ROWS))
+
+
+def _title_path(items: AuthoredFieldSchema) -> str | None:
+    """The first string-ish leaf of a row, for a panel to title the row by.
+
+    First rather than best: a schema declares no "name" member, and the leading string of a record
+    is what an author reads as its identity in practice (``LootTable.Table``, ``ItemDef.Id``).
+    """
+    for field in items.fields or ():
+        if field.type in (TYPE_STRING, TYPE_ENUM) and field.authored_by is None:
+            return field.name
+    return None
+
+
+def counts_of(component: AuthoredComponentSchema, payload: Any) -> dict[str, int]:
+    """Row counts for every array INSTANCE in a payload, keyed as :func:`outline` takes them.
+
+    This is the only place the addon learns how many rows exist. The schema declares that a member
+    IS a list; only the data says how long it is, so every consumer of :func:`outline` ultimately
+    traces back to here or to the equivalent scan over stored values.
+    """
+    counts: dict[str, int] = {}
+    _count_into(component.fields, "", payload, counts)
+    return counts
+
+
+def _count_into(
+    source: list[AuthoredFieldSchema], prefix: str, node: Any, counts: dict[str, int]
+) -> None:
+    for field in source:
+        value = node.get(field.name) if isinstance(node, Mapping) else None
+        _count_field(field, prefix + field.name, value, counts)
+
+
+def _count_field(
+    field: AuthoredFieldSchema, path: str, value: Any, counts: dict[str, int]
+) -> None:
+    """Mirror of :func:`_walk_field`, over data instead of over counts.
+
+    Same reason for taking an explicit path: a row is counted by the same branch that counts a
+    named member, so a list nested inside a list needs no special case.
+    """
+    if field.type == TYPE_ARRAY:
+        items = field.items
+        if items is None or items.authored_by is not None:
+            return
+        # A member the file spells as something other than a list is an EMPTY list, not a crash:
+        # the panel's job is to show the author what is there and let them fix it.
+        rows = value if isinstance(value, list) else []
+        counts[path] = min(len(rows), MAX_ROWS)
+        for index, row in enumerate(rows[:MAX_ROWS]):
+            _count_field(items, f"{path}/{index}", row, counts)
+        return
+
+    if field.authored_by is not None:
+        return
+
+    if field.fields:
+        _count_into(field.fields, path + "/", value, counts)
+
+
+# --------------------------------------------------------------------------------------
+# Row paths -- the pure algebra the row operators are built from
+# --------------------------------------------------------------------------------------
+
+
+def row_container_of(path: str) -> str:
+    """The nearest enclosing ROW of a path, or ``""`` for one not inside any list.
+
+    ``"Tables/0/Entries/1/Weight"`` -> ``"Tables/0/Entries/1"``; ``"Box/SizeX"`` -> ``""``. Used to
+    group leaves under the row that owns them, which is how a panel draws rows without searching
+    the whole outline per row.
+    """
+    parts = path.split("/")
+    for index in range(len(parts) - 1, -1, -1):
+        if parts[index].isdigit():
+            return "/".join(parts[: index + 1])
+    return ""
+
+
+def relative_to(path: str, container: str) -> str:
+    """``path`` with ``container``'s prefix removed -- the label a row's leaf draws under."""
+    if not container:
+        return path
+    head = container + "/"
+    return path[len(head):] if path.startswith(head) else path
+
+
+def row_index_of(path: str, array_path: str) -> int | None:
+    """Which row of ``array_path`` this path belongs to, or None when it belongs to none.
+
+    Segment-exact at BOTH ends, and both halves earn their keep. The prefix must end at a
+    separator or ``Tables`` would match ``TablesEnabled`` and renumber a sibling field along with
+    the list; and the index must be a whole segment or ``Tables/10/X`` reads as row 1 of something.
+
+    A count key of a list nested at this row (``Tables/2/Entries#``) belongs to row 2, so the
+    suffix is stripped before the digits are read -- that is what carries a nested list's own
+    count along when its row moves.
+    """
+    head = array_path + "/"
+    if not path.startswith(head):
+        return None
+    segment = path[len(head):].split("/", 1)[0]
+    if segment.endswith(COUNT_SUFFIX):
+        segment = segment[: -len(COUNT_SUFFIX)]
+    return int(segment) if segment.isdigit() else None
+
+
+def renumber(path: str, array_path: str, mapping: Mapping[int, int | None]) -> str | None:
+    """``path`` with its row index under ``array_path`` remapped; None when its row is going away.
+
+    Descendants ride along for free, which is the whole trick: only the ONE segment naming the row
+    is rewritten, so ``Tables/2/Entries/1/Weight``, ``Tables/2/Entries#`` and ``Tables/2/Table``
+    all move together, in one pass, with no knowledge of what is beneath them.
+
+    A path outside ``array_path`` comes back unchanged rather than as None -- callers rewrite a
+    whole component's keys through this, and "not mine" must be distinguishable from "delete".
+    """
+    index = row_index_of(path, array_path)
+    if index is None:
+        return path
+    target = mapping.get(index)
+    if target is None:
+        return None
+    segment, _, tail = path[len(array_path) + 1:].partition("/")
+    suffix = segment[len(str(index)):]  # "" for a value key, COUNT_SUFFIX for a nested count
+    rebuilt = f"{array_path}/{target}{suffix}"
+    return f"{rebuilt}/{tail}" if tail else rebuilt
+
+
+def removal_mapping(count: int, index: int) -> dict[int, int | None]:
+    """Remove row ``index`` of ``count``: everything above shifts down one.
+
+    The removed row is simply ABSENT from the mapping, which :func:`renumber` reads as "delete" --
+    so one mapping expresses both the shift and the removal, and no caller has to special-case
+    the row that is going away.
+    """
+    return {i: (i if i < index else i - 1) for i in range(count) if i != index}
+
+
+def swap_mapping(count: int, a: int, b: int) -> dict[int, int]:
+    """Exchange two rows, leaving every other row where it is."""
+    mapping: dict[int, int] = {i: i for i in range(count)}
+    mapping[a], mapping[b] = b, a
+    return mapping
 
 
 def default_of(field: AuthoredFieldSchema) -> Any:
@@ -427,7 +722,9 @@ def _is_number(value: Any) -> bool:
 
 
 def build_payload(
-    component: AuthoredComponentSchema, values: Mapping[str, Any]
+    component: AuthoredComponentSchema,
+    values: Mapping[str, Any],
+    counts: Mapping[str, int] | None = None,
 ) -> dict[str, Any]:
     """The component's exported ``Data`` payload, from a flat ``{path: value}`` mapping.
 
@@ -435,12 +732,49 @@ def build_payload(
     not carry -- see the module docstring for the wire rules. Host references are skipped: an
     absent key is "unauthored" to the reader, which is the truthful description of a bake this
     host does not perform.
+
+    ``counts`` is the exact inverse of :func:`counts_of`, and the ``None`` case is meaningful
+    rather than merely a default: it says the caller holds no list data AT ALL -- an entity
+    export, which cannot author lists yet -- so arrays stay absent from the payload and that path
+    keeps producing the bytes it always has. A caller that passes counts (even empty ones) is
+    saying the opposite, and gets ``[]`` for a list it authored with no rows.
     """
-    fields, _ = flatten(component)
+    plan = outline(component, counts)
     payload: dict[str, Any] = {}
-    for field in fields:
-        _write_path(payload, field.path, _wire_value(field, values.get(field.path, field.default)))
+    for item in plan.sequence:
+        if isinstance(item, FlatArray):
+            # A list authored with no rows has to reach the file as [] rather than vanish from
+            # it: the member IS authored, and it is authored empty. Written INTERLEAVED with the
+            # leaves rather than in a pass of its own, so each key lands in schema order and a
+            # save with no edits does not reshuffle the file.
+            if counts is not None:
+                _write_path(payload, item.path, [])
+            continue
+        _write_path(payload, item.path, _wire_value(item, values.get(item.path, item.default)))
     return payload
+
+
+def value_at(payload: Any, path: str, fallback: Any = None) -> Any:
+    """Read a slash path out of a payload, following LIST indices as well as object members.
+
+    The exact inverse of :func:`_write_path`, and the CONTAINER decides how a segment is read
+    rather than the segment's spelling: a numeric part indexes a list but is a plain member name
+    against an object, so a record with a member literally called ``0`` still reads correctly.
+
+    Returns ``fallback`` for anything absent, so a member the file omits falls through to the
+    field's schema default rather than storing a hole.
+    """
+    value = payload
+    for part in path.split("/"):
+        if isinstance(value, list):
+            if not part.isdigit() or int(part) >= len(value):
+                return fallback
+            value = value[int(part)]
+        elif isinstance(value, Mapping) and part in value:
+            value = value[part]
+        else:
+            return fallback
+    return fallback if value is None else value
 
 
 def _wire_value(field: FlatField, value: Any) -> Any:
@@ -478,14 +812,59 @@ def _wire_value(field: FlatField, value: Any) -> Any:
 
 
 def _write_path(root: dict[str, Any], path: str, value: Any) -> None:
-    """Write a slash path into a nested object, creating groups as needed -- the inverse of
-    the flattening that produced the path."""
+    """Write a slash path into a nested payload, creating objects AND lists as needed -- the
+    inverse of the flattening that produced the path.
+
+    The rule that makes one grammar serve both containers: **which container a segment creates is
+    decided by the segment AFTER it**, not by the segment itself. ``Tables/0/Table`` means a list
+    at ``Tables`` and an object at its index 0, and the only place that is legible is the next
+    segment's spelling.
+
+    Indices are dense and ascending by construction -- :func:`outline` emits ``0..count-1`` in
+    order -- so the growth below never runs in normal use. It exists so a hand-built mapping with
+    a hole yields an EMPTY ROW, which the engine's generated reader fills from the record's own
+    initializers, rather than a JSON ``null`` that same reader would dereference. Nothing
+    compacts a hole away: silently reindexing would hide the bug that produced it.
+    """
     parts = path.split("/")
-    target = root
-    for part in parts[:-1]:
-        nested = target.get(part)
-        if not isinstance(nested, dict):
-            nested = {}
-            target[part] = nested
-        target = nested
-    target[parts[-1]] = value
+    target: Any = root
+    for depth, part in enumerate(parts[:-1]):
+        target = _child(target, part, wants_list=parts[depth + 1].isdigit())
+    _assign(target, parts[-1], value)
+
+
+def _child(container: Any, part: str, wants_list: bool) -> Any:
+    """The child container at ``part``, created (or replaced, if it is the wrong kind) to hold
+    what the next segment needs."""
+    kind: Any = list if wants_list else dict
+    if isinstance(container, list):
+        index = int(part)
+        _grow(container, index, kind)
+        if not isinstance(container[index], kind):
+            container[index] = kind()
+        return container[index]
+    nested = container.get(part)
+    if not isinstance(nested, kind):
+        nested = kind()
+        container[part] = nested
+    return nested
+
+
+def _assign(container: Any, part: str, value: Any) -> None:
+    if isinstance(container, list):
+        index = int(part)
+        _grow(container, index, lambda: None)
+        container[index] = value
+    else:
+        container[part] = value
+
+
+def _grow(target: list[Any], index: int, kind: Any) -> None:
+    """Extend a list so ``index`` exists.
+
+    ``kind`` is a FACTORY, not a value. One shared ``{}`` appended twice would make two rows the
+    SAME object, so an edit to either would appear in both -- a bug that survives every test
+    written against a single row, and shows up only as two rows that will not stop agreeing.
+    """
+    while len(target) <= index:
+        target.append(kind())

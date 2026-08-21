@@ -11,12 +11,18 @@ and prose come from the ``authoring-schema.json`` the Components panel already r
 ``[Authored]`` records like any other.
 
 **Merging is surgical, and that is the whole point of this module.** A config file is written by
-hand and holds more than payloads -- ShiningPie's carries ``"// note"`` prose keys and the entire
-``LootTables`` array, none of which any editor understands. Being open to arbitrary documents makes
+hand and holds more than payloads -- prose ``"// note"`` keys, and whole content sections a game
+keeps to itself, none of which any editor understands. Being open to arbitrary documents makes
 that rule stricter, not looser: the addon cannot know what any given key means. Rebuilding
 the document from what a panel knows would silently delete all of it. :func:`merge_payloads`
 therefore replaces only the ``Data`` object of the ids it was given and leaves every other key,
 and the key order, exactly as it found them.
+
+**The promise covers TOP-LEVEL keys, not the inside of a payload.** ``Data`` is replaced wholesale,
+so a hand-added key within an authored component's payload -- a note inside one row of a list, say
+-- does not survive a save. That has always been true of nested objects; it is stated here because
+authored lists moved a body of hand-written content from the protected side of that line to the
+unprotected one, and the difference should be read rather than discovered.
 
 Nothing here imports ``bpy``: the round-trip that must not lose data is plain-``pytest`` testable.
 Serialization is not here either -- callers hand the merged document to

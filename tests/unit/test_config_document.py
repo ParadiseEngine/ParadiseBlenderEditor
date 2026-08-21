@@ -1,10 +1,15 @@
 """Tests for the game config document reader and its surgical merge.
 
 The property worth protecting is in :class:`TestMergePayloads`: a config file is hand-written and
-holds keys no editor understands -- prose ``"// note"`` entries, and in ShiningPie's case the whole
-``LootTables`` array of drop tables. A save that rebuilt the document from what a panel knows would
-delete every one of them, and the loss would look exactly like a successful save. These tests pin
-that the merge is additive-in-place: only the named ``Data`` objects move.
+holds keys no editor understands -- prose ``"// note"`` entries, and whole content sections a game
+keeps to itself. A save that rebuilt the document from what a panel knows would delete every one of
+them, and the loss would look exactly like a successful save. These tests pin that the merge is
+additive-in-place: only the named ``Data`` objects move.
+
+The preservation promise is about TOP-LEVEL keys, and the boundary is worth stating because it has
+moved: a key *inside* a payload's ``Data`` is rewritten, so anything a game wants kept must live
+outside ``Components``. ShiningPie's drop tables used to be the example here and are an authored
+payload now; ``Dialogue`` below stands in for whatever a game still keeps out there.
 """
 
 from __future__ import annotations
@@ -15,8 +20,8 @@ import pytest
 
 from paradise_blender.contract import config_document, writer
 
-# Shaped like ShiningPie's real data/shiningpie/config.json, down to the prose keys and the
-# non-payload LootTables section, because those are precisely what a naive rewrite destroys.
+# Shaped like a real hand-written config, down to the prose keys and a non-payload content
+# section, because those are precisely what a naive rewrite destroys.
 SHINING_PIE_LIKE = json.dumps(
     {
         "// note": "Every gameplay tunable lives here. No balance constants in C#.",
@@ -30,9 +35,9 @@ SHINING_PIE_LIKE = json.dumps(
                 "Data": {"OnFoot": {"YawDegrees": 130.0, "Distance": 12.0}},
             },
         ],
-        "// LootTables": "MinItems..MaxItems rolled per container, entries weighted.",
-        "LootTables": [
-            {"Table": "Rubble", "MinItems": 0, "MaxItems": 2, "Entries": [{"Item": "metal", "Weight": 5}]}
+        "// Dialogue": "Localized barks, keyed by speaker. Not an authored payload.",
+        "Dialogue": [
+            {"Speaker": "guard", "Lines": [{"Id": "bark_01", "Text": "who goes there"}]}
         ],
     }
 )
@@ -52,7 +57,7 @@ class TestRead:
     def test_keeps_every_key_the_addon_does_not_understand(self):
         parsed = document()
         assert parsed["// note"].startswith("Every gameplay tunable")
-        assert parsed["LootTables"][0]["Table"] == "Rubble"
+        assert parsed["Dialogue"][0]["Speaker"] == "guard"
 
     def test_payload_of_returns_the_nested_data(self):
         assert config_document.payload_of(document(), "shiningpie.tuning.camera") == {
@@ -64,7 +69,7 @@ class TestRead:
 
     def test_a_document_with_no_components_is_still_readable(self):
         # A game whose config carries only content sections is not malformed, just empty to us.
-        assert config_document.declared_ids(config_document.read('{"LootTables": []}')) == []
+        assert config_document.declared_ids(config_document.read('{"Dialogue": []}')) == []
 
     def test_rejects_invalid_json(self):
         with pytest.raises(config_document.ConfigError, match="not valid JSON"):
@@ -112,13 +117,13 @@ class TestMergePayloads:
             document(), {"shiningpie.tuning.player": {"MaxSpeed": 9.0}}
         )
         assert merged["// note"].startswith("Every gameplay tunable")
-        assert merged["// LootTables"].startswith("MinItems..MaxItems")
-        assert merged["LootTables"][0]["Entries"] == [{"Item": "metal", "Weight": 5}]
+        assert merged["// Dialogue"].startswith("Localized barks")
+        assert merged["Dialogue"][0]["Lines"] == [{"Id": "bark_01", "Text": "who goes there"}]
 
     def test_preserves_top_level_key_order(self):
         # The file is read by humans; a save that reshuffled it would make every diff unreadable.
         merged = config_document.merge_payloads(document(), {})
-        assert list(merged) == ["// note", "Components", "// LootTables", "LootTables"]
+        assert list(merged) == ["// note", "Components", "// Dialogue", "Dialogue"]
 
     def test_appends_a_group_the_file_does_not_declare_yet(self):
         # A tuning group added to the game's C# reaches the file on the first save.
@@ -141,7 +146,7 @@ class TestMergePayloads:
 
         reread = config_document.read(path.read_text(encoding="utf-8"))
         assert config_document.payload_of(reread, "shiningpie.tuning.player") == {"MaxSpeed": 9.0}
-        assert reread["LootTables"][0]["Table"] == "Rubble"
+        assert reread["Dialogue"][0]["Speaker"] == "guard"
         assert reread["// note"].startswith("Every gameplay tunable")
 
 

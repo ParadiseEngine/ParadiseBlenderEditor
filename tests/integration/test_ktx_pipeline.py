@@ -107,13 +107,10 @@ def main() -> int:
 
         captured.clear()
         ktx.convert_image(colour_source, ktx.Transcoder("/usr/local/bin/ktx", modern=True), force=True)
-        check(
-            "modern: basecolor is SRGB",
-            captured[0][captured[0].index("--format") + 1],
-            "R8G8B8A8_SRGB",
-        )
-        check("modern: basecolor has no --normal-mode", "--normal-mode" in captured[0], False)
-        check("modern: basecolor pins --assign-tf srgb", captured[0][captured[0].index("--assign-tf") + 1], "srgb")
+        colour = captured[0]
+        check("modern: basecolor is SRGB", colour[colour.index("--format") + 1], "R8G8B8A8_SRGB")
+        check("modern: basecolor has no --normal-mode", "--normal-mode" in colour, False)
+        check("modern: basecolor pins --assign-tf srgb", colour[colour.index("--assign-tf") + 1], "srgb")
 
         captured.clear()
         ktx.convert_image(source, ktx.Transcoder("/opt/bin/toktx", modern=False), force=True)

@@ -1,0 +1,48 @@
+schema_version = "1.0.0"
+
+id = "paradise_blender"
+version = "0.1.0"
+name = "Paradise Engine Tools"
+tagline = "Author, play, and live-preview Paradise Engine scenes"
+maintainer = "Paradise Engine"
+type = "add-on"
+
+website = "https://github.com/ParadiseEngine/ParadiseEngine"
+
+tags = ["Import-Export", "Pipeline", "Game Engine"]
+
+# The oldest version actually exercised -- NOT the "extensions landed in 4.2" floor.
+# A floor above the running Blender refuses to enable outright rather than degrading,
+# so raise this only alongside a version we have really tested.
+blender_version_min = "5.1.0"
+
+license = ["SPDX:MIT"]
+
+# This manifest lives INSIDE the package, beside __init__.py, because that is what an
+# extension is: `blender_manifest.toml` next to the Python package root. Keeping it at the
+# repo root instead looks equivalent and is not -- `tools/install_addon.py` symlinks only
+# `paradise_blender/`, so a root manifest is never part of what Blender loads, and
+# `extension build` refuses the repo root outright ("not a Python package").
+#
+# Declared for disclosure only. Blender parses these and shows them in the add-on's UI
+# entry; nothing enforces them -- there is no sandbox, and the subprocess and socket calls
+# below would run identically with no [permissions] block at all. They are here because
+# they are true, and because the extensions platform moderates on them.
+#
+# The addon shells out to `paradise-runtime` (play + live preview), Blender's own glTF
+# exporter for mesh GLBs, and optionally `toktx` and the navmesh bridge CLI.
+#
+# Both strings are capped at 64 characters by the manifest schema, as is `tagline` above.
+# Exceeding it is not a warning: `extension build` fails and no zip is produced.
+[permissions]
+files = "Read and write exported scene, material, and mesh data"
+network = "Loopback connection to the Paradise runtime for live preview"
+
+# Relative to this file, which is now the package root -- so the repo's `/tests/`,
+# `/tools/`, `/docs/` and cache directories are siblings of the package, already outside
+# the build, and listing them here would be dead weight.
+[build]
+paths_exclude_pattern = [
+  "__pycache__/",
+  "*.blend1",
+]

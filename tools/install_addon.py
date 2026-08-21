@@ -3,7 +3,14 @@
 
 Symlinks rather than copies, so editing the source here takes effect on the next Blender
 restart (or addon reload) with no reinstall step. That is the whole point during development;
-for distribution, build a proper extension zip with ``blender --command extension build``.
+for distribution, build a proper extension zip -- from the package directory, which is
+where ``blender_manifest.toml`` lives and what Blender treats as the extension root::
+
+    mkdir -p dist
+    blender --command extension build --source-dir paradise_blender --output-dir dist
+
+Pointing ``--source-dir`` at the repository root fails: there is no ``__init__.py``
+there, and the manifest is deliberately not there either.
 
 Usage::
 

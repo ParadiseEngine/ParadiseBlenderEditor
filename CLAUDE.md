@@ -130,6 +130,15 @@ drift there means "regenerate the file", not "patch it by hand".
 every game rebuild, and property-group fields are class-level and registered once. So
 `authoring/authored_components.py` stores them as per-object ID properties
 (`obj["paradise:<id>/<Field/Path>"]`) and the panel draws them from the schema at draw time.
+A LIST extends the same key grammar with an index segment (`Tables/0/Entries/1/Weight`), plus one
+`#`-suffixed sentinel per list holding its row count (`Tables#`, `Tables/0/Entries#`) — the schema
+says a member *is* a list and can say nothing about how long it is, so the count is data. That is
+why `contract/authoring.py`'s `outline()` takes counts and `flatten()` is a facade over it, and why
+adding, removing or reordering a row is a key-renumbering operation (`config_store._rewrite_rows`)
+rather than a list mutation. The one-character suffix is not style: a key is
+`prefix + 22-char token + "/" + path` under Blender's 63-character cap, and `/__count` would spend
+eight of the ~36 characters a path has to live in. Editing rows is CONFIG-DOCUMENT only for now;
+an entity's key budget is five characters tighter and exporting rows would change every scene.
 Two consequences: never write ID data inside a `draw()` (Blender forbids it — that is why new
 schema fields appear behind a sync button), and the wire format is pinned by the Godot host's
 `AuthoredEntityCore.ValueOf`, mirrored in `contract/authoring.py` and its unit tests.

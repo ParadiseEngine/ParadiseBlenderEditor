@@ -53,6 +53,37 @@ PINGU_LIKE = json.dumps(
                         "type": "array",
                         "items": {"name": "", "type": "object", "authoredBy": "node"},
                     },
+                    # An AUTHORABLE list beside the host-referenced one above, so a single
+                    # component covers both branches: a list the host bakes stays a reference,
+                    # a list of plain rows becomes editable. Shaped like ShiningPie's drop
+                    # tables -- records containing their own list, the deepest thing the path
+                    # grammar has to carry.
+                    {
+                        "name": "Tables",
+                        "type": "array",
+                        "items": {
+                            "name": "",
+                            "type": "object",
+                            "fields": [
+                                {"name": "Table", "type": "string", "default": ""},
+                                {"name": "MinItems", "type": "int", "default": 0},
+                                {
+                                    "name": "Entries",
+                                    "type": "array",
+                                    "items": {
+                                        "name": "",
+                                        "type": "object",
+                                        "fields": [
+                                            {"name": "Item", "type": "string", "default": ""},
+                                            {"name": "Weight", "type": "int", "default": 1},
+                                        ],
+                                    },
+                                },
+                            ],
+                        },
+                    },
+                    # A SCALAR list: a row is one widget, with no container to walk into.
+                    {"name": "Tags", "type": "array", "items": {"name": "", "type": "string", "default": ""}},
                     {
                         "name": "FlipChance",
                         "type": "float",
@@ -288,3 +319,261 @@ class TestSchemaStamp:
         first = authoring.schema_stamp(str(path))
         path.write_text('{"version": 2, "components": [{"id": "game.new"}]}')
         assert authoring.schema_stamp(str(path)) != first
+
+
+# --------------------------------------------------------------------------------------
+# Authored lists
+# --------------------------------------------------------------------------------------
+
+#: A payload for the creature's `Tables`, with RAGGED inner counts on purpose: table 1 holds no
+#: entries at all, which is the case that catches a builder that seeds arrays from the schema
+#: rather than from the data.
+TABLES_PAYLOAD = [
+    {"Table": "Rubble", "MinItems": 0, "Entries": [{"Item": "metal", "Weight": 5}]},
+    {"Table": "Crate", "MinItems": 1, "Entries": []},
+    {
+        "Table": "Chest",
+        "MinItems": 2,
+        "Entries": [{"Item": "gold", "Weight": 1}, {"Item": "gem", "Weight": 9}],
+    },
+]
+
+
+class TestOutlineArrays:
+    def test_a_list_is_declared_even_with_no_rows(self):
+        # Neither a field nor a host ref: the panel still has to draw its header and Add button,
+        # which is the whole reason `arrays` is a third output rather than folded into one.
+        plan = authoring.outline(creature())
+        assert [f.path for f in plan.fields if f.path.startswith("Tables")] == []
+        assert ("Tables", 0) in [(a.path, a.count) for a in plan.arrays]
+
+    def test_rows_expand_to_indexed_paths_in_order(self):
+        plan = authoring.outline(creature(), {"Tables": 2})
+        assert [f.path for f in plan.fields if f.path.startswith("Tables")] == [
+            "Tables/0/Table", "Tables/0/MinItems", "Tables/1/Table", "Tables/1/MinItems",
+        ]
+
+    def test_a_nested_list_expands_per_row_not_per_schema(self):
+        # The property no schema path can express: two rows of the same declaration holding
+        # different numbers of entries.
+        plan = authoring.outline(
+            creature(), {"Tables": 2, "Tables/0/Entries": 3, "Tables/1/Entries": 0})
+        paths = [f.path for f in plan.fields]
+        assert "Tables/0/Entries/2/Weight" in paths
+        assert not any(p.startswith("Tables/1/Entries/") for p in paths)
+
+    def test_an_authored_by_list_stays_a_host_reference(self):
+        # Even when counts name it -- a collider's shapes are baked from the objects the entity
+        # points at, and a row editor over them would be a second, lying copy of that list.
+        plan = authoring.outline(creature(), {"Extras": 4})
+        assert ("Extras", "node", True) in [(h.path, h.kind, h.is_list) for h in plan.hosts]
+        assert [a for a in plan.arrays if a.path == "Extras"] == []
+        assert not any(f.path.startswith("Extras") for f in plan.fields)
+
+    def test_a_scalar_list_yields_one_leaf_per_row(self):
+        plan = authoring.outline(creature(), {"Tags": 2})
+        tags = [f for f in plan.fields if f.path.startswith("Tags")]
+        assert [f.path for f in tags] == ["Tags/0", "Tags/1"]
+        assert tags[0].type == authoring.TYPE_STRING
+        assert [a.rows_are_records for a in plan.arrays if a.path == "Tags"] == [False]
+
+    def test_arrays_come_out_parent_before_child(self):
+        # build_payload seeds in this order and depends on it: a nested list can only be created
+        # once the row holding it exists.
+        plan = authoring.outline(creature(), {"Tables": 2, "Tables/0/Entries": 1})
+        paths = [a.path for a in plan.arrays]
+        assert paths.index("Tables") < paths.index("Tables/0/Entries")
+        assert paths.index("Tables/0/Entries") < paths.index("Tables/1/Entries")
+
+    def test_a_row_is_titled_by_its_first_string_leaf(self):
+        plan = authoring.outline(creature(), {"Tables": 1})
+        assert [a.row_title_path for a in plan.arrays if a.path == "Tables"] == ["Table"]
+        assert [a.row_title_path for a in plan.arrays if a.path == "Tags"] == [None]
+
+    def test_a_count_is_clamped_rather_than_trusted(self):
+        # The count reaches here from a hand-editable store; a draw() looping a billion times
+        # hangs Blender with no way back to the button that would fix it.
+        plan = authoring.outline(creature(), {"Tags": 10 ** 9})
+        assert [a.count for a in plan.arrays if a.path == "Tags"] == [authoring.MAX_ROWS]
+
+    def test_a_nonsense_count_reads_as_empty_rather_than_raising(self):
+        plan = authoring.outline(creature(), {"Tags": "three", "Tables": -2})
+        assert [a.count for a in plan.arrays if a.path in ("Tags", "Tables")] == [0, 0]
+
+    def test_flatten_still_returns_two_lists(self):
+        fields, hosts = authoring.flatten(creature(), {"Tables": 1})
+        assert "Tables/0/Table" in [f.path for f in fields]
+        assert "Extras" in [h.path for h in hosts]
+
+
+class TestCountsOf:
+    def test_counts_are_per_instance_not_per_declaration(self):
+        counts = authoring.counts_of(creature(), {"Tables": TABLES_PAYLOAD})
+        assert counts["Tables"] == 3
+        assert counts["Tables/0/Entries"] == 1
+        assert counts["Tables/1/Entries"] == 0
+        assert counts["Tables/2/Entries"] == 2
+
+    def test_an_absent_member_counts_as_zero(self):
+        assert authoring.counts_of(creature(), {})["Tables"] == 0
+
+    def test_a_member_that_is_not_a_list_counts_as_zero(self):
+        # The panel's job is to show the author what is there and let them fix it, not to refuse
+        # to draw over one malformed key.
+        assert authoring.counts_of(creature(), {"Tables": "nope"})["Tables"] == 0
+
+    def test_a_host_referenced_list_is_absent_from_the_mapping(self):
+        assert "Extras" not in authoring.counts_of(creature(), {"Extras": [1, 2]})
+
+    def test_counts_are_the_inverse_of_outline(self):
+        counts = authoring.counts_of(creature(), {"Tables": TABLES_PAYLOAD})
+        plan = authoring.outline(creature(), counts)
+        assert "Tables/2/Entries/1/Weight" in [f.path for f in plan.fields]
+
+
+class TestValueAt:
+    def test_it_follows_list_indices_and_object_members(self):
+        payload = {"Tables": TABLES_PAYLOAD}
+        assert authoring.value_at(payload, "Tables/2/Entries/1/Item") == "gem"
+        assert authoring.value_at(payload, "Tables/0/Table") == "Rubble"
+
+    def test_an_out_of_range_index_falls_back(self):
+        payload = {"Tables": TABLES_PAYLOAD}
+        assert authoring.value_at(payload, "Tables/9/Table", "fb") == "fb"
+        assert authoring.value_at(payload, "Tables/1/Entries/0/Item", "fb") == "fb"
+
+    def test_a_digit_against_an_object_reads_the_member_named_that(self):
+        # The CONTAINER decides how a segment is read, not the segment's spelling.
+        assert authoring.value_at({"0": "zero"}, "0") == "zero"
+
+    def test_an_explicit_null_falls_back(self):
+        assert authoring.value_at({"Title": None}, "Title", "fb") == "fb"
+
+
+class TestBuildPayloadArrays:
+    def _values(self, component, payload, counts):
+        return {
+            f.path: authoring.value_at(payload, f.path, f.default)
+            for f in authoring.outline(component, counts).fields
+        }
+
+    def test_rows_come_back_as_a_json_list_in_index_order(self):
+        component = creature()
+        payload = {"Tables": TABLES_PAYLOAD}
+        counts = authoring.counts_of(component, payload)
+        built = authoring.build_payload(component, self._values(component, payload, counts), counts)
+        assert [t["Table"] for t in built["Tables"]] == ["Rubble", "Crate", "Chest"]
+        assert built["Tables"][2]["Entries"][1] == {"Item": "gem", "Weight": 9}
+
+    def test_a_list_authored_with_no_rows_is_written_as_empty_not_omitted(self):
+        # The member IS authored, and it is authored empty. Omitting it would read to the engine
+        # as unauthored and silently restore the record's own initializer.
+        built = authoring.build_payload(creature(), {}, {"Tables": 0})
+        assert built["Tables"] == []
+
+    def test_counts_none_leaves_arrays_absent(self):
+        # The entity-export guarantee: a caller holding no list data at all must keep producing
+        # exactly the bytes it always has.
+        assert "Tables" not in authoring.build_payload(creature(), {})
+        assert "Tags" not in authoring.build_payload(creature(), {})
+
+    def test_a_hole_yields_an_empty_row_never_a_null(self):
+        # A null row is something the engine's generated reader would dereference; an empty
+        # object is what it fills from the record's own initializers.
+        built = authoring.build_payload(creature(), {"Tables/1/Table": "Only"}, {"Tables": 2})
+        assert built["Tables"][0] is not None and built["Tables"][1]["Table"] == "Only"
+
+    def test_keys_come_out_in_schema_order(self):
+        """A save with no edits must not reshuffle the file.
+
+        Seeding every list before every leaf would hoist each row's nested list above its
+        siblings -- semantically identical, and a whole-file diff on a document that is hand
+        edited and read in review.
+        """
+        built = authoring.build_payload(
+            creature(), {}, {"Tables": 1, "Tables/0/Entries": 1})
+        assert list(built["Tables"][0]) == ["Table", "MinItems", "Entries"]
+
+    def test_rows_are_distinct_objects(self):
+        # A shared {} appended twice makes two rows the same object -- a bug that survives every
+        # test written against a single row.
+        built = authoring.build_payload(creature(), {}, {"Tables": 2})
+        built["Tables"][0]["Table"] = "changed"
+        assert built["Tables"][1]["Table"] != "changed"
+
+    @pytest.mark.parametrize(
+        "tables",
+        [
+            [],
+            [{"Table": "One", "MinItems": 0, "Entries": []}],
+            TABLES_PAYLOAD,
+            [{"Table": "Deep", "MinItems": 9, "Entries": [{"Item": "i", "Weight": 2}] * 3}],
+        ],
+        ids=["empty", "single", "ragged", "nested"],
+    )
+    def test_load_edit_save_is_lossless_for_rows(self, tables):
+        """The property the whole feature rests on.
+
+        Loading reads leaves out of the payload at the paths `outline` names; saving writes them
+        back at the same paths. If those two ever disagree about anything -- an index, a container
+        kind, an empty list -- this equality fails, and it fails on the exact shape that broke.
+
+        The fixture must be a COMPLETE payload for the equality to hold: build_payload fills
+        every unset member with its default, so a partial fixture would fail for an uninteresting
+        reason.
+        """
+        component = creature()
+        payload = {"Tables": tables, "Tags": ["a", "b"]}
+        counts = authoring.counts_of(component, payload)
+        rebuilt = authoring.build_payload(
+            component, self._values(component, payload, counts), counts)
+        assert {"Tables": rebuilt["Tables"], "Tags": rebuilt["Tags"]} == payload
+
+
+class TestRowPaths:
+    """The renumbering algebra: pure strings, and the riskiest logic in list editing."""
+
+    def test_removal_shifts_every_higher_row_down(self):
+        mapping = authoring.removal_mapping(4, 1)
+        assert authoring.renumber("Tables/2/Table", "Tables", mapping) == "Tables/1/Table"
+        assert authoring.renumber("Tables/3/Table", "Tables", mapping) == "Tables/2/Table"
+
+    def test_a_removed_row_takes_its_whole_subtree_with_it(self):
+        mapping = authoring.removal_mapping(4, 1)
+        for path in ("Tables/1/Table", "Tables/1/Entries#", "Tables/1/Entries/0/Item"):
+            assert authoring.renumber(path, "Tables", mapping) is None
+
+    def test_a_nested_count_key_moves_with_its_row(self):
+        # Without this the moved row's entries would be present but reported as zero, and the
+        # next save would drop them.
+        mapping = authoring.removal_mapping(4, 1)
+        assert authoring.renumber("Tables/2/Entries#", "Tables", mapping) == "Tables/1/Entries#"
+        assert (authoring.renumber("Tables/2/Entries/1/Weight", "Tables", mapping)
+                == "Tables/1/Entries/1/Weight")
+
+    def test_a_sibling_sharing_the_prefix_is_untouched(self):
+        mapping = authoring.removal_mapping(4, 1)
+        assert authoring.row_index_of("TablesEnabled", "Tables") is None
+        assert authoring.renumber("TablesEnabled", "Tables", mapping) == "TablesEnabled"
+        assert authoring.renumber("TablesCount/0", "Tables", mapping) == "TablesCount/0"
+
+    def test_the_arrays_own_count_key_is_not_one_of_its_rows(self):
+        assert authoring.row_index_of("Tables#", "Tables") is None
+
+    def test_an_index_is_a_whole_segment(self):
+        assert authoring.row_index_of("Tables/10/X", "Tables") == 10
+
+    def test_swap_exchanges_two_rows_and_leaves_the_rest(self):
+        mapping = authoring.swap_mapping(3, 0, 1)
+        assert authoring.renumber("Tables/0/Table", "Tables", mapping) == "Tables/1/Table"
+        assert authoring.renumber("Tables/1/Table", "Tables", mapping) == "Tables/0/Table"
+        assert authoring.renumber("Tables/2/Table", "Tables", mapping) == "Tables/2/Table"
+
+    def test_row_container_is_the_nearest_enclosing_row(self):
+        assert authoring.row_container_of("Tables/0/Entries/1/Weight") == "Tables/0/Entries/1"
+        assert authoring.row_container_of("Tables/0/Table") == "Tables/0"
+        assert authoring.row_container_of("Box/SizeX") == ""
+
+    def test_relative_to_strips_the_container(self):
+        assert authoring.relative_to("Tables/0/Entries/1/Weight", "Tables/0/Entries/1") == "Weight"
+        assert authoring.relative_to("Box/SizeX", "") == "Box/SizeX"

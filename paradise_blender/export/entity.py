@@ -153,15 +153,14 @@ def _apply_authored_components(
     components and a game's alike — is appended to the same list.
     """
     components = entity.components
-    authored_engine_ids: set[str] = set()
+    authored_ids: set[str] = set()
 
     for component_id, component_type, payload in authored_components.build_component_payloads(
             obj, paths.data_dir):
         if authoring_router.apply(entity, component_id, payload):
             continue  # identity, spread onto the entity and leaving no entry
 
-        if component_id in component_ids.engine_ids():
-            authored_engine_ids.add(component_id)
+        authored_ids.add(component_id)
 
         entry = AuthoredComponentData(
             id=component_id,
@@ -184,7 +183,7 @@ def _apply_authored_components(
     #
     # A scan rather than two slot reads: the rule wants the entry this host synthesized, and an
     # authored rigidbody is a different entry it must not touch.
-    if (component_ids.RIGIDBODY not in authored_engine_ids
+    if (component_ids.RIGIDBODY not in authored_ids
             and components.find(component_ids.AGENT) is not None):
         derived_body = components.find(component_ids.RIGIDBODY)
         if derived_body is not None:

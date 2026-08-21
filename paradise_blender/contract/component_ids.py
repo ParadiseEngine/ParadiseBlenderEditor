@@ -6,10 +6,13 @@ which is the source of truth. Vendored for the same reason
 host cannot load.
 
 **Deliberately NOT a complete mirror.** A constant belongs here only when this host must do
-something SPECIFIC with that component -- route it to a typed slot, derive it from Blender data,
-back it with a pointer collection. An engine component this host treats like any other needs no
-entry, and adding one here for completeness would be maintenance bought with nothing. The
-complete set is :func:`engine_ids`, read off the schema.
+something SPECIFIC with that component -- derive it from Blender data, back it with a pointer
+collection, draw it a particular way. A component this host treats like any other needs no entry,
+and adding one for completeness would be maintenance bought with nothing.
+
+There is deliberately no "is this the engine's component" set either. There was one, and it went
+with the two-tier contract that gave it meaning: every component now travels the same way, so
+"whose is it" stopped being a question anything needs to ask.
 
 **Nothing keeps the constants below in sync mechanically.** The guard is a unit test asserting
 each one still appears in the committed ``engine_authoring_schema.json``, so a component the
@@ -35,7 +38,6 @@ __all__ = [
     "RENDERABLE",
     "RIGIDBODY",
     "SPRITE_ANIMATION",
-    "engine_ids",
     "engine_type_name",
 ]
 
@@ -54,31 +56,11 @@ AUDIO_EMITTER = "e6ec7f42-df09-4ec9-af06-128ddf3eda8e"
 LIGHT = "fc886b84-c48c-4415-afd9-b03d6faf5ab7"
 
 @functools.cache
-def engine_ids() -> frozenset[str]:
-    """Every id the engine declares, read off the vendored schema.
-
-    Derived rather than listed: the schema already states this set, and a second copy would have
-    to be edited every time the engine adds a component -- including the ones this host has no
-    opinion about. Regenerating ``engine_authoring_schema.json`` is enough.
-
-    This is what "is this the engine's component or the game's?" asks, a question that used to be
-    answerable by testing for a ``paradise.`` prefix.
-
-    Cached because the answer cannot change within a session: the schema is a committed file
-    beside this module, not the game's dumped one. The import is deferred to call time to keep
-    this module importable from anywhere in the contract package regardless of import order.
-    """
-    from . import authoring
-
-    return frozenset(component.id for component in authoring.read_engine_schema().components)
-
-
-@functools.cache
 def engine_type_name(component_id: str) -> str:
     """The fully qualified CLR name the engine publishes for one of its components.
 
-    Read off the vendored schema for the same reason :func:`engine_ids` is: the schema already
-    states it, and a hand-written table would be a second copy to keep in step. It is written onto
+    Read off the vendored schema rather than tabulated here: the schema already states it, and a
+    hand-written copy would be a second thing to keep in step. It is written onto
     every exported payload beside the id -- the engine reads it only when the id fails to resolve,
     but a payload without it is a bare GUID and diagnoses nothing.
     """

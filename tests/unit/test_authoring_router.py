@@ -35,7 +35,7 @@ def payload(component_id: str, values: dict) -> dict:
 class TestVendoredEngineSchema:
     def test_the_engine_schema_loads_and_declares_the_known_components(self):
         ids = {c.id for c in authoring.read_engine_schema().components}
-        assert ids >= component_ids.engine_ids()
+        assert ids >= {component_ids.RIGIDBODY, component_ids.COLLIDER, component_ids.LIGHT}
 
     def test_every_named_constant_still_names_a_real_component(self):
         """component_ids.py is transcribed from ParadiseComponentIds.cs by hand and nothing keeps
@@ -44,8 +44,7 @@ class TestVendoredEngineSchema:
 
         Deliberately NOT an equality check against the schema. Two reasons: the module is not a
         complete mirror -- a constant earns its place by being referenced -- so a component ADDED
-        upstream must not fail this; and `engine_ids()` now derives from that same schema, so an
-        equality assertion would compare the file with itself and could never fail at all."""
+        upstream must not fail this."""
         ids = {c.id for c in authoring.read_engine_schema().components}
         named = {
             value for name, value in vars(component_ids).items()
@@ -128,22 +127,3 @@ class TestRefusals:
 
     def test_game_ids_are_not_routed(self):
         assert authoring_router.apply(entity(), "c4e8a1b2-9f60-4d33-8a17-6b2e50d9fc84", {}) is False
-
-
-class TestEngineIdsAreRecognizableWithoutAPrefix:
-    """What the GUID switch broke about telling an engine component from a game one.
-
-    The exporter used to ask ``component_id.startswith("paradise.")``. That question is now
-    unanswerable -- an id carries no namespace at all -- so the only way to recognise one is
-    membership in a known set. These pin the reason, since the branch that consumes it is
-    defensive and nothing else would notice if the set went stale.
-    """
-
-    def test_no_engine_id_carries_the_old_prefix(self):
-        assert not any(i.startswith("paradise.") for i in component_ids.engine_ids())
-
-    def test_a_game_id_is_not_mistaken_for_an_engine_one(self):
-        assert "c4e8a1b2-9f60-4d33-8a17-6b2e50d9fc84" not in component_ids.engine_ids()
-
-    def test_every_routed_id_is_an_engine_id(self):
-        assert component_ids.engine_ids() >= authoring_router.ROUTED_IDS

@@ -1,0 +1,111 @@
+name: CI
+
+# This repo had no CI at all until now, which mattered more than it sounds: it reimplements the
+# engine's export contract in Python (paradise_blender/contract), and the only thing standing
+# between that copy and silent drift was someone remembering to run tools/run_tests.sh.
+#
+# The layers below are the ones that script already defines, and they catch different things:
+#
+#   unit         the contract math against itself — fast, and needs no Blender, because
+#                paradise_blender.contract is deliberately importable without bpy
+#   integration  the conversion against Blender's OWN glTF exporter, the live protocol, and the
+#                schema-driven authoring paths — needs Blender
+#   conformance  the vendored engine schema and every exported document against the real
+#                Paradise.Export — needs .NET, and is the only layer that can see contract drift
+#
+# Only the last one would have caught the addon shipping a v3 schema while its bridge still
+# packed Paradise.Export 0.14.0, which prints v2. Locally the workspace source override hid it.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # 4.2 is where the extension system landed; the manifest's floor is 5.1, and this is what the
+  # addon is developed against. Bump in step with blender_manifest.toml's blender_version_min.
+  BLENDER_VERSION: 5.1.2
+
+jobs:
+  # Fast signal, and the one that runs on every push regardless of how the heavier job fares.
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dev tooling
+        # ruff is configured in pyproject ([tool.ruff]) but is not a dependency of the addon —
+        # nothing it ships imports it — so CI installs it rather than the project declaring it.
+        run: python -m pip install --upgrade pytest ruff
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Unit tests
+        # No Blender, by design: a bpy import at module scope in paradise_blender/__init__.py
+        # would make the contract subpackage untestable here, and the contract tests are the main
+        # defence against drifting from the C# implementation.
+        run: python -m pytest tests/unit -q
+
+  # Everything tools/run_tests.sh runs when both Blender and dotnet are present. Kept as one job
+  # on purpose: the conformance layer round-trips the documents the INTEGRATION layer exports, so
+  # splitting them would leave contract-check with nothing real to check.
+  full:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Install dev tooling
+        run: python -m pip install --upgrade pytest
+
+      - name: Cache Blender
+        id: blender-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/blender
+          key: blender-${{ env.BLENDER_VERSION }}-linux-x64
+
+      - name: Download Blender
+        if: steps.blender-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/blender
+          curl -sSL -o ~/blender/blender.tar.xz \
+            "https://download.blender.org/release/Blender${BLENDER_VERSION%.*}/blender-${BLENDER_VERSION}-linux-x64.tar.xz"
+          tar -xJf ~/blender/blender.tar.xz -C ~/blender --strip-components=1
+          rm ~/blender/blender.tar.xz
+
+      - name: Run the full suite
+        env:
+          BLENDER: /home/runner/blender/blender
+        run: |
+          # Both must be absolute PATHS, not command names. run_tests.sh guards with
+          # `[ -x "$PYTHON" ] || PYTHON=python3`, and `[ -x python ]` is false for a bare name —
+          # so passing PYTHON=python silently swaps in whatever python3 resolves to, which is not
+          # necessarily the interpreter pytest was installed into. Caught in rehearsal: the unit
+          # layer failed while every other layer passed.
+          export PYTHON="$(command -v python)"
+          "$PYTHON" --version
+          "$BLENDER" --version
+
+          # run_tests.sh SKIPS the layer whose tool is missing rather than failing, so a bad path
+          # would quietly downgrade the run and still go green. The two version calls above are
+          # what make that impossible: a wrong path dies here instead.
+          ./tools/run_tests.sh

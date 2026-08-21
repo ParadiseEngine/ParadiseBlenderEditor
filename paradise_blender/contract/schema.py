@@ -62,9 +62,11 @@ __all__ = [
     "SpriteAnimationComponentData",
 ]
 
-# LevelData.CurrentSchemaVersion. v2 is the source-GLB pipeline: Renderable.Mesh references a
-# shared GLB under data/ rather than a per-entity bake. Bump only in lockstep with the engine.
-SCHEMA_VERSION = 2
+# LevelData.CurrentSchemaVersion. v3 replaced an entity's nine named component slots with one
+# list of {Id, Type, Data}. Bump only in lockstep with the engine -- and note this one is NOT
+# additive: a v2 document writes "Components" as an object, and the engine refuses it on read
+# rather than deserializing entities that silently author nothing.
+SCHEMA_VERSION = 3
 
 Vec3 = tuple[float, float, float]
 Quat = tuple[float, float, float, float]
@@ -374,44 +376,65 @@ class AuthoredComponentData:
     """
 
     id: str = ""
+
+    #: Fully qualified CLR name of the record, copied verbatim from the authoring schema. Read by
+    #: the engine only when :attr:`id` fails to resolve, but written whenever it is known: a
+    #: payload that loaded as nothing tells whoever is reading it precisely nothing without this.
+    #: Optional on the wire, so it is omitted rather than sent empty.
+    type: str | None = None
+
     data: dict[str, Any] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, Any]:
-        return {"Id": self.id, "Data": dict(self.data)}
+        document: dict[str, Any] = {"Id": self.id}
+        if self.type:
+            document["Type"] = self.type
+        document["Data"] = dict(self.data)
+        return document
 
 
 @dataclass
 class EntityComponentsData:
-    renderable: RenderableComponentData | None = None
-    collider: ColliderComponentData | None = None
-    rigidbody: RigidbodyComponentData | None = None
-    interactable: EntityInteractableComponentData | None = None
-    agent: AgentComponentData | None = None
-    sprite_animation: SpriteAnimationComponentData | None = None
-    particle_emitter: ParticleEmitterComponentData | None = None
-    audio_emitter: AudioEmitterComponentData | None = None
-    light: SceneLightData | None = None
-    custom: list[AuthoredComponentData] | None = None
+    """Every component authored on an entity: engine's and game's alike, one list.
 
-    def to_json(self) -> dict[str, Any]:
-        result: dict[str, Any] = {
-            "Renderable": _opt(self.renderable),
-            "Collider": _opt(self.collider),
-            "Rigidbody": _opt(self.rigidbody),
-            "Interactable": _opt(self.interactable),
-            "Agent": _opt(self.agent),
-            "SpriteAnimation": _opt(self.sprite_animation),
-            "ParticleEmitter": _opt(self.particle_emitter),
-            "AudioEmitter": _opt(self.audio_emitter),
-        }
-        # Unlike every key above, Light and Custom are ABSENT when unauthored -- the C# side
-        # marks both JsonIgnore(WhenWritingNull), which is what keeps every scene exported
-        # before they existed byte-identical.
-        if self.light is not None:
-            result["Light"] = self.light.to_json()
-        if self.custom:
-            result["Custom"] = [component.to_json() for component in self.custom]
-        return result
+    This used to be nine typed slots plus a ``custom`` list, mirroring nine named keys in the
+    contract. The contract has one list now (schema v3), so this does too -- and the exporter no
+    longer has to know which of two places a component belongs in.
+
+    The typed records above have not gone anywhere: they are still what builds a payload, and
+    :meth:`add_engine` serializes one into an entry. What went is the idea that the engine's
+    components get a reserved key and a game's do not.
+    """
+
+    components: list[AuthoredComponentData] = field(default_factory=list)
+
+    def add(self, component: AuthoredComponentData) -> None:
+        self.components.append(component)
+
+    def add_engine(self, component_id: str, payload) -> None:
+        """One of the ENGINE's components, from the typed record that builds its payload.
+
+        The CLR type name comes from the vendored engine schema rather than a table here -- see
+        :func:`.component_ids.engine_type_name`.
+        """
+        from . import component_ids
+
+        self.components.append(AuthoredComponentData(
+            id=component_id,
+            type=component_ids.engine_type_name(component_id),
+            data=payload.to_json(),
+        ))
+
+    def find(self, component_id: str) -> AuthoredComponentData | None:
+        """The entry for one id, or None. A list has no fixed positions, so a caller that needs to
+        read back what it just wrote -- the agent/rigidbody rule does -- asks by id."""
+        for component in self.components:
+            if component.id == component_id:
+                return component
+        return None
+
+    def to_json(self) -> list[dict[str, Any]]:
+        return [component.to_json() for component in self.components]
 
 
 # --------------------------------------------------------------------------------------

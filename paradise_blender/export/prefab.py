@@ -141,11 +141,14 @@ def _shallow_entities(collection: bpy.types.Collection) -> list[LevelEntityData]
 
 
 def _template_components(props):
+    from ..contract import component_ids
     from ..contract.schema import EntityComponentsData
 
     components = EntityComponentsData()
     if props.model_path.strip():
-        components.renderable = RenderableComponentData()
+        # A template says "this prefab renders", not what it renders — the placement's own
+        # Renderable carries the mesh. No entry at all is what "no model" means now.
+        components.add_engine(component_ids.RENDERABLE, RenderableComponentData())
     return components
 
 

@@ -61,11 +61,16 @@ __all__ = [
     "schema_stamp",
 ]
 
-# AuthoringSchemaDocument.CurrentVersion / MinimumSupportedVersion. v2 added arrays, vectors,
-# quaternions, colour, conditional visibility, and host-object references beyond collision
-# shapes. Bump only in lockstep with the engine.
-CURRENT_VERSION = 2
-MINIMUM_SUPPORTED_VERSION = 1
+# AuthoringSchemaDocument.CurrentVersion / MinimumSupportedVersion. Bump only in lockstep with
+# the engine.
+#
+# The minimum EQUALS the current, and that is deliberate rather than an oversight. v3 made `id` a
+# GUID; a v1 or v2 document keys its components by a NAME, and there is no way to derive a
+# component's GUID from `paradise.rigidbody`. Such a document cannot be upgraded on the way in,
+# only regenerated -- so it is refused, which names the problem, instead of being read into
+# components whose ids resolve to nothing.
+CURRENT_VERSION = 3
+MINIMUM_SUPPORTED_VERSION = 3
 
 SCHEMA_FILE_NAME = "authoring-schema.json"
 
@@ -83,10 +88,9 @@ TYPE_VECTOR3 = "vector3"
 TYPE_QUATERNION = "quaternion"
 TYPE_COLOR = "color"
 
-# AuthoredBySources: v1 spelled the only host-object kind "nativeShape"; normalized on read so
-# every consumer sees one vocabulary, exactly as AuthoringSchemaReader does.
+# AuthoredBySources. (v1 spelled this kind "nativeShape" and it was normalized on read; the v3
+# floor makes such a document unreadable, so the alias is gone rather than dead.)
 SOURCE_SHAPE = "shape"
-_SOURCE_NATIVE_SHAPE = "nativeShape"
 
 
 class SchemaError(ValueError):
@@ -146,9 +150,6 @@ class AuthoredFieldSchema:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> AuthoredFieldSchema:
-        authored_by = data.get("authoredBy")
-        if authored_by == _SOURCE_NATIVE_SHAPE:
-            authored_by = SOURCE_SHAPE
         return cls(
             name=data.get("name", ""),
             type=data.get("type", ""),
@@ -161,7 +162,7 @@ class AuthoredFieldSchema:
             # distinguishes "declared ''" from "no initializer" -- key presence is the tell.
             has_default="default" in data and data["default"] is not None,
             values=list(data["values"]) if data.get("values") else None,
-            authored_by=authored_by,
+            authored_by=data.get("authoredBy"),
             fields=[cls.from_json(f) for f in data["fields"]] if data.get("fields") else None,
             items=cls.from_json(data["items"]) if data.get("items") else None,
             visible_when=(
@@ -177,7 +178,17 @@ class AuthoredFieldSchema:
 class AuthoredComponentSchema:
     """One authored component: the id it travels under, and the fields a human edits."""
 
+    #: The component's stable identity, a GUID in canonical lowercase-hyphenated form. The only
+    #: member anything may match on.
     id: str = ""
+
+    #: Fully qualified CLR name, e.g. ``Paradise.Export.Data.RigidbodyComponentData``. The
+    #: FALLBACK key, and what makes a GUID id survivable in a text document: it is how a human
+    #: reading a schema, a diff, or a broken payload tells which component a bare GUID means.
+    #: Copied verbatim onto the exported payload -- never synthesized, because the engine's
+    #: type-name fallback is an exact ordinal match.
+    type: str = ""
+
     display_name: str = ""
     gizmo: AuthoredGizmoSchema | None = None
     authored_by: str | None = None
@@ -185,10 +196,16 @@ class AuthoredComponentSchema:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> AuthoredComponentSchema:
-        component_id = data.get("id", "")
+        # Lowercased once, here, mirroring AuthoredModel's `parsed.ToString("D")`: a hand-typed
+        # uppercase [Guid] in a game repo would otherwise open a SECOND storage namespace on the
+        # same object, and the two would not see each other's values.
+        component_id = data.get("id", "").strip().lower()
+        component_type = data.get("type", "")
         return cls(
             id=component_id,
-            display_name=data.get("displayName") or component_id,
+            type=component_type,
+            # Falls back to the TYPE, not the id -- a bare GUID is not a label anyone can read.
+            display_name=data.get("displayName") or component_type or component_id,
             gizmo=AuthoredGizmoSchema.from_json(data["gizmo"]) if data.get("gizmo") else None,
             authored_by=data.get("authoredBy"),
             fields=[AuthoredFieldSchema.from_json(f) for f in data.get("fields") or []],
@@ -247,14 +264,21 @@ def read(text: str) -> AuthoringSchemaDocument:
 
 def merge(documents: list[AuthoringSchemaDocument]) -> AuthoringSchemaDocument:
     """Combine documents into one, earlier sources winning on a duplicate id and components
-    ordered by id -- ``AuthoringSchemaReader.Merge``. Earlier-wins so a host can pass the
-    engine's schema first and have it be authoritative."""
+    ordered by TYPE -- ``AuthoringSchemaReader.Merge``. Earlier-wins so a host can pass the
+    engine's schema first and have it be authoritative.
+
+    Ordered by type rather than by id because an id is a GUID: sorting on it would shuffle the
+    list into an order no reader could predict, and every consumer here wants a stable one (the
+    panel draws in it, and ``build_component_payloads`` exports in it so two exports of the same
+    scene agree)."""
     by_id: dict[str, AuthoredComponentSchema] = {}
     for document in documents:
         for component in document.components:
             if component.id and component.id not in by_id:
                 by_id[component.id] = component
-    return AuthoringSchemaDocument(components=[by_id[key] for key in sorted(by_id)])
+    return AuthoringSchemaDocument(
+        components=sorted(by_id.values(), key=lambda component: (component.type, component.id))
+    )
 
 
 def schema_path(data_dir: str) -> str:

@@ -26,11 +26,14 @@ rebuild re-dumps the file.
 
 from __future__ import annotations
 
+import base64
+import uuid
+
 import bpy
 from bpy.types import Operator
 
 from .. import log
-from ..contract import authoring
+from ..contract import authoring, component_ids
 from ..prefs import resolve_blender_data_dir
 
 __all__ = [
@@ -40,11 +43,15 @@ __all__ = [
     "enabled_component_ids",
     "has_component",
     "host_list_collection",
+    "host_list_field",
+    "is_host_list",
     "is_present",
+    "key_token",
     "schema_for_data_dir",
     "schema_load_error",
     "storage_value",
     "value_key",
+    "value_key_prefix",
     "values_for",
 ]
 
@@ -124,8 +131,45 @@ def enabled_component_ids(obj: bpy.types.Object) -> list[str]:
     return [str(component_id) for component_id in stored]
 
 
+#: Blender's limit on an ID property NAME. The same cap :mod:`.config_store` enforces, restated
+#: here because this module builds the other half of the keys.
+MAX_KEY_LENGTH = 63
+
+
+def key_token(component_id: str) -> str:
+    """A component id compacted for use INSIDE an ID-property name.
+
+    A canonical GUID is 36 characters, and Blender caps a property name at
+    :data:`MAX_KEY_LENGTH`. Spent verbatim, an id would leave 17 characters for the field path --
+    less than ShiningPie's ``FollowYawSmoothingSeconds`` alone. Base64 of the same 16 bytes is 22,
+    which leaves 31.
+
+    **base64url, not base64**: the alphabet must not contain ``/``, which separates the id from
+    the field path in every key built from this.
+
+    This token never leaves the .blend -- it is storage naming, not contract. The exported
+    payload carries the full canonical GUID, so the byte order here only has to be consistent
+    with itself (``uuid.UUID.bytes`` is RFC 4122 order, NOT .NET's ``Guid.ToByteArray``).
+
+    A non-GUID id (a malformed schema, a hand-written test double) is returned unchanged, so the
+    caller's length check reports the id a human actually wrote rather than a token of it.
+    """
+    try:
+        raw = uuid.UUID(component_id).bytes
+    except (ValueError, AttributeError, TypeError):
+        return component_id
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def value_key_prefix(component_id: str) -> str:
+    """Everything one component's keys share. Defined once so a scan for them cannot fall out of
+    step with :func:`value_key` -- which it silently did the moment the id stopped being the
+    literal thing inside the key."""
+    return f"{VALUE_PREFIX}{key_token(component_id)}/"
+
+
 def value_key(component_id: str, path: str) -> str:
-    return f"{VALUE_PREFIX}{component_id}/{path}"
+    return f"{value_key_prefix(component_id)}{path}"
 
 
 def has_component(obj: bpy.types.Object, component_id: str) -> bool:
@@ -138,40 +182,61 @@ def stored_value(obj: bpy.types.Object, component_id: str, path: str, default=No
     return obj.get(value_key(component_id, path), default)
 
 
-#: Engine components this host DERIVES from real Blender data with no authoring at all: the
-#: mesh pipeline owns renderable, the lamp datablock owns light. The Components panel shows
-#: them as read-only rows so the panel lists everything the entity exports, but authoring one
-#: as a form would fight the pipeline that already writes it.
-HOST_OWNED_IDS = frozenset({
-    "paradise.renderable",
-    "paradise.light",
-})
+#: Engine components this host DERIVES from real Blender data, and which the SCHEMA does not
+#: already say so about: the mesh pipeline owns renderable, so authoring it as a form would fight
+#: the pipeline that already writes it. The Components panel shows it as a read-only row so the
+#: panel still lists everything the entity exports.
+#:
+#: Light and sprite-animation are deliberately NOT here. The schema marks both ``authoredBy`` on
+#: the component itself, so :func:`is_authorable` already excludes them — listing them again would
+#: be a second copy of a fact the document states. Anything the schema can say, let it say.
+HOST_DERIVED_IDS = frozenset({component_ids.RENDERABLE})
 
-#: Engine components whose body is a HOST-OBJECT LIST rather than form fields: the entity's
-#: collider references — this host's implementation of the schema's ``authoredBy: shape``.
-#: They are added and removed in the Components panel like any component, but their data
-#: lives in the entity property group's pointer collections (ID properties cannot carry a
-#: list of object references), and their export derives from those lists, never from a
-#: payload. Maps each id to the collection's attribute name on ``obj.paradise``.
-HOST_LIST_IDS = {
-    "paradise.collider": "physics_colliders",
-    "paradise.interactable": "interaction_colliders",
+#: Which of ``obj.paradise``'s pointer collections backs a host-list component.
+#:
+#: Membership here is NOT how a host list is recognised — :func:`host_list_field` reads that off
+#: the schema (an array whose ``items.authoredBy`` names a host object, which is how collider
+#: declares its shapes). This map answers only the part no schema can: which BLENDER collection
+#: holds them, ID properties being unable to carry object references.
+#:
+#: Interactable has no schema signal at all — no array, no ``authoredBy`` — and is pure Blender
+#: policy, which is why detection falls back to this map's keys.
+HOST_LIST_COLLECTIONS = {
+    component_ids.COLLIDER: "physics_colliders",
+    component_ids.INTERACTABLE: "interaction_colliders",
 }
+
+
+def host_list_field(component: authoring.AuthoredComponentSchema):
+    """The schema field that MAKES this component a host list — an array whose items are authored
+    by pointing at a host object — or None.
+
+    The same signal the Godot host reads, so a component the engine newly declares this way needs
+    no change here beyond a collection to put it in."""
+    for field in component.fields:
+        items = field.items
+        if field.type == authoring.TYPE_ARRAY and items is not None and items.authored_by:
+            return field
+    return None
+
+
+def is_host_list(component: authoring.AuthoredComponentSchema) -> bool:
+    """Whether this component's body is a host-object list rather than form fields."""
+    return component.id in HOST_LIST_COLLECTIONS or host_list_field(component) is not None
 
 
 def is_authorable(component: authoring.AuthoredComponentSchema) -> bool:
     """A component authored entirely by pointing at a host object (``authoredBy`` on the
     component itself — light, sprite-animation) has nothing this host can fill in as a form,
-    and the HOST-OWNED ids are derived outright (see ``HOST_OWNED_IDS``). Everything else —
-    the game's components, the engine's plain-field ones (identity, agent, rigidbody, audio,
-    particles), and the host-list ones (collider, interactable) — is authored in the
-    Components panel."""
-    return component.authored_by is None and component.id not in HOST_OWNED_IDS
+    and :data:`HOST_DERIVED_IDS` are derived outright. Everything else — the game's components,
+    the engine's plain-field ones (identity, agent, rigidbody, audio, particles), and the
+    host-list ones (collider, interactable) — is authored in the Components panel."""
+    return component.authored_by is None and component.id not in HOST_DERIVED_IDS
 
 
 def host_list_collection(obj: bpy.types.Object, component_id: str):
     """The pointer collection backing a host-list component, or None for every other id."""
-    attribute = HOST_LIST_IDS.get(component_id)
+    attribute = HOST_LIST_COLLECTIONS.get(component_id)
     if attribute is None:
         return None
     props = getattr(obj, "paradise", None)
@@ -194,7 +259,7 @@ def enable_component(obj: bpy.types.Object, component: authoring.AuthoredCompone
     if component.id not in enabled:
         obj[ENABLED_KEY] = [*enabled, component.id]
 
-    if component.id in HOST_LIST_IDS:
+    if is_host_list(component):
         # The body is the pointer collection, not form fields — creating ID properties here
         # would grow a second copy of data the collider objects already are. (Interactable's
         # DisplayName stays derived from the object's name, matching the export.)
@@ -203,6 +268,16 @@ def enable_component(obj: bpy.types.Object, component: authoring.AuthoredCompone
     fields, _ = authoring.flatten(component)
     for field in fields:
         key = value_key(component.id, field.path)
+        if len(key) > MAX_KEY_LENGTH:
+            # Blender's own error for an over-long property name says only that a name was too
+            # long -- not which one, and not from where. Name the field: the fix is to shorten it
+            # in the game's C#, and nothing else in the message points there.
+            log.warn(
+                f"'{component.display_name}.{field.path}' does not fit Blender's "
+                f"{MAX_KEY_LENGTH}-character property name limit ({len(key)} used). "
+                "It is NOT authorable; shorten the field name."
+            )
+            continue
         if key in obj:
             continue  # re-enabling keeps previously authored values
         obj[key] = storage_value(field)
@@ -218,7 +293,7 @@ def disable_component(obj: bpy.types.Object, component_id: str) -> None:
         else:
             del obj[ENABLED_KEY]
 
-    prefix = f"{VALUE_PREFIX}{component_id}/"
+    prefix = value_key_prefix(component_id)
     # Snapshot the keys first: deleting while iterating an IDProperty group is undefined.
     for key in [key for key in obj.keys() if key.startswith(prefix)]:  # noqa: SIM118 -- IDPropertyGroup supports `in` only via .keys()
         del obj[key]
@@ -334,9 +409,13 @@ def is_field_visible(obj: bpy.types.ID, component_id: str, field: authoring.Flat
 
 
 def build_component_payloads(obj: bpy.types.Object, data_dir: str) -> list:
-    """Every enabled component as ``(id, payload)`` pairs, in schema (id) order so two exports
-    of an unchanged scene are identical. The exporter routes each pair: engine ids into their
-    typed slots (``contract.authoring_router``), game ids into ``Components.Custom``.
+    """Every enabled component as ``(id, type, payload)`` triples, in schema order so two exports
+    of an unchanged scene are identical. The exporter routes each: engine ids into their typed
+    slots (``contract.authoring_router``), game ids into ``Components.Custom``.
+
+    The ``type`` rides along because a game component's payload carries it onto the wire — it is
+    what makes an id that fails to resolve diagnosable, and the engine matches it exactly, so it
+    is passed through from the schema rather than derived from anything here.
 
     A component enabled on the object but missing from the current schema is skipped WITH a
     warning -- it means the game removed or renamed the type, and silently dropping the
@@ -348,10 +427,10 @@ def build_component_payloads(obj: bpy.types.Object, data_dir: str) -> list:
 
     document = schema_for_data_dir(data_dir)
     pairs = []
-    for component in document.components:  # already id-ordered by merge()
+    for component in document.components:  # already type-ordered by merge()
         if component.id not in enabled:
             continue
-        if component.id in HOST_LIST_IDS:
+        if is_host_list(component):
             continue  # exported from the entity's collider lists, never from a payload
         if not is_authorable(component):
             log.warn(
@@ -361,7 +440,7 @@ def build_component_payloads(obj: bpy.types.Object, data_dir: str) -> list:
             )
             continue
         payload = authoring.build_payload(component, values_for(obj, component))
-        pairs.append((component.id, payload))
+        pairs.append((component.id, component.type, payload))
 
     for component_id in enabled:
         if component_by_id(document, component_id) is None:

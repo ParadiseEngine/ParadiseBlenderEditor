@@ -30,7 +30,18 @@ import bpy  # noqa: E402
 import paradise_blender  # noqa: E402
 from paradise_blender.authoring import authored_components as authored  # noqa: E402
 from paradise_blender.contract import authoring as contract_authoring  # noqa: E402
+from paradise_blender.contract import component_ids  # noqa: E402
 from paradise_blender.export.scene import export_scene  # noqa: E402
+
+
+def payload_for(entity, component_id):
+    """One component's Data on an exported entity, or None. Components are a LIST now, so a test
+    asks by id rather than by a key whose absence used to mean "no such component"."""
+    for component in entity["Components"]:
+        if component["Id"] == component_id:
+            return component["Data"]
+    return None
+
 
 DATA_DIR = os.path.join(tempfile.gettempdir(), "paradise_export_test")
 
@@ -45,11 +56,18 @@ def check(condition: bool, description: str, detail: str = "") -> None:
         failures.append(description)
 
 
+#: A game's components carry GUIDs like everything else since v3; these two are fixed values so
+#: the assertions below can name them.
+CREATURE_ID = "c4e8a1b2-9f60-4d33-8a17-6b2e50d9fc84"
+MARKER_ID = "2d7f36ae-51c8-4b90-8e42-9a0b7cd1e5f3"
+GAME_IDS = {CREATURE_ID, MARKER_ID}
+
 SCHEMA = {
-    "version": 2,
+    "version": 3,
     "components": [
         {
-            "id": "game.creature",
+            "id": CREATURE_ID,
+            "type": "Game.Creature",
             "displayName": "Creature",
             "fields": [
                 {"name": "MaxSpeed", "type": "float", "minimum": 0.1, "maximum": 50, "default": 7},
@@ -76,7 +94,8 @@ SCHEMA = {
             ],
         },
         {
-            "id": "game.marker",
+            "id": MARKER_ID,
+            "type": "Game.Marker",
             "displayName": "Marker",
             "fields": [{"name": "Label", "type": "string", "default": "spawn"}],
         },
@@ -134,51 +153,52 @@ def main() -> int:
     creature_obj = bpy.data.objects["Creature"]
     document = authored.schema_for_data_dir(DATA_DIR)
     check(authored.schema_load_error(DATA_DIR) is None, "the schema file loads")
-    game_ids = {c.id for c in document.components if c.id.startswith("game.")}
-    check(game_ids == {"game.creature", "game.marker"}, "both game components are read")
+    game_ids = {c.id for c in document.components if c.id in GAME_IDS}
+    check(game_ids == {CREATURE_ID, MARKER_ID}, "both game components are read")
     check(
-        authored.component_by_id(document, "paradise.rigidbody") is not None,
+        authored.component_by_id(document, component_ids.RIGIDBODY) is not None,
         "the engine's own schema is merged in",
     )
     check(
-        not authored.is_authorable(authored.component_by_id(document, "paradise.renderable"))
-        and not authored.is_authorable(authored.component_by_id(document, "paradise.light"))
-        and authored.is_authorable(authored.component_by_id(document, "paradise.agent")),
+        not authored.is_authorable(authored.component_by_id(document, component_ids.RENDERABLE))
+        and not authored.is_authorable(authored.component_by_id(document, component_ids.LIGHT))
+        and authored.is_authorable(authored.component_by_id(document, component_ids.AGENT)),
         "host-owned and host-baked engine components are not offered; plain ones are",
     )
 
     # -- storage ------------------------------------------------------------------------
-    component = authored.component_by_id(document, "game.creature")
+    component = authored.component_by_id(document, CREATURE_ID)
     authored.enable_component(creature_obj, component)
     check(
-        authored.enabled_component_ids(creature_obj) == ["game.creature"],
+        authored.enabled_component_ids(creature_obj) == [CREATURE_ID],
         "enabling records the component id",
     )
 
-    friendly_key = authored.value_key("game.creature", "Friendly")
+    friendly_key = authored.value_key(CREATURE_ID, "Friendly")
     check(
         isinstance(creature_obj[friendly_key], bool),
         "a bool field is stored as a real bool ID property",
         f"stored type: {type(creature_obj[friendly_key]).__name__}",
     )
     check(
-        creature_obj[authored.value_key("game.creature", "Mode")] == "Chase",
+        creature_obj[authored.value_key(CREATURE_ID, "Mode")] == "Chase",
         "an enum field starts on its declared default member",
     )
 
-    creature_obj[authored.value_key("game.creature", "MaxSpeed")] = 9.25
-    creature_obj[authored.value_key("game.creature", "Mode")] = "Flee"
-    creature_obj[authored.value_key("game.creature", "Friendly")] = False
-    creature_obj[authored.value_key("game.creature", "Box/SizeX")] = 4.0
+    creature_obj[authored.value_key(CREATURE_ID, "MaxSpeed")] = 9.25
+    creature_obj[authored.value_key(CREATURE_ID, "Mode")] = "Flee"
+    creature_obj[authored.value_key(CREATURE_ID, "Friendly")] = False
+    creature_obj[authored.value_key(CREATURE_ID, "Box/SizeX")] = 4.0
 
     # -- export -------------------------------------------------------------------------
     export_scene(bpy.context.scene)
     entities = exported_entities()
 
-    custom = entities["Creature"]["Components"].get("Custom")
-    check(custom is not None and len(custom) == 1, "the authored component is exported")
-    payload = custom[0]["Data"]
-    check(custom[0]["Id"] == "game.creature", "under its schema id")
+    game_entries = [e for e in entities["Creature"]["Components"] if e["Id"] in GAME_IDS]
+    check(len(game_entries) == 1, "the authored component is exported")
+    payload = game_entries[0]["Data"]
+    check(game_entries[0]["Id"] == CREATURE_ID, "under its schema id")
+    check(game_entries[0]["Type"] == "Game.Creature", "carrying the CLR name beside the id")
     check(payload["MaxSpeed"] == 9.25, "an authored float value survives")
     check(payload["Lives"] == 3, "an untouched field exports its schema default")
     check(payload["Friendly"] is False, "a bool exports as JSON bool")
@@ -190,14 +210,15 @@ def main() -> int:
     check("Shape" not in payload, "a host-baked field is absent, not guessed at")
 
     check(
-        "Custom" not in entities["Plain"]["Components"],
-        "an entity with nothing authored has no Custom key at all",
+        not [e for e in entities["Plain"]["Components"] if e["Id"] in GAME_IDS],
+        "an entity with nothing authored contributes no game components",
     )
 
     # -- entity-owned lights --------------------------------------------------------------
-    owned = entities["OwnedSun"]["Components"].get("Light")
+    owned = payload_for(entities["OwnedSun"], component_ids.LIGHT)
     check(owned is not None and owned["Type"] == "Directional", "a lamp entity owns its light")
-    check("Light" not in entities["Creature"]["Components"], "non-lamp entities have no Light key")
+    check(payload_for(entities["Creature"], component_ids.LIGHT) is None,
+          "non-lamp entities author no light")
     path = os.path.join(DATA_DIR, "scenes", "authored_test.json")
     with open(path, encoding="utf-8") as file:
         whole = json.load(file)
@@ -215,14 +236,14 @@ def main() -> int:
     bpy.ops.object.duplicate()
     duplicate = bpy.context.active_object
     check(
-        authored.enabled_component_ids(duplicate) == ["game.creature"],
+        authored.enabled_component_ids(duplicate) == [CREATURE_ID],
         "a duplicated object carries its authored components",
     )
     bpy.data.objects.remove(duplicate, do_unlink=True)
 
     # -- host-list components: colliders live in the same panel now ----------------------
     merged = authored.schema_for_data_dir(DATA_DIR)
-    collider_component = authored.component_by_id(merged, "paradise.collider")
+    collider_component = authored.component_by_id(merged, component_ids.COLLIDER)
     check(authored.is_authorable(collider_component), "the collider component is offered")
     check(
         not authored.is_present(creature_obj, collider_component),
@@ -232,12 +253,12 @@ def main() -> int:
     authored.enable_component(creature_obj, collider_component)
     check(
         authored.is_present(creature_obj, collider_component)
-        and not [k for k in creature_obj.keys() if "paradise.collider/" in k],  # noqa: SIM118
+        and not [k for k in creature_obj.keys() if authored.key_token(component_ids.COLLIDER) + "/" in k],  # noqa: SIM118
         "adding it sets the marker and creates NO form fields",
     )
     export_scene(bpy.context.scene)
     check(
-        exported_entities()["Creature"]["Components"]["Collider"] is None,
+        payload_for(exported_entities()["Creature"], component_ids.COLLIDER) is None,
         "the marker alone exports nothing — the references are the data",
     )
 
@@ -251,17 +272,23 @@ def main() -> int:
     shape.parent = creature_obj
     creature_obj.paradise.physics_colliders.add().target = shape
     export_scene(bpy.context.scene)
-    components = exported_entities()["Creature"]["Components"]
+    creature = exported_entities()["Creature"]
+    collider = payload_for(creature, component_ids.COLLIDER)
     check(
-        components["Collider"] is not None and len(components["Collider"]["Colliders"]) == 1,
+        collider is not None and len(collider["Colliders"]) == 1,
         "an assigned reference exports the collider",
     )
+    body = payload_for(creature, component_ids.RIGIDBODY)
     check(
-        components["Rigidbody"] is not None and components["Rigidbody"]["BodyType"] == "Static",
+        body is not None and body["BodyType"] == "Static",
         "the derived static body still rides along",
     )
+    check(
+        len([e for e in creature["Components"] if e["Id"] == component_ids.RIGIDBODY]) == 1,
+        "and exactly once — a list does not enforce at-most-one the way a slot did",
+    )
 
-    authored.disable_component(creature_obj, "paradise.collider")
+    authored.disable_component(creature_obj, component_ids.COLLIDER)
     check(
         len(creature_obj.paradise.physics_colliders) == 0,
         "removing the component clears the references too",
@@ -269,9 +296,26 @@ def main() -> int:
     bpy.data.objects.remove(shape, do_unlink=True)
 
     check(
-        not authored.is_authorable(authored.component_by_id(merged, "paradise.renderable")),
+        not authored.is_authorable(authored.component_by_id(merged, component_ids.RENDERABLE)),
         "derived components stay read-only rows, never addable",
     )
+
+    # -- a host-derived engine component is filtered before the exporter sees it -----------
+    #
+    # A .blend authored against an older schema can carry an id the host now derives. It must be
+    # dropped with a warning rather than exported as if it were a game component.
+    derived_obj = bpy.data.objects.new("DerivedCarrier", None)
+    bpy.context.scene.collection.objects.link(derived_obj)
+    derived_obj.paradise.is_entity = True
+    derived_obj[authored.ENABLED_KEY] = [component_ids.RENDERABLE]
+
+    payloads = authored.build_component_payloads(derived_obj, DATA_DIR)
+    check(
+        payloads == [],
+        "a host-derived engine component is refused, never exported as a game component",
+        str(payloads),
+    )
+    bpy.data.objects.remove(derived_obj, do_unlink=True)
 
     # -- hot reload ---------------------------------------------------------------------
     grown = json.loads(json.dumps(SCHEMA))
@@ -281,35 +325,35 @@ def main() -> int:
 
     reloaded = authored.schema_for_data_dir(DATA_DIR)
     check(
-        authored.component_by_id(reloaded, "game.marker") is None
+        authored.component_by_id(reloaded, MARKER_ID) is None
         and any(
             field.path == "Grumpy"
             for field in contract_authoring.flatten(
-                authored.component_by_id(reloaded, "game.creature")
+                authored.component_by_id(reloaded, CREATURE_ID)
             )[0]
         ),
         "the schema hot-reloads when the file changes",
     )
 
     # -- a stale component is dropped from the export, not exported blind ----------------
-    marker = authored.component_by_id(document, "game.marker")  # from the OLD schema
+    marker = authored.component_by_id(document, MARKER_ID)  # from the OLD schema
     authored.enable_component(creature_obj, marker)
     export_scene(bpy.context.scene)
     entities = exported_entities()
-    ids = [entry["Id"] for entry in entities["Creature"]["Components"]["Custom"]]
+    ids = [e["Id"] for e in entities["Creature"]["Components"] if e["Id"] in GAME_IDS]
     check(
-        ids == ["game.creature"],
+        ids == [CREATURE_ID],
         "a component the schema no longer declares is not exported",
         f"exported ids: {ids}",
     )
     check(
-        entities["Creature"]["Components"]["Custom"][0]["Data"]["Grumpy"] is False,
+        payload_for(entities["Creature"], CREATURE_ID)["Grumpy"] is False,
         "a field added by the new schema exports its default",
     )
 
     # -- removal cleans up --------------------------------------------------------------
-    authored.disable_component(creature_obj, "game.creature")
-    authored.disable_component(creature_obj, "game.marker")
+    authored.disable_component(creature_obj, CREATURE_ID)
+    authored.disable_component(creature_obj, MARKER_ID)
     leftovers = [
         key
         for key in creature_obj.keys()  # noqa: SIM118 -- bpy Object is not a dict
@@ -323,7 +367,7 @@ def main() -> int:
 
     # Leave the schema-driven export in place (re-export after removal would drop Custom from
     # the document the conformance gate checks). Re-enable and export once more.
-    authored.enable_component(creature_obj, authored.component_by_id(reloaded, "game.creature"))
+    authored.enable_component(creature_obj, authored.component_by_id(reloaded, CREATURE_ID))
     export_scene(bpy.context.scene)
 
     print()

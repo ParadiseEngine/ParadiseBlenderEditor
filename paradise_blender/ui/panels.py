@@ -17,7 +17,7 @@ from ..authoring import config_store
 from ..authoring.collider import is_collider
 from ..authoring.entity import entity_objects, is_entity
 from ..contract import authoring as contract_authoring
-from ..contract import config_document
+from ..contract import component_ids, config_document
 from ..export import navmesh_preview
 from ..export.scene import resolve_scene_name
 from ..live import session as live_session
@@ -392,9 +392,9 @@ class PARADISE_PT_entity_components(_ParadisePanel, Panel):
         # host-list components (colliders) with their reference lists, form components with
         # their schema fields — in the schema's stable id order.
         for component in document.components:
-            if component.id in authored.HOST_OWNED_IDS:
+            if not authored.is_authorable(component):
                 _draw_derived_components(layout, obj, component)
-            elif component.id in authored.HOST_LIST_IDS:
+            elif authored.is_host_list(component):
                 if authored.is_present(obj, component):
                     _draw_host_list_component(layout, context, obj, component)
             elif component.id in authored.enabled_component_ids(obj):
@@ -598,13 +598,16 @@ class PARADISE_PT_material(Panel):
 
 
 #: Which assign/remove slot each host-list component's operators use.
-_HOST_LIST_SLOTS = {"paradise.collider": "PHYSICS", "paradise.interactable": "INTERACTION"}
+_HOST_LIST_SLOTS = {
+    component_ids.COLLIDER: "PHYSICS",
+    component_ids.INTERACTABLE: "INTERACTION",
+}
 
 
 def _draw_derived_components(layout, obj, component) -> None:
     """A read-only row for a component this host derives outright, so the panel is a complete
     inventory of what the entity exports even for the parts nobody authors."""
-    if component.id == "paradise.renderable":
+    if component.id == component_ids.RENDERABLE:
         props = obj.paradise
         if props.model_path.strip():
             source = f"from model '{props.model_path.strip()}'"
@@ -612,7 +615,7 @@ def _draw_derived_components(layout, obj, component) -> None:
             source = f"from mesh '{obj.data.name}'"
         else:
             return  # nothing renderable; a row saying so on every marker empty is noise
-    elif component.id == "paradise.light":
+    elif component.id == component_ids.LIGHT:
         if obj.type != "LIGHT":
             return
         source = f"baked from this {obj.data.type.lower()} lamp"
@@ -628,8 +631,13 @@ def _draw_host_list_component(layout, context, obj, component) -> None:
     """A component whose body is object references: the entity's collider lists — this host's
     half of the schema's ``authoredBy: shape``. Same box, header and remove button as every
     other component; the fields are just pointers you assign instead of values you type."""
-    slot = _HOST_LIST_SLOTS[component.id]
+    slot = _HOST_LIST_SLOTS.get(component.id)
     collection = authored.host_list_collection(obj, component.id)
+    if slot is None:
+        row = layout.row()
+        row.enabled = False
+        row.label(text=f"{component.display_name} — not authorable in Blender yet", icon="ERROR")
+        return
 
     box = layout.box()
     header = box.row(align=True)
@@ -639,7 +647,7 @@ def _draw_host_list_component(layout, context, obj, component) -> None:
     remove = header.operator("paradise.remove_authored_component", text="", icon="X")
     remove.component = component.id
 
-    if component.id == "paradise.interactable":
+    if component.id == component_ids.INTERACTABLE:
         note = box.row()
         note.enabled = False
         note.label(text="DisplayName — the object's name", icon="DECORATE_LINKED")

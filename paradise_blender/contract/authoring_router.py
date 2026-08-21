@@ -2,18 +2,21 @@
 
 Python mirror of ``Paradise.Export.Data.AuthoredComponentRouter``, for the subset of engine
 components this host authors through the schema. An editor knows only ids and JSON — it has no
-idea that ``paradise.rigidbody`` belongs in ``Components.Rigidbody`` — so the mapping lives on
+idea that the rigidbody component belongs in ``Components.Rigidbody`` — so the mapping lives on
 the contract, where both halves can see it.
+
+Components are named in words below and spelled as GUIDs in the code: identity is
+``0c068bf4-…``, and the ids come from :mod:`.component_ids` so there is one place they are
+written down. A component's id says nothing about what it is any more, which is exactly why the
+prose has to.
 
 The subset is deliberate, and the split is this host's, not the schema's:
 
-* **Routed here** (plain fields, authored in the Components panel): ``paradise.identity``,
-  ``paradise.agent``, ``paradise.rigidbody``, ``paradise.audio-emitter``,
-  ``paradise.particle-emitter``.
+* **Routed here** (plain fields, authored in the Components panel): identity, agent, rigidbody,
+  audio-emitter, particle-emitter.
 * **Host-owned** (this host derives them from real Blender data, so authoring them as a form
-  would fight the pipeline): ``paradise.renderable`` (the mesh datablock),
-  ``paradise.collider`` / ``paradise.interactable`` (the collider empties),
-  ``paradise.light`` (the lamp datablock). The schema marks light and sprite-animation as
+  would fight the pipeline): renderable (the mesh datablock), collider / interactable (the
+  collider empties), light (the lamp datablock). The schema marks light and sprite-animation as
   host-baked anyway (component-level ``authoredBy``).
 
 Payloads arrive as the WIRE dicts :func:`.authoring.build_payload` produces — schema defaults
@@ -27,54 +30,54 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import component_ids
 from .color import Color32
 from .schema import (
-    AgentComponentData,
     AudioEmitterComponentData,
     LevelEntityData,
     ParticleEmitterComponentData,
-    RigidbodyComponentData,
 )
 
 __all__ = ["ROUTED_IDS", "apply"]
 
-IDENTITY = "paradise.identity"
-AGENT = "paradise.agent"
-RIGIDBODY = "paradise.rigidbody"
-AUDIO_EMITTER = "paradise.audio-emitter"
-PARTICLE_EMITTER = "paradise.particle-emitter"
+IDENTITY = component_ids.IDENTITY
+AGENT = component_ids.AGENT
+RIGIDBODY = component_ids.RIGIDBODY
+AUDIO_EMITTER = component_ids.AUDIO_EMITTER
+PARTICLE_EMITTER = component_ids.PARTICLE_EMITTER
 
-#: The engine ids this router places. Anything else is either a game's own component (the
-#: caller carries it in ``Components.Custom``) or an engine component this host does not
-#: author as a form (the caller warns).
-ROUTED_IDS = frozenset({IDENTITY, AGENT, RIGIDBODY, AUDIO_EMITTER, PARTICLE_EMITTER})
+#: The ids this module still has something to say about: identity, which :func:`apply` spreads
+#: onto the entity, and the two :func:`normalize` clamps on the way out. Everything else rides
+#: verbatim, which is the whole point of the change that shrank this list.
+ROUTED_IDS = frozenset({IDENTITY, AUDIO_EMITTER, PARTICLE_EMITTER})
 
 
 def apply(entity: LevelEntityData, component_id: str, payload: dict[str, Any]) -> bool:
-    """Apply one authored engine component to an entity. False when the id is not routed."""
+    """Spread identity onto the entity's own fields. False for everything else.
+
+    All that is left of what used to be a nine-way dispatch into typed slots. Identity is the one
+    component that is not a component on the wire — it is what the entity IS — so it is the one
+    that still needs somewhere else to go.
+    """
     if component_id == IDENTITY:
         _apply_identity(entity, payload)
-    elif component_id == AGENT:
-        entity.components.agent = AgentComponentData(
-            move_speed=float(payload["MoveSpeed"]),
-            acceleration=float(payload["Acceleration"]),
-            idle_clip=_null_if_blank(payload.get("IdleClip")),
-            walk_clip=_null_if_blank(payload.get("WalkClip")),
-        )
-    elif component_id == RIGIDBODY:
-        # Authored values travel verbatim — the "zero the mass on a static body" rule belongs
-        # to the DERIVED rigidbody the exporter emits alongside colliders, not to something an
-        # author typed in deliberately.
-        entity.components.rigidbody = RigidbodyComponentData(
-            body_type=str(payload["BodyType"]),
-            mass=float(payload["Mass"]),
-            linear_damping=float(payload["LinearDamping"]),
-            restitution=float(payload["Restitution"]),
-            friction=float(payload["Friction"]),
-            layer=int(payload["Layer"]),
-            layer_name=payload.get("LayerName") or "",
-        )
-    elif component_id == AUDIO_EMITTER:
+        return True
+    return False
+
+
+def normalize(component_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """A payload with the contract's own normalization applied, or the payload unchanged.
+
+    Payloads ride verbatim now, which would have quietly dropped this: two components clamp and
+    derive fields (an emitter's frame count from its grid, an audio emitter's attenuation), and
+    NOTHING calls ValidateAndNormalize on the reading side — the methods exist in the contract but
+    no runtime path invokes them. It has always been the editor's job, so it stays one, done here
+    on the way out instead of on the way into a slot.
+
+    Round-tripped through the typed record rather than reimplemented on the dict: the rules live
+    on the record, and a second copy operating on raw keys would drift from them.
+    """
+    if component_id == AUDIO_EMITTER:
         data = AudioEmitterComponentData(
             start_event=_null_if_blank(payload.get("StartEvent")),
             stop_event=_null_if_blank(payload.get("StopEvent")),
@@ -83,12 +86,10 @@ def apply(entity: LevelEntityData, component_id: str, payload: dict[str, Any]) -
             attenuation_scale=float(payload["AttenuationScale"]),
         )
         data.validate_and_normalize()
-        entity.components.audio_emitter = data
-    elif component_id == PARTICLE_EMITTER:
-        _apply_particles(entity, payload)
-    else:
-        return False
-    return True
+        return data.to_json()
+    if component_id == PARTICLE_EMITTER:
+        return _normalized_particles(payload)
+    return payload
 
 
 def _apply_identity(entity: LevelEntityData, payload: dict[str, Any]) -> None:
@@ -107,7 +108,7 @@ def _apply_identity(entity: LevelEntityData, payload: dict[str, Any]) -> None:
         entity.spawn_phase = payload["SpawnPhase"]
 
 
-def _apply_particles(entity: LevelEntityData, payload: dict[str, Any]) -> None:
+def _normalized_particles(payload: dict[str, Any]) -> dict[str, Any]:
     color = payload.get("Color") or {}
     data = ParticleEmitterComponentData(
         kind=str(payload["Kind"]),
@@ -136,7 +137,7 @@ def _apply_particles(entity: LevelEntityData, payload: dict[str, Any]) -> None:
         fps=float(payload["Fps"]),
     )
     data.validate_and_normalize()
-    entity.components.particle_emitter = data
+    return data.to_json()
 
 
 def _null_if_blank(value: Any) -> str | None:

@@ -11,14 +11,18 @@ import json
 
 import pytest
 
-from paradise_blender.contract import authoring, schema, writer
+from paradise_blender.contract import authoring, component_ids, schema, writer
+
+#: A game's dumped schema, as of v3: GUID ids, and a `type` beside each one.
+CREATURE_ID = "1f0a4c62-8b3d-4e07-9c15-2a6d8f43be91"
 
 PINGU_LIKE = json.dumps(
     {
-        "version": 2,
+        "version": 3,
         "components": [
             {
-                "id": "game.creature",
+                "id": CREATURE_ID,
+                "type": "Pingu.Core.Authoring.Creature",
                 "displayName": "Creature",
                 "fields": [
                     {"name": "MaxSpeed", "type": "float", "minimum": 0.1, "maximum": 50, "default": 7},
@@ -68,22 +72,39 @@ def creature() -> authoring.AuthoredComponentSchema:
 class TestRead:
     def test_reads_ids_names_and_fields(self):
         component = creature()
-        assert component.id == "game.creature"
+        assert component.id == CREATURE_ID
+        assert component.type == "Pingu.Core.Authoring.Creature"
         assert component.display_name == "Creature"
         assert component.fields[0].name == "MaxSpeed"
         assert component.fields[0].minimum == 0.1
 
-    def test_display_name_falls_back_to_the_id(self):
-        document = authoring.read('{"version": 2, "components": [{"id": "game.thing"}]}')
-        assert document.components[0].display_name == "game.thing"
+    def test_display_name_falls_back_to_the_type_not_the_id(self):
+        """A bare GUID is not a label. When nothing declared a display name the TYPE stands in,
+        because it is the only member of a v3 component a human can read."""
+        document = authoring.read(
+            '{"version": 3, "components": [{"id": "' + CREATURE_ID + '",'
+            ' "type": "Game.Thing"}]}'
+        )
+        assert document.components[0].display_name == "Game.Thing"
+
+    def test_an_uppercase_id_is_normalized_on_the_way_in(self):
+        """A hand-typed [Guid] in a game repo can arrive in any case. Left alone it would open a
+        second storage namespace on the same object, invisible against the first."""
+        document = authoring.read(
+            '{"version": 3, "components": [{"id": "' + CREATURE_ID.upper() + '"}]}'
+        )
+        assert document.components[0].id == CREATURE_ID
 
     def test_rejects_a_newer_version_than_this_reader_understands(self):
         with pytest.raises(authoring.SchemaError, match="version 99"):
             authoring.read('{"version": 99, "components": []}')
 
-    def test_rejects_a_version_below_the_minimum(self):
+    def test_rejects_a_v2_document_rather_than_guessing_at_its_names(self):
+        """The case that actually happens: a game built before the ids became GUIDs. There is no
+        way to derive a component's GUID from "paradise.rigidbody", so the document is refused
+        and regenerated rather than half-read into ids that resolve to nothing."""
         with pytest.raises(authoring.SchemaError, match="older than"):
-            authoring.read('{"version": 0, "components": []}')
+            authoring.read('{"version": 2, "components": []}')
 
     def test_rejects_malformed_json_loudly(self):
         """A schema an editor cannot read must not be papered over with an empty list -- the
@@ -91,41 +112,32 @@ class TestRead:
         with pytest.raises(authoring.SchemaError, match="not valid JSON"):
             authoring.read("{not json")
 
-    def test_normalizes_the_v1_nativeShape_spelling(self):
-        document = authoring.read(
-            json.dumps(
-                {
-                    "version": 1,
-                    "components": [
-                        {
-                            "id": "game.old",
-                            "fields": [{"name": "Box", "type": "object", "authoredBy": "nativeShape"}],
-                        }
-                    ],
-                }
-            )
-        )
-        assert document.components[0].fields[0].authored_by == "shape"
-
 
 class TestMerge:
     def test_earlier_sources_win_on_a_duplicate_id(self):
+        rigidbody = component_ids.RIGIDBODY
         engine = authoring.read(
-            '{"version": 2, "components": [{"id": "paradise.rigidbody", "displayName": "Engine"}]}'
+            '{"version": 3, "components": [{"id": "' + rigidbody + '",'
+            ' "type": "Zzz.Rigidbody", "displayName": "Engine"}]}'
         )
         game = authoring.read(
-            '{"version": 2, "components": [{"id": "paradise.rigidbody", "displayName": "Impostor"},'
-            ' {"id": "game.own"}]}'
+            '{"version": 3, "components": [{"id": "' + rigidbody + '",'
+            ' "type": "Zzz.Rigidbody", "displayName": "Impostor"},'
+            ' {"id": "' + CREATURE_ID + '", "type": "Aaa.Own"}]}'
         )
         merged = authoring.merge([engine, game])
-        assert [c.id for c in merged.components] == ["game.own", "paradise.rigidbody"]
+        assert [c.id for c in merged.components] == [CREATURE_ID, rigidbody]
         assert merged.components[1].display_name == "Engine"
 
-    def test_components_come_out_ordered_by_id(self):
+    def test_components_come_out_ordered_by_type_not_by_id(self):
+        """Ordered by TYPE since v3: sorting on a GUID would shuffle the list into an order no
+        reader could predict, and the panel draws in this order while the exporter writes in it."""
         document = authoring.read(
-            '{"version": 2, "components": [{"id": "z.last"}, {"id": "a.first"}]}'
+            '{"version": 3, "components": ['
+            '{"id": "' + CREATURE_ID + '", "type": "Z.Last"},'
+            '{"id": "' + component_ids.AGENT + '", "type": "A.First"}]}'
         )
-        assert [c.id for c in authoring.merge([document]).components] == ["a.first", "z.last"]
+        assert [c.type for c in authoring.merge([document]).components] == ["A.First", "Z.Last"]
 
 
 class TestFlatten:
@@ -216,48 +228,54 @@ class TestBuildPayload:
         assert payload["Facing"] == [0.0, 0.0, 0.0, 1.0]
 
 
-class TestCustomInTheDocument:
-    def test_components_omit_custom_when_nothing_authored_anything(self):
-        """What keeps every scene exported before authored components existed byte-identical:
-        the C# side marks Custom JsonIgnore(WhenWritingNull)."""
-        assert "Custom" not in schema.EntityComponentsData().to_json()
+class TestComponentsInTheDocument:
+    def test_an_entity_authoring_nothing_has_an_empty_list(self):
+        """This used to assert the word "Custom" was absent — the trick that kept scenes exported
+        before authored components existed byte-identical. There is one list now, so absence is
+        an empty array rather than a missing key."""
+        assert schema.EntityComponentsData().to_json() == []
 
-    def test_custom_serializes_as_id_plus_opaque_data(self):
-        components = schema.EntityComponentsData(
-            custom=[schema.AuthoredComponentData(id="game.creature", data={"MaxSpeed": 7.0})]
-        )
-        assert components.to_json()["Custom"] == [
-            {"Id": "game.creature", "Data": {"MaxSpeed": 7.0}}
+    def test_a_component_serializes_as_id_type_and_opaque_data(self):
+        components = schema.EntityComponentsData()
+        components.add(schema.AuthoredComponentData(
+            id=CREATURE_ID, type="Pingu.Core.Authoring.Creature", data={"MaxSpeed": 7.0}))
+        assert components.to_json() == [
+            {
+                "Id": CREATURE_ID,
+                "Type": "Pingu.Core.Authoring.Creature",
+                "Data": {"MaxSpeed": 7.0},
+            }
         ]
 
-    def test_custom_survives_the_writer(self):
-        components = schema.EntityComponentsData(
-            custom=[schema.AuthoredComponentData(id="game.creature", data={"Friendly": True})]
-        )
+    def test_type_is_omitted_when_there_is_none_rather_than_sent_empty(self):
+        """Type is optional on the wire. An empty string is not the same as absent to the reader
+        that falls back to it, so it must not be written as one."""
+        components = schema.EntityComponentsData()
+        components.add(schema.AuthoredComponentData(id=CREATURE_ID, data={}))
+        assert components.to_json() == [{"Id": CREATURE_ID, "Data": {}}]
+
+    def test_components_survive_the_writer(self):
+        components = schema.EntityComponentsData()
+        components.add(schema.AuthoredComponentData(id=CREATURE_ID, data={"Friendly": True}))
         text = writer.dumps(components.to_json())
-        assert '"Custom"' in text and '"Friendly": true' in text
+        assert CREATURE_ID in text and '"Friendly": true' in text
 
+    def test_an_engine_component_carries_the_type_the_schema_publishes(self):
+        """add_engine looks the CLR name up in the vendored engine schema rather than taking it
+        from a table here — the id is the only thing the caller has to know."""
+        components = schema.EntityComponentsData()
+        components.add_engine(
+            component_ids.RENDERABLE, schema.RenderableComponentData(mesh="Models/x.glb"))
+        entry = components.to_json()[0]
+        assert entry["Id"] == component_ids.RENDERABLE
+        assert entry["Type"] == "Paradise.Export.Data.RenderableComponentData"
+        assert entry["Data"]["Mesh"] == "Models/x.glb"
 
-class TestLightInTheDocument:
-    def test_components_omit_light_when_the_entity_owns_none(self):
-        assert "Light" not in schema.EntityComponentsData().to_json()
-
-    def test_an_entity_owned_light_serializes_in_place(self):
-        components = schema.EntityComponentsData(
-            light=schema.SceneLightData(id="Sun", type="Directional", intensity=1.5)
-        )
-        emitted = components.to_json()["Light"]
-        assert emitted["Id"] == "Sun"
-        assert emitted["Type"] == "Directional"
-        assert emitted["Intensity"] == 1.5
-
-    def test_light_precedes_custom_matching_the_csharp_declaration_order(self):
-        components = schema.EntityComponentsData(
-            light=schema.SceneLightData(id="Sun"),
-            custom=[schema.AuthoredComponentData(id="game.x", data={})],
-        )
-        keys = list(components.to_json())
-        assert keys.index("Light") < keys.index("Custom")
+    def test_find_returns_the_entry_for_an_id(self):
+        components = schema.EntityComponentsData()
+        components.add_engine(component_ids.RENDERABLE, schema.RenderableComponentData())
+        assert components.find(component_ids.RENDERABLE) is not None
+        assert components.find(component_ids.AGENT) is None
 
 
 class TestSchemaStamp:

@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import bpy
 
-from .. import log
 from ..authoring import authored_components
 from ..authoring import entity as authoring
 from ..authoring.guid import ensure_entity_guid
@@ -107,38 +106,39 @@ def _build_components(
 
     mesh_field = meshes.resolve_mesh_field(obj, paths)
     if mesh_field is not None:
-        components.renderable = RenderableComponentData(mesh=mesh_field)
+        components.add_engine(component_ids.RENDERABLE, RenderableComponentData(mesh=mesh_field))
     elif props.model_path.strip():
         # An authored model path that did not resolve still marks the entity as renderable, so
         # the runtime reports a missing mesh rather than silently treating it as invisible.
-        components.renderable = RenderableComponentData()
+        components.add_engine(component_ids.RENDERABLE, RenderableComponentData())
 
     physics = build_colliders(obj, props.physics_colliders)
     if physics:
-        components.collider = ColliderComponentData(colliders=physics)
+        components.add_engine(component_ids.COLLIDER, ColliderComponentData(colliders=physics))
         # A derived body: a wall, a shelf, a parked car — static, no mass. An authored
-        # paradise.rigidbody replaces it wholesale, and _apply_authored_components upgrades it
-        # to Kinematic when the entity also authors an agent — the rule the old fixed flags
+        # rigidbody REPLACES this entry, and _apply_authored_components upgrades it to
+        # Kinematic when the entity also authors an agent — the rule the old fixed flags
         # (is_dynamic_body / is_agent) used to encode.
-        components.rigidbody = RigidbodyComponentData(
+        components.add_engine(component_ids.RIGIDBODY, RigidbodyComponentData(
             body_type=PhysicsBodyType.STATIC,
             mass=0.0,
             linear_damping=0.0,
             layer_name="",  # the C# record's default; None would round-trip but diff noisily
-        )
+        ))
 
     # Interaction collider geometry is not forwarded (the contract's interactable component
     # only carries a display name today); presence is enough to flag the component. Matches
     # the Godot host, so both produce the same document for the same scene.
     if build_colliders(obj, props.interaction_colliders):
-        components.interactable = EntityInteractableComponentData(display_name=obj.name)
+        components.add_engine(
+            component_ids.INTERACTABLE, EntityInteractableComponentData(display_name=obj.name))
 
     if obj.type == "LIGHT":
         # A lamp marked as an entity OWNS its light: it travels as Components.Light (the same
-        # entity-owned slot the Godot host authors by pointing at a light) and is left out of
+        # entity-owned entry the Godot host authors by pointing at a light) and is left out of
         # the scene-level Lighting state (see scene.py), or the runtime would light it twice.
         # Position and direction are world-space, exactly as the scene-level list carries them.
-        components.light = export_light(obj)
+        components.add_engine(component_ids.LIGHT, export_light(obj))
 
     return components
 
@@ -146,40 +146,47 @@ def _build_components(
 def _apply_authored_components(
     obj: bpy.types.Object, entity: LevelEntityData, paths: ExportPaths
 ) -> None:
-    """Route every authored component to where the runtime expects it.
+    """Put every authored component on the entity.
 
-    Engine ids land in their typed slots — or on the entity itself, for identity — through the
-    contract router; a game's own ids ride in ``Components.Custom``, absent (not an empty
-    list) when nothing is authored: the C# contract omits the key, and matching that keeps
-    every pre-schema export byte-identical.
+    One destination now, and identity is the only exception: it is spread onto the entity's own
+    fields because it is what the entity IS, not something it has. Everything else — the engine's
+    components and a game's alike — is appended to the same list.
     """
     components = entity.components
-    custom: list[AuthoredComponentData] = []
-    routed: set[str] = set()
+    authored_engine_ids: set[str] = set()
 
     for component_id, component_type, payload in authored_components.build_component_payloads(
             obj, paths.data_dir):
         if authoring_router.apply(entity, component_id, payload):
-            routed.add(component_id)
-        # Membership, NOT a prefix test. This was `component_id.startswith("paradise.")` when ids
-        # were names; a GUID has no prefix, so that branch would never fire again and every
-        # host-derived engine component would fall silently into Components.Custom below.
-        elif component_id in component_ids.engine_ids():
-            # An engine component this host derives or bakes rather than authors as a form —
-            # exporting form values would fight the pipeline that already writes the slot.
-            log.warn(
-                f"'{obj.name}' authors '{component_id}', which this host derives from the "
-                "scene itself (mesh, colliders, lamp). The authored copy is NOT exported.")
+            continue  # identity, spread onto the entity and leaving no entry
+
+        if component_id in component_ids.engine_ids():
+            authored_engine_ids.add(component_id)
+
+        entry = AuthoredComponentData(
+            id=component_id,
+            type=component_type,
+            data=authoring_router.normalize(component_id, payload))
+
+        # An authored component REPLACES the entry this host derived for the same id rather than
+        # adding a second one — two entries for one component is a document nothing can read
+        # sensibly. In practice only the rigidbody gets here: everything else this host derives
+        # (renderable, light) is not authorable, and the collider lists are exported from their
+        # pointer collections, never from a payload.
+        existing = components.find(component_id)
+        if existing is not None:
+            components.components[components.components.index(existing)] = entry
         else:
-            custom.append(AuthoredComponentData(
-                id=component_id, type=component_type, data=payload))
+            components.add(entry)
 
-    # An agent stands on the navmesh and is moved by the simulation, so its derived body is
+    # An agent stands on the navmesh and is moved by the simulation, so its DERIVED body is
     # kinematic, not static — unless the author said otherwise with a rigidbody component.
-    if (authoring_router.RIGIDBODY not in routed
-            and components.rigidbody is not None
-            and components.agent is not None):
-        components.rigidbody.body_type = PhysicsBodyType.KINEMATIC
+    #
+    # A scan rather than two slot reads: the rule wants the entry this host synthesized, and an
+    # authored rigidbody is a different entry it must not touch.
+    if (component_ids.RIGIDBODY not in authored_engine_ids
+            and components.find(component_ids.AGENT) is not None):
+        derived_body = components.find(component_ids.RIGIDBODY)
+        if derived_body is not None:
+            derived_body.data["BodyType"] = PhysicsBodyType.KINEMATIC
 
-    if custom:
-        components.custom = custom

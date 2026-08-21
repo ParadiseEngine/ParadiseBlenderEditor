@@ -7,8 +7,6 @@ would put it in, or the same scene authored in the two hosts stops meaning the s
 
 from __future__ import annotations
 
-import json
-
 from paradise_blender.contract import (
     authoring,
     authoring_router,
@@ -82,57 +80,43 @@ class TestIdentity:
         assert target.kind == "Prop"
 
 
-class TestTypedSlots:
-    def test_agent_lands_in_its_slot_with_blank_clips_as_null(self):
-        target = entity()
-        authoring_router.apply(
-            target, component_ids.AGENT,
-            payload(component_ids.AGENT, {"MoveSpeed": 4.0, "IdleClip": "Idle_Loop", "WalkClip": ""}))
-        agent = target.components.agent
-        assert agent is not None
-        assert agent.move_speed == 4.0
-        assert agent.idle_clip == "Idle_Loop"
-        assert agent.walk_clip is None
+class TestNormalization:
+    """What survived the typed slots.
 
-    def test_rigidbody_travels_verbatim_with_the_enum_by_name(self):
-        target = entity()
-        authoring_router.apply(
-            target, component_ids.RIGIDBODY,
-            payload(component_ids.RIGIDBODY, {"BodyType": "Dynamic", "Mass": 2.5}))
-        body = target.components.rigidbody
-        assert body is not None
-        assert body.to_json()["BodyType"] == "Dynamic"
-        assert body.mass == 2.5
+    These used to assert that four components landed in four named slots, unpacked field by
+    field. Nothing is unpacked on the way out any more — a payload rides verbatim — so what is
+    left to pin is the clamping the contract does and NOTHING on the reading side calls: the
+    ValidateAndNormalize methods exist in C# but no runtime path invokes them, which makes this
+    the editor's job and this module the place it happens.
+    """
 
     def test_audio_emitter_is_normalized_like_the_contract(self):
-        target = entity()
-        authoring_router.apply(
-            target, component_ids.AUDIO_EMITTER,
+        emitted = authoring_router.normalize(
+            component_ids.AUDIO_EMITTER,
             payload(component_ids.AUDIO_EMITTER, {"StartEvent": "Play_X", "AttenuationScale": 0.0}))
-        audio = target.components.audio_emitter
-        assert audio is not None
-        assert audio.start_event == "Play_X"
-        assert audio.attenuation_scale == 1.0  # zero scale repaired, as ValidateAndNormalize does
+        assert emitted["StartEvent"] == "Play_X"
+        assert emitted["AttenuationScale"] == 1.0  # zero scale repaired, as the contract does
+        assert emitted["StopEvent"] is None  # blank became null, not ""
 
     def test_particles_map_color_and_leave_the_baked_sheet_absent(self):
-        target = entity()
-        authoring_router.apply(
-            target, component_ids.PARTICLE_EMITTER,
+        emitted = authoring_router.normalize(
+            component_ids.PARTICLE_EMITTER,
             payload(component_ids.PARTICLE_EMITTER,
                     {"Kind": "Voxel", "Color": [0.2, 0.4, 0.6, 1.0], "MaxParticles": 16}))
-        particles = target.components.particle_emitter
-        assert particles is not None
-        emitted = particles.to_json()
         assert emitted["Kind"] == "Voxel"
         assert emitted["MaxParticles"] == 16
         assert emitted["Sheet"] is None
 
-    def test_the_routed_payloads_survive_the_document_writer(self):
-        target = entity()
-        for component_id in (component_ids.AGENT, component_ids.RIGIDBODY):
-            authoring_router.apply(target, component_id, payload(component_id, {}))
-        text = json.dumps(target.to_json())
-        assert '"Agent"' in text and '"Rigidbody"' in text
+    def test_a_component_with_no_normalization_rides_verbatim(self):
+        """Agent and rigidbody used to be unpacked into slots field by field. They are not
+        touched now, and that is the point: the exporter stopped rewriting what an author typed."""
+        original = payload(component_ids.RIGIDBODY, {"BodyType": "Dynamic", "Mass": 2.5})
+        assert authoring_router.normalize(component_ids.RIGIDBODY, original) is original
+
+    def test_a_game_component_is_never_touched(self):
+        original = {"anything": [1, 2, 3]}
+        assert authoring_router.normalize(
+            "c4e8a1b2-9f60-4d33-8a17-6b2e50d9fc84", original) is original
 
 
 class TestRefusals:

@@ -30,6 +30,16 @@ import paradise_blender  # noqa: E402
 from paradise_blender.contract import component_ids  # noqa: E402
 from paradise_blender.export.scene import export_scene  # noqa: E402
 
+
+def payload_for(entity, component_id):
+    """One component's Data on an exported entity, or None. Components are a LIST now, so a test
+    asks by id rather than by a key whose absence used to mean "no such component"."""
+    for component in entity["Components"]:
+        if component["Id"] == component_id:
+            return component["Data"]
+    return None
+
+
 DATA_DIR = os.path.join(tempfile.gettempdir(), "paradise_export_test")
 
 failures: list[str] = []
@@ -158,7 +168,7 @@ def main() -> int:
         document = json.load(handle)
 
     print()
-    check(document["SchemaVersion"] == 2, "schema version is 2")
+    check(document["SchemaVersion"] == 3, "schema version is 3")
 
     entities = {e["Id"]: e for e in document["Entities"]}
     check(set(entities) == {"Ball", "Ground", "Hero"}, "all three entities exported",
@@ -186,31 +196,34 @@ def main() -> int:
           "no entity exported the all-zero GUID")
 
     # -- components -------------------------------------------------------------------
-    check(ball["Components"]["Rigidbody"]["BodyType"] == "Dynamic",
+    check(payload_for(ball, component_ids.RIGIDBODY)["BodyType"] == "Dynamic",
           "the dynamic prop exports BodyType Dynamic")
-    check(approx(ball["Components"]["Rigidbody"]["Mass"], 2.5), "dynamic body mass carries through")
-    check(ground["Components"]["Rigidbody"]["BodyType"] == "Static",
+    check(approx(payload_for(ball, component_ids.RIGIDBODY)["Mass"], 2.5),
+          "dynamic body mass carries through")
+    check(payload_for(ground, component_ids.RIGIDBODY)["BodyType"] == "Static",
           "an ordinary collidable entity exports BodyType Static")
-    check(approx(ground["Components"]["Rigidbody"]["Mass"], 0.0),
+    check(approx(payload_for(ground, component_ids.RIGIDBODY)["Mass"], 0.0),
           "a static body exports zero mass")
 
     hero = entities["Hero"]
-    check(hero["Components"]["Agent"] is not None, "the agent exports an Agent component")
-    check(approx(hero["Components"]["Agent"]["MoveSpeed"], 3.0), "agent move speed carries through")
-    check(hero["Components"]["Agent"]["IdleClip"] == "Idle",
+    check(payload_for(hero, component_ids.AGENT) is not None, "the agent exports an Agent component")
+    check(approx(payload_for(hero, component_ids.AGENT)["MoveSpeed"], 3.0),
+          "agent move speed carries through")
+    check(payload_for(hero, component_ids.AGENT)["IdleClip"] == "Idle",
           "an unset idle clip falls back to the shared default")
 
-    shapes = ground["Components"]["Collider"]["Colliders"]
+    shapes = payload_for(ground, component_ids.COLLIDER)["Colliders"]
     check(len(shapes) == 1 and shapes[0]["ShapeType"] == "Box", "the box collider exported")
     check(shapes[0]["Layer"] == 1, "the collider's layer index carries through")
     check(all(s > 0 for s in shapes[0]["Size"]),
           "the collider derived a non-zero size from an empty's display bounds", str(shapes[0]["Size"]))
 
-    sphere_shape = ball["Components"]["Collider"]["Colliders"][0]
+    sphere_shape = payload_for(ball, component_ids.COLLIDER)["Colliders"][0]
     check(sphere_shape["ShapeType"] == "Sphere" and sphere_shape["Radius"] > 0,
           "the sphere collider exported with a radius")
 
-    check(ground["Components"]["Renderable"]["Mesh"] is not None, "the ground references a mesh GLB")
+    check(payload_for(ground, component_ids.RENDERABLE)["Mesh"] is not None,
+          "the ground references a mesh GLB")
     check(ground["Materials"] == ["materials/mat_ground.json"],
           "the material slot references its contract field", str(ground["Materials"]))
 

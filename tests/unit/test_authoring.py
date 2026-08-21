@@ -228,18 +228,18 @@ class TestBuildPayload:
         assert payload["Facing"] == [0.0, 0.0, 0.0, 1.0]
 
 
-class TestCustomInTheDocument:
-    def test_components_omit_custom_when_nothing_authored_anything(self):
-        """What keeps every scene exported before authored components existed byte-identical:
-        the C# side marks Custom JsonIgnore(WhenWritingNull)."""
-        assert "Custom" not in schema.EntityComponentsData().to_json()
+class TestComponentsInTheDocument:
+    def test_an_entity_authoring_nothing_has_an_empty_list(self):
+        """This used to assert the word "Custom" was absent — the trick that kept scenes exported
+        before authored components existed byte-identical. There is one list now, so absence is
+        an empty array rather than a missing key."""
+        assert schema.EntityComponentsData().to_json() == []
 
-    def test_custom_serializes_as_id_type_and_opaque_data(self):
-        components = schema.EntityComponentsData(
-            custom=[schema.AuthoredComponentData(
-                id=CREATURE_ID, type="Pingu.Core.Authoring.Creature", data={"MaxSpeed": 7.0})]
-        )
-        assert components.to_json()["Custom"] == [
+    def test_a_component_serializes_as_id_type_and_opaque_data(self):
+        components = schema.EntityComponentsData()
+        components.add(schema.AuthoredComponentData(
+            id=CREATURE_ID, type="Pingu.Core.Authoring.Creature", data={"MaxSpeed": 7.0}))
+        assert components.to_json() == [
             {
                 "Id": CREATURE_ID,
                 "Type": "Pingu.Core.Authoring.Creature",
@@ -247,42 +247,35 @@ class TestCustomInTheDocument:
             }
         ]
 
-    def test_custom_omits_type_when_there_is_none_rather_than_sending_it_empty(self):
+    def test_type_is_omitted_when_there_is_none_rather_than_sent_empty(self):
         """Type is optional on the wire. An empty string is not the same as absent to the reader
         that falls back to it, so it must not be written as one."""
-        components = schema.EntityComponentsData(
-            custom=[schema.AuthoredComponentData(id=CREATURE_ID, data={})]
-        )
-        assert components.to_json()["Custom"] == [{"Id": CREATURE_ID, "Data": {}}]
+        components = schema.EntityComponentsData()
+        components.add(schema.AuthoredComponentData(id=CREATURE_ID, data={}))
+        assert components.to_json() == [{"Id": CREATURE_ID, "Data": {}}]
 
-    def test_custom_survives_the_writer(self):
-        components = schema.EntityComponentsData(
-            custom=[schema.AuthoredComponentData(id=CREATURE_ID, data={"Friendly": True})]
-        )
+    def test_components_survive_the_writer(self):
+        components = schema.EntityComponentsData()
+        components.add(schema.AuthoredComponentData(id=CREATURE_ID, data={"Friendly": True}))
         text = writer.dumps(components.to_json())
-        assert '"Custom"' in text and '"Friendly": true' in text
+        assert CREATURE_ID in text and '"Friendly": true' in text
 
+    def test_an_engine_component_carries_the_type_the_schema_publishes(self):
+        """add_engine looks the CLR name up in the vendored engine schema rather than taking it
+        from a table here — the id is the only thing the caller has to know."""
+        components = schema.EntityComponentsData()
+        components.add_engine(
+            component_ids.RENDERABLE, schema.RenderableComponentData(mesh="Models/x.glb"))
+        entry = components.to_json()[0]
+        assert entry["Id"] == component_ids.RENDERABLE
+        assert entry["Type"] == "Paradise.Export.Data.RenderableComponentData"
+        assert entry["Data"]["Mesh"] == "Models/x.glb"
 
-class TestLightInTheDocument:
-    def test_components_omit_light_when_the_entity_owns_none(self):
-        assert "Light" not in schema.EntityComponentsData().to_json()
-
-    def test_an_entity_owned_light_serializes_in_place(self):
-        components = schema.EntityComponentsData(
-            light=schema.SceneLightData(id="Sun", type="Directional", intensity=1.5)
-        )
-        emitted = components.to_json()["Light"]
-        assert emitted["Id"] == "Sun"
-        assert emitted["Type"] == "Directional"
-        assert emitted["Intensity"] == 1.5
-
-    def test_light_precedes_custom_matching_the_csharp_declaration_order(self):
-        components = schema.EntityComponentsData(
-            light=schema.SceneLightData(id="Sun"),
-            custom=[schema.AuthoredComponentData(id=CREATURE_ID, data={})],
-        )
-        keys = list(components.to_json())
-        assert keys.index("Light") < keys.index("Custom")
+    def test_find_returns_the_entry_for_an_id(self):
+        components = schema.EntityComponentsData()
+        components.add_engine(component_ids.RENDERABLE, schema.RenderableComponentData())
+        assert components.find(component_ids.RENDERABLE) is not None
+        assert components.find(component_ids.AGENT) is None
 
 
 class TestSchemaStamp:

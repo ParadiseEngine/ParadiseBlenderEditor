@@ -35,7 +35,7 @@ class TestLevelData:
         assert text.endswith('"Materials": []\n}')
 
     def test_schema_version_defaults_to_the_pinned_version(self):
-        assert schema.LevelData().schema_version == schema.SCHEMA_VERSION == 2
+        assert schema.LevelData().schema_version == schema.SCHEMA_VERSION == 3
 
     def test_ensure_lighting_state_creates_one_default_state(self):
         document = schema.LevelData()
@@ -91,19 +91,10 @@ class TestLevelEntityData:
             "Metadata": [],
         }
 
-    def test_absent_components_serialize_as_null(self):
-        components = schema.LevelEntityData().to_json()["Components"]
-        assert set(components) == {
-            "Renderable",
-            "Collider",
-            "Rigidbody",
-            "Interactable",
-            "Agent",
-            "SpriteAnimation",
-            "ParticleEmitter",
-            "AudioEmitter",
-        }
-        assert all(value is None for value in components.values())
+    def test_an_entity_authoring_nothing_has_an_empty_component_list(self):
+        """This used to assert eight named keys all holding null. There is one list now, and
+        absence is an entry that is not there rather than a key that is."""
+        assert schema.LevelEntityData().to_json()["Components"] == []
 
 
 class TestEnumsSerializeByName:

@@ -36,6 +36,7 @@ __all__ = [
     "RIGIDBODY",
     "SPRITE_ANIMATION",
     "engine_ids",
+    "engine_type_name",
 ]
 
 #: Entity-level identity. Routed onto the entity itself rather than into its components -- it is
@@ -70,3 +71,20 @@ def engine_ids() -> frozenset[str]:
     from . import authoring
 
     return frozenset(component.id for component in authoring.read_engine_schema().components)
+
+
+@functools.cache
+def engine_type_name(component_id: str) -> str:
+    """The fully qualified CLR name the engine publishes for one of its components.
+
+    Read off the vendored schema for the same reason :func:`engine_ids` is: the schema already
+    states it, and a hand-written table would be a second copy to keep in step. It is written onto
+    every exported payload beside the id -- the engine reads it only when the id fails to resolve,
+    but a payload without it is a bare GUID and diagnoses nothing.
+    """
+    from . import authoring
+
+    for component in authoring.read_engine_schema().components:
+        if component.id == component_id:
+            return component.type
+    raise KeyError(f"{component_id} is not an engine component")

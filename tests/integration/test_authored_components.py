@@ -33,6 +33,16 @@ from paradise_blender.contract import authoring as contract_authoring  # noqa: E
 from paradise_blender.contract import component_ids  # noqa: E402
 from paradise_blender.export.scene import export_scene  # noqa: E402
 
+
+def payload_for(entity, component_id):
+    """One component's Data on an exported entity, or None. Components are a LIST now, so a test
+    asks by id rather than by a key whose absence used to mean "no such component"."""
+    for component in entity["Components"]:
+        if component["Id"] == component_id:
+            return component["Data"]
+    return None
+
+
 DATA_DIR = os.path.join(tempfile.gettempdir(), "paradise_export_test")
 
 failures: list[str] = []
@@ -184,10 +194,11 @@ def main() -> int:
     export_scene(bpy.context.scene)
     entities = exported_entities()
 
-    custom = entities["Creature"]["Components"].get("Custom")
-    check(custom is not None and len(custom) == 1, "the authored component is exported")
-    payload = custom[0]["Data"]
-    check(custom[0]["Id"] == CREATURE_ID, "under its schema id")
+    game_entries = [e for e in entities["Creature"]["Components"] if e["Id"] in GAME_IDS]
+    check(len(game_entries) == 1, "the authored component is exported")
+    payload = game_entries[0]["Data"]
+    check(game_entries[0]["Id"] == CREATURE_ID, "under its schema id")
+    check(game_entries[0]["Type"] == "Game.Creature", "carrying the CLR name beside the id")
     check(payload["MaxSpeed"] == 9.25, "an authored float value survives")
     check(payload["Lives"] == 3, "an untouched field exports its schema default")
     check(payload["Friendly"] is False, "a bool exports as JSON bool")
@@ -199,14 +210,15 @@ def main() -> int:
     check("Shape" not in payload, "a host-baked field is absent, not guessed at")
 
     check(
-        "Custom" not in entities["Plain"]["Components"],
-        "an entity with nothing authored has no Custom key at all",
+        not [e for e in entities["Plain"]["Components"] if e["Id"] in GAME_IDS],
+        "an entity with nothing authored contributes no game components",
     )
 
     # -- entity-owned lights --------------------------------------------------------------
-    owned = entities["OwnedSun"]["Components"].get("Light")
+    owned = payload_for(entities["OwnedSun"], component_ids.LIGHT)
     check(owned is not None and owned["Type"] == "Directional", "a lamp entity owns its light")
-    check("Light" not in entities["Creature"]["Components"], "non-lamp entities have no Light key")
+    check(payload_for(entities["Creature"], component_ids.LIGHT) is None,
+          "non-lamp entities author no light")
     path = os.path.join(DATA_DIR, "scenes", "authored_test.json")
     with open(path, encoding="utf-8") as file:
         whole = json.load(file)
@@ -246,7 +258,7 @@ def main() -> int:
     )
     export_scene(bpy.context.scene)
     check(
-        exported_entities()["Creature"]["Components"]["Collider"] is None,
+        payload_for(exported_entities()["Creature"], component_ids.COLLIDER) is None,
         "the marker alone exports nothing — the references are the data",
     )
 
@@ -260,14 +272,20 @@ def main() -> int:
     shape.parent = creature_obj
     creature_obj.paradise.physics_colliders.add().target = shape
     export_scene(bpy.context.scene)
-    components = exported_entities()["Creature"]["Components"]
+    creature = exported_entities()["Creature"]
+    collider = payload_for(creature, component_ids.COLLIDER)
     check(
-        components["Collider"] is not None and len(components["Collider"]["Colliders"]) == 1,
+        collider is not None and len(collider["Colliders"]) == 1,
         "an assigned reference exports the collider",
     )
+    body = payload_for(creature, component_ids.RIGIDBODY)
     check(
-        components["Rigidbody"] is not None and components["Rigidbody"]["BodyType"] == "Static",
+        body is not None and body["BodyType"] == "Static",
         "the derived static body still rides along",
+    )
+    check(
+        len([e for e in creature["Components"] if e["Id"] == component_ids.RIGIDBODY]) == 1,
+        "and exactly once — a list does not enforce at-most-one the way a slot did",
     )
 
     authored.disable_component(creature_obj, component_ids.COLLIDER)
@@ -322,14 +340,14 @@ def main() -> int:
     authored.enable_component(creature_obj, marker)
     export_scene(bpy.context.scene)
     entities = exported_entities()
-    ids = [entry["Id"] for entry in entities["Creature"]["Components"]["Custom"]]
+    ids = [e["Id"] for e in entities["Creature"]["Components"] if e["Id"] in GAME_IDS]
     check(
         ids == [CREATURE_ID],
         "a component the schema no longer declares is not exported",
         f"exported ids: {ids}",
     )
     check(
-        entities["Creature"]["Components"]["Custom"][0]["Data"]["Grumpy"] is False,
+        payload_for(entities["Creature"], CREATURE_ID)["Grumpy"] is False,
         "a field added by the new schema exports its default",
     )
 

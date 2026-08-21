@@ -37,14 +37,24 @@ def payload(component_id: str, values: dict) -> dict:
 class TestVendoredEngineSchema:
     def test_the_engine_schema_loads_and_declares_the_known_components(self):
         ids = {c.id for c in authoring.read_engine_schema().components}
-        assert ids >= component_ids.ENGINE_IDS
+        assert ids >= component_ids.engine_ids()
 
-    def test_the_vendored_ids_still_match_the_vendored_schema(self):
+    def test_every_named_constant_still_names_a_real_component(self):
         """component_ids.py is transcribed from ParadiseComponentIds.cs by hand and nothing keeps
-        the two in step. This is the guard: regenerate the schema and a constant that no longer
-        names a real component fails here instead of resolving to nothing at runtime."""
+        the two in step. This is the guard: a component the engine renames or drops fails here
+        instead of leaving a constant that resolves to nothing at runtime.
+
+        Deliberately NOT an equality check against the schema. Two reasons: the module is not a
+        complete mirror -- a constant earns its place by being referenced -- so a component ADDED
+        upstream must not fail this; and `engine_ids()` now derives from that same schema, so an
+        equality assertion would compare the file with itself and could never fail at all."""
         ids = {c.id for c in authoring.read_engine_schema().components}
-        assert ids == component_ids.ENGINE_IDS
+        named = {
+            value for name, value in vars(component_ids).items()
+            if name.isupper() and isinstance(value, str)
+        }
+        assert named, "no constants found -- the introspection above stopped matching"
+        assert named <= ids
 
     def test_every_routed_id_exists_in_the_engine_schema(self):
         ids = {c.id for c in authoring.read_engine_schema().components}
@@ -146,10 +156,10 @@ class TestEngineIdsAreRecognizableWithoutAPrefix:
     """
 
     def test_no_engine_id_carries_the_old_prefix(self):
-        assert not any(i.startswith("paradise.") for i in component_ids.ENGINE_IDS)
+        assert not any(i.startswith("paradise.") for i in component_ids.engine_ids())
 
     def test_a_game_id_is_not_mistaken_for_an_engine_one(self):
-        assert "c4e8a1b2-9f60-4d33-8a17-6b2e50d9fc84" not in component_ids.ENGINE_IDS
+        assert "c4e8a1b2-9f60-4d33-8a17-6b2e50d9fc84" not in component_ids.engine_ids()
 
     def test_every_routed_id_is_an_engine_id(self):
-        assert authoring_router.ROUTED_IDS <= component_ids.ENGINE_IDS
+        assert component_ids.engine_ids() >= authoring_router.ROUTED_IDS

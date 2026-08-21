@@ -164,7 +164,7 @@ def _apply_authored_components(
         # Membership, NOT a prefix test. This was `component_id.startswith("paradise.")` when ids
         # were names; a GUID has no prefix, so that branch would never fire again and every
         # host-derived engine component would fall silently into Components.Custom below.
-        elif component_id in component_ids.ENGINE_IDS:
+        elif component_id in component_ids.engine_ids():
             # An engine component this host derives or bakes rather than authors as a form —
             # exporting form values would fight the pipeline that already writes the slot.
             log.warn(

@@ -1,13 +1,19 @@
-"""The stable ids the engine's own authored components travel under.
+"""The engine component ids this host names.
 
-A transcription of ``Paradise.Export.Data.ParadiseComponentIds`` (``ParadiseComponentIds.cs`` in
-the engine), which is the source of truth. Vendored for the same reason
+Transcribed from ``Paradise.Export.Data.ParadiseComponentIds`` (``ParadiseComponentIds.cs``),
+which is the source of truth. Vendored for the same reason
 :data:`.authoring.read_engine_schema`'s JSON is: the constants live in a C# assembly this Python
 host cannot load.
 
-**Nothing keeps these in sync mechanically.** The guard is a unit test asserting that every id in
-the committed ``engine_authoring_schema.json`` appears here -- so a regenerated schema that adds
-or moves a component fails loudly rather than leaving a constant pointing at nothing.
+**Deliberately NOT a complete mirror.** A constant belongs here only when this host must do
+something SPECIFIC with that component -- route it to a typed slot, derive it from Blender data,
+back it with a pointer collection. An engine component this host treats like any other needs no
+entry, and adding one here for completeness would be maintenance bought with nothing. The
+complete set is :func:`engine_ids`, read off the schema.
+
+**Nothing keeps the constants below in sync mechanically.** The guard is a unit test asserting
+each one still appears in the committed ``engine_authoring_schema.json``, so a component the
+engine renames or drops fails loudly instead of leaving a constant pointing at nothing.
 
 Canonical form is what the engine writes and reads: lowercase, hyphenated, 36 characters, no
 braces (.NET's ``"D"``). System.Text.Json's Guid converter accepts ONLY that shape -- the 32-char
@@ -16,11 +22,12 @@ and braced spellings throw on read -- so these strings go onto the wire unchange
 
 from __future__ import annotations
 
+import functools
+
 __all__ = [
     "AGENT",
     "AUDIO_EMITTER",
     "COLLIDER",
-    "ENGINE_IDS",
     "IDENTITY",
     "INTERACTABLE",
     "LIGHT",
@@ -28,6 +35,7 @@ __all__ = [
     "RENDERABLE",
     "RIGIDBODY",
     "SPRITE_ANIMATION",
+    "engine_ids",
 ]
 
 #: Entity-level identity. Routed onto the entity itself rather than into its components -- it is
@@ -44,17 +52,21 @@ PARTICLE_EMITTER = "1b4d1bdd-dea1-4b86-9b6a-879c46346b9e"
 AUDIO_EMITTER = "e6ec7f42-df09-4ec9-af06-128ddf3eda8e"
 LIGHT = "fc886b84-c48c-4415-afd9-b03d6faf5ab7"
 
-#: Every id above. What "is this the engine's component or the game's?" asks -- a question that
-#: used to be answerable by testing for a ``paradise.`` prefix, which a GUID does not have.
-ENGINE_IDS = frozenset({
-    IDENTITY,
-    RENDERABLE,
-    COLLIDER,
-    RIGIDBODY,
-    AGENT,
-    INTERACTABLE,
-    SPRITE_ANIMATION,
-    PARTICLE_EMITTER,
-    AUDIO_EMITTER,
-    LIGHT,
-})
+@functools.cache
+def engine_ids() -> frozenset[str]:
+    """Every id the engine declares, read off the vendored schema.
+
+    Derived rather than listed: the schema already states this set, and a second copy would have
+    to be edited every time the engine adds a component -- including the ones this host has no
+    opinion about. Regenerating ``engine_authoring_schema.json`` is enough.
+
+    This is what "is this the engine's component or the game's?" asks, a question that used to be
+    answerable by testing for a ``paradise.`` prefix.
+
+    Cached because the answer cannot change within a session: the schema is a committed file
+    beside this module, not the game's dumped one. The import is deferred to call time to keep
+    this module importable from anywhere in the contract package regardless of import order.
+    """
+    from . import authoring
+
+    return frozenset(component.id for component in authoring.read_engine_schema().components)

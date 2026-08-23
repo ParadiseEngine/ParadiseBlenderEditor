@@ -146,7 +146,9 @@ def _build_mesh(absolute: str) -> bpy.types.Mesh | None:
             # imports them as actions on armature objects. Those objects are deleted below
             # and their 0-user actions purged in the finally -- a preview is a statue.
         )
-        imported_names = [n for n in bpy.data.objects.keys() if n not in existing_objects]
+        # Iterate the datablocks themselves: iterating a bpy_prop_collection yields
+        # OBJECTS, while .keys() yields names -- the distinction the lint rule cannot see.
+        imported_names = [o.name for o in bpy.data.objects if o.name not in existing_objects]
         # Datablock names the import created, as the COMPLEMENT of the before-sets: the
         # importer suffixes on collision (a leftover 0-user "Cube" makes the new one
         # "Cube.001"), so a name captured naively could belong to the author's own data.

@@ -154,7 +154,7 @@ def main() -> int:
     check(result == {"FINISHED"}, "clear finished")
     check(not [c for c in entity.children if c.get("paradise_preview_child")],
           "clear removed the preview child")
-    check(preview_mesh_name not in bpy.data.meshes.keys(),
+    check(preview_mesh_name not in bpy.data.meshes,
           "clear released the orphaned datablock")
     check(len(bpy.data.objects) == before_objects,
           "the scene is back to its pre-preview object count")
@@ -192,7 +192,7 @@ def main() -> int:
     check(result == {"FINISHED"}, "scene unload finished")
     check(not [o for o in bpy.data.objects if o.get("paradise_preview_child")],
           "scene unload removed every preview child, orphaned ones included")
-    check(preview_object_name not in bpy.data.objects.keys(),
+    check(preview_object_name not in bpy.data.objects,
           "the parented preview child went too")
     check(not [m.name for m in bpy.data.meshes if m.get("paradise_preview_source")],
           "scene unload released the shared datablock")

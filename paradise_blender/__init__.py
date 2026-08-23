@@ -49,6 +49,7 @@ def _collect():
     from .authoring import collider as authoring_collider
     from .authoring import entity as authoring_entity
     from .authoring import guid as authoring_guid
+    from .authoring import model_preview as authoring_model_preview
     from .authoring import ops as authoring_ops
     from .export import ops as export_ops
     from .live import ops as live_ops
@@ -65,6 +66,7 @@ def _collect():
         *prefs.classes,
         # Then operators, then the panels that invoke them.
         *authoring_ops.classes,
+        *authoring_model_preview.classes,
         *authored_components.classes,
         *config_store.classes,
         *export_ops.classes,

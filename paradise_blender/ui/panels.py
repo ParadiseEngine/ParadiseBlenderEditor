@@ -13,7 +13,7 @@ import bpy
 from bpy.types import Panel
 
 from ..authoring import authored_components as authored
-from ..authoring import config_store
+from ..authoring import config_store, model_preview
 from ..authoring.collider import is_collider
 from ..authoring.entity import entity_objects, is_entity
 from ..contract import authoring as contract_authoring
@@ -96,6 +96,20 @@ class PARADISE_PT_scene(_ParadisePanel, Panel):
         row = layout.row()
         row.operator("paradise.select_entities", text=f"{count} Entity/Entities", icon="RESTRICT_SELECT_OFF")
         row.operator("paradise.repair_guids", text="", icon="FILE_REFRESH")
+
+        # Scene-wide model previews: load doubles as refresh (an unchanged file reuses its
+        # datablock, a changed one is rebuilt), so one button covers both. The count is the
+        # entities whose geometry lives in a referenced GLB rather than in this .blend.
+        referenced = len(model_preview.scene_preview_entities(context.scene))
+        if referenced:
+            row = layout.row(align=True)
+            any_loaded = model_preview.scene_has_previews(context)
+            row.operator(
+                "paradise.load_model_previews_scene",
+                text=f"{'Refresh' if any_loaded else 'Load'} Previews ({referenced})",
+                icon="FILE_REFRESH" if any_loaded else "MESH_CUBE",
+            )
+            row.operator("paradise.clear_model_previews_scene", text="", icon="X")
 
 
 class PARADISE_PT_scene_navmesh(_ParadisePanel, Panel):
@@ -451,6 +465,21 @@ class PARADISE_PT_entity(_ParadisePanel, Panel):
         # a fixed field -- kind, agent, sprite, particles, audio, body -- is a schema-driven
         # component in the Components section below.
         layout.prop(props, "model_path")
+
+        if props.model_path.strip():
+            previewed = model_preview.has_preview(obj)
+            row = layout.row(align=True)
+            row.operator(
+                "paradise.load_model_preview",
+                text="Reload Preview" if previewed else "Load Preview",
+                icon="FILE_REFRESH" if previewed else "MESH_CUBE",
+            )
+            row.operator("paradise.clear_model_preview", text="", icon="X")
+            if previewed:
+                layout.label(
+                    text="Preview is geometry only (Blender cannot read KTX2 textures)",
+                    icon="INFO",
+                )
 
         if props.entity_guid:
             row = layout.row()

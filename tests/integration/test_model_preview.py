@@ -181,6 +181,41 @@ def main() -> int:
           "scene load covers new entities and shares one datablock per file")
     check(children[0].data is shared, "refreshing an unchanged file did not rebuild the datablock")
 
+    # An asset that crashes the importer with an UNEXPECTED exception type must not abort
+    # the scene-wide batch (the review's hardening case): without containment at the call
+    # site, the sum() generator abandons every entity after the raising one. The crash is
+    # simulated by monkeypatching rather than by feeding Blender garbage bytes, because
+    # what a corrupt GLB raises is importer-version-dependent -- ValueError here is
+    # deterministic whatever the importer would have done.
+    corrupt_path = os.path.join(DATA_DIR, "Models", "corrupt.glb")
+    with open(corrupt_path, "wb") as handle:
+        handle.write(b"not really a glb")
+    bpy.ops.object.empty_add(type="PLAIN_AXES", location=(4.0, 0.0, 0.0))
+    broken = bpy.context.active_object
+    broken.name = "BrokenEntity"
+    broken.paradise.is_entity = True
+    broken.paradise.model_path = corrupt_path
+
+    from paradise_blender.authoring import model_preview as preview_module
+    real_preview_mesh = preview_module._preview_mesh
+
+    def exploding(path):
+        if path == corrupt_path:
+            raise ValueError("simulated importer crash on a malformed GLB")
+        return real_preview_mesh(path)
+
+    preview_module._preview_mesh = exploding
+    try:
+        result = bpy.ops.paradise.load_model_previews_scene()
+    finally:
+        preview_module._preview_mesh = real_preview_mesh
+
+    check(result == {"FINISHED"}, "scene load survives an asset that crashes the importer")
+    check(not [c for c in broken.children if c.get("paradise_preview_child")],
+          "the crashing entity got no preview")
+    check(len([c for c in entity.children if c.get("paradise_preview_child")]) == 1,
+          "entities after the crash still loaded their previews")
+
     # Deleting an entity orphans its preview child as a root object; the scene unload is the
     # only sweep that still recognises it.
     preview_object_name = children[0].name

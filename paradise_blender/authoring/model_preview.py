@@ -316,6 +316,28 @@ def _load_preview(entity: bpy.types.Object, warned: set[str]) -> bool:
     return True
 
 
+def _load_preview_guarded(entity: bpy.types.Object, warned: set[str]) -> bool:
+    """`:func:_load_preview` with one asset's UNEXPECTED failure contained.
+
+    The known failure modes -- missing file, non-glTF, an empty file, a Blender op refusing
+    -- are already handled gracefully inside. This guards the unknown ones: a malformed GLB
+    that makes the importer raise something other than RuntimeError. Scene-wide load runs
+    over every referenced entity, and without this guard one bad asset aborts the whole
+    batch and silently skips every entity after it. The builder's ``finally`` has already
+    cleaned up whatever the import left behind by the time this catches.
+    """
+    try:
+        return _load_preview(entity, warned)
+    except Exception as error:
+        log.error(
+            f"Preview for '{entity.name}' failed unexpectedly "
+            f"({type(error).__name__}: {error}). Skipping this entity; the rest of the batch "
+            "continues. The file may be malformed -- re-export it or open it in another "
+            "glTF viewer to check."
+        )
+        return False
+
+
 class PARADISE_OT_load_model_preview(Operator):
     """Show the model referenced by Model Path as viewport geometry on this entity"""
 
@@ -330,7 +352,9 @@ class PARADISE_OT_load_model_preview(Operator):
 
     def execute(self, context):
         warned: set[str] = set()
-        loaded = sum(1 for e in _entities_to_preview(context) if _load_preview(e, warned))
+        loaded = sum(
+            1 for e in _entities_to_preview(context) if _load_preview_guarded(e, warned)
+        )
 
         if not loaded:
             return {"CANCELLED"}
@@ -357,7 +381,7 @@ class PARADISE_OT_load_model_previews_scene(Operator):
     def execute(self, context):
         warned: set[str] = set()
         targets = scene_preview_entities(context.scene)
-        loaded = sum(1 for e in targets if _load_preview(e, warned))
+        loaded = sum(1 for e in targets if _load_preview_guarded(e, warned))
 
         if not loaded:
             return {"CANCELLED"}

@@ -38,8 +38,8 @@ class TestVendoredEngineSchema:
         assert ids >= {component_ids.RIGIDBODY, component_ids.COLLIDER, component_ids.LIGHT}
 
     def test_every_named_constant_still_names_a_real_component(self):
-        """component_ids.py is transcribed from ParadiseComponentIds.cs by hand and nothing keeps
-        the two in step. This is the guard: a component the engine renames or drops fails here
+        """component_ids.py is transcribed from the [Guid] attributes in LevelDocument.cs by hand
+        and nothing keeps the two in step. This is the guard: a component the engine renames or drops fails here
         instead of leaving a constant that resolves to nothing at runtime.
 
         Deliberately NOT an equality check against the schema. Two reasons: the module is not a

@@ -1,9 +1,11 @@
 """The engine component ids this host names.
 
-Transcribed from ``Paradise.Export.Data.ParadiseComponentIds`` (``ParadiseComponentIds.cs``),
-which is the source of truth. Vendored for the same reason
-:data:`.authoring.read_engine_schema`'s JSON is: the constants live in a C# assembly this Python
-host cannot load.
+Transcribed from the ``[Guid]`` attribute on each record in ``LevelDocument.cs``, which is the
+source of truth -- the engine's own registry, schema and router all read that attribute and
+nothing else. (There was a ``ParadiseComponentIds`` table holding a second copy; it was deleted
+with the v4 contract, since a second copy of an identity is a thing that can disagree with the
+first.) Vendored for the same reason :data:`.authoring.read_engine_schema`'s JSON is: the
+constants live in a C# assembly this Python host cannot load.
 
 **Deliberately NOT a complete mirror.** A constant belongs here only when this host must do
 something SPECIFIC with that component -- derive it from Blender data, back it with a pointer

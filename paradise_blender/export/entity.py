@@ -91,26 +91,38 @@ def export_entity(
         local_scale=local_scale,
         local_matrix=local_contract,
         world_matrix=world_contract,
-        materials=materials.export_material_slots(obj),
-        components=_build_components(obj, paths, meshes),
+        components=_build_components(obj, paths, materials, meshes),
     )
     _apply_authored_components(obj, entity, paths)
     return entity
 
 
 def _build_components(
-    obj: bpy.types.Object, paths: ExportPaths, meshes
+    obj: bpy.types.Object,
+    paths: ExportPaths,
+    materials,  # MaterialExporter
+    meshes,  # MeshExporter
 ) -> EntityComponentsData:
     props = obj.paradise
     components = EntityComponentsData()
 
     mesh_field = meshes.resolve_mesh_field(obj, paths)
-    if mesh_field is not None:
-        components.add_engine(component_ids.RENDERABLE, RenderableComponentData(mesh=mesh_field))
-    elif props.model_path.strip():
-        # An authored model path that did not resolve still marks the entity as renderable, so
-        # the runtime reports a missing mesh rather than silently treating it as invisible.
-        components.add_engine(component_ids.RENDERABLE, RenderableComponentData())
+    if mesh_field is not None or props.model_path.strip():
+        # The slots are read here rather than on the entity because that is where they live as of
+        # contract v4 -- they index the GLB's primitives, so they belong to the component naming
+        # the GLB. Both branches carry them: the second is an authored model path that did not
+        # resolve, which still marks the entity renderable so the runtime reports a missing mesh
+        # rather than silently treating it as invisible -- and its slots are just as authored.
+        #
+        # Reading them is not free of consequence: export_material_slots REGISTERS each material
+        # for writing, so an object that produces no Renderable at all no longer emits its
+        # material documents. That is the correct output -- nothing in the level referenced them
+        # once the entity had no renderable to index them by -- but it is a real change from v3,
+        # where every object's slots were read whether or not anything could use them.
+        components.add_engine(component_ids.RENDERABLE, RenderableComponentData(
+            mesh=mesh_field,
+            materials=materials.export_material_slots(obj),
+        ))
 
     physics = build_colliders(obj, props.physics_colliders)
     if physics:

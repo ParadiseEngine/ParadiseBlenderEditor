@@ -168,7 +168,7 @@ def main() -> int:
         document = json.load(handle)
 
     print()
-    check(document["SchemaVersion"] == 3, "schema version is 3")
+    check(document["SchemaVersion"] == 4, "schema version is 4")
 
     entities = {e["Id"]: e for e in document["Entities"]}
     check(set(entities) == {"Ball", "Ground", "Hero"}, "all three entities exported",
@@ -222,10 +222,14 @@ def main() -> int:
     check(sphere_shape["ShapeType"] == "Sphere" and sphere_shape["Radius"] > 0,
           "the sphere collider exported with a radius")
 
-    check(payload_for(ground, component_ids.RENDERABLE)["Mesh"] is not None,
-          "the ground references a mesh GLB")
-    check(ground["Materials"] == ["materials/mat_ground.json"],
-          "the material slot references its contract field", str(ground["Materials"]))
+    renderable = payload_for(ground, component_ids.RENDERABLE)
+    check(renderable["Mesh"] is not None, "the ground references a mesh GLB")
+    # On the RENDERABLE as of contract v4, not on the entity: the slots index the primitives of
+    # the GLB named right above, so they travel with it.
+    check(renderable["Materials"] == ["materials/mat_ground.json"],
+          "the material slot references its contract field", str(renderable["Materials"]))
+    check("Materials" not in ground,
+          "the entity no longer carries a slot list of its own", str(sorted(ground)))
 
     # -- lighting and environment -----------------------------------------------------
     lights = {light["Id"]: light for light in document["Lighting"]["States"][0]["Lights"]}

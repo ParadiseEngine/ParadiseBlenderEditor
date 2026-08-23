@@ -35,7 +35,7 @@ class TestLevelData:
         assert text.endswith('"Materials": []\n}')
 
     def test_schema_version_defaults_to_the_pinned_version(self):
-        assert schema.LevelData().schema_version == schema.SCHEMA_VERSION == 3
+        assert schema.LevelData().schema_version == schema.SCHEMA_VERSION == 4
 
     def test_ensure_lighting_state_creates_one_default_state(self):
         document = schema.LevelData()
@@ -45,6 +45,34 @@ class TestLevelData:
         # Idempotent: a second call must reuse the same state, not append another.
         assert document.ensure_lighting_state() is state
         assert len(document.lighting.states) == 1
+
+
+class TestRenderableComponentData:
+    def test_key_order(self):
+        """Same guard the entity has, for the record the slots moved to in contract v4.
+
+        System.Text.Json writes properties in declaration order, so this list IS the wire shape --
+        and a Blender export has to stay diffable against a Godot one written by the C# record.
+        """
+        assert list(schema.RenderableComponentData().to_json()) == [
+            "Mesh",
+            "MeshNode",
+            "Materials",
+        ]
+
+    def test_slots_are_written_even_when_empty(self):
+        """Empty, not absent. The engine's reader distinguishes "no overrides" from "key missing"
+        only if the key is always written."""
+        assert schema.RenderableComponentData().to_json()["Materials"] == []
+
+    def test_a_null_slot_survives(self):
+        """A null slot MEANS something -- the GLB's own embedded material wins for that primitive
+        -- so it cannot be compacted away. Slot order is the contract: dropping one shifts every
+        override after it onto the wrong primitive."""
+        renderable = schema.RenderableComponentData(
+            mesh="Models/x.glb", materials=["materials/a.json", None, "materials/c.json"]
+        )
+        assert renderable.to_json()["Materials"] == ["materials/a.json", None, "materials/c.json"]
 
 
 class TestLevelEntityData:
@@ -69,7 +97,8 @@ class TestLevelEntityData:
             "LocalScale",
             "LocalMatrix",
             "WorldMatrix",
-            "Materials",
+            # "Materials" was here until contract v4 moved it onto the Renderable component --
+            # see TestRenderableComponentData below, which is where the key lives now.
             "Overrides",
             "Components",
         ]

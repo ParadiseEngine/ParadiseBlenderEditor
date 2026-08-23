@@ -62,11 +62,14 @@ __all__ = [
     "SpriteAnimationComponentData",
 ]
 
-# LevelData.CurrentSchemaVersion. v3 replaced an entity's nine named component slots with one
-# list of {Id, Type, Data}. Bump only in lockstep with the engine -- and note this one is NOT
-# additive: a v2 document writes "Components" as an object, and the engine refuses it on read
-# rather than deserializing entities that silently author nothing.
-SCHEMA_VERSION = 3
+# LevelData.CurrentSchemaVersion. Bump only in lockstep with the engine.
+#
+# v4 moved an entity's material slots onto its Renderable component. v3 replaced an entity's nine
+# named component slots with one list of {Id, Type, Data}. Neither is additive, and the engine
+# refuses both -- v3 for a reason worth knowing here, since this module is what writes the
+# documents: a v3 file parses fine under a v4 reader and simply loses every material override,
+# because the key it uses matches no property any more.
+SCHEMA_VERSION = 4
 
 Vec3 = tuple[float, float, float]
 Quat = tuple[float, float, float, float]
@@ -112,18 +115,29 @@ def _matrix_json(m) -> list[float] | None:  # axes.Mat4 | None
 
 @dataclass
 class RenderableComponentData:
-    """Mesh reference. ``mesh`` is a GLB path relative to ``data/``.
+    """Mesh reference and the material slots that index against it.
 
-    Contract rule the exporter must uphold: the GLB's primitive order equals
-    ``LevelEntityData.materials`` slot order, and a null slot means the GLB's own embedded
-    material wins. Textures inside the GLB must be KTX2 -- the engine reader rejects PNG/JPEG.
+    ``mesh`` is a GLB path relative to ``data/``. Textures inside the GLB must be KTX2 -- the
+    engine reader rejects PNG/JPEG.
+
+    Contract rule the exporter must uphold: the GLB's primitive order equals ``materials`` slot
+    order, and a null slot means the GLB's own embedded material wins. ``materials`` lived on the
+    ENTITY until v4, which made that rule a statement about two fields nothing held together --
+    an entity could carry slots with no mesh to index them against.
     """
 
     mesh: str | None = None
     mesh_node: str | None = None
+    materials: list[str | None] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
-        return {"Mesh": self.mesh, "MeshNode": self.mesh_node}
+        return {
+            "Mesh": self.mesh,
+            "MeshNode": self.mesh_node,
+            # Declaration order matches the C# record: System.Text.Json writes properties in that
+            # order, and a Blender export has to stay diffable against a Godot one.
+            "Materials": list(self.materials),
+        }
 
 
 @dataclass
@@ -497,7 +511,6 @@ class LevelEntityData:
     local_scale: Vec3 = ONE3
     local_matrix: Any = None
     world_matrix: Any = None
-    materials: list[str | None] = field(default_factory=list)
     overrides: PrefabOverrideData = field(default_factory=PrefabOverrideData)
     components: EntityComponentsData = field(default_factory=EntityComponentsData)
 
@@ -523,7 +536,6 @@ class LevelEntityData:
             "LocalScale": vec3_to_json(self.local_scale),
             "LocalMatrix": _matrix_json(self.local_matrix),
             "WorldMatrix": _matrix_json(self.world_matrix),
-            "Materials": list(self.materials),
             "Overrides": self.overrides.to_json(),
             "Components": self.components.to_json(),
         }

@@ -27,6 +27,7 @@ rebuild re-dumps the file.
 from __future__ import annotations
 
 import base64
+import math
 import uuid
 
 import bpy
@@ -38,6 +39,7 @@ from ..prefs import resolve_blender_data_dir
 
 __all__ = [
     "apply_ui_metadata",
+    "bake_transform_refs",
     "build_component_payloads",
     "classes",
     "enabled_component_ids",
@@ -283,6 +285,18 @@ def enable_component(obj: bpy.types.Object, component: authoring.AuthoredCompone
         obj[key] = storage_value(field)
         apply_ui_metadata(obj, key, field)
 
+    # Object REFERENCES get a key too, holding the referenced object's NAME. A name rather than
+    # an ID pointer because the rest of this store is names and strings the Godot host keys
+    # identically, and because a dangling name is a diagnosable export warning while a dangling
+    # pointer is a crash. Nothing is mirrored: the reference IS the authoring surface, and the
+    # numbers only exist at export.
+    for host in authoring.flatten(component)[1]:
+        if not host.is_authorable:
+            continue
+        key = value_key(component.id, host.path)
+        if key not in obj:
+            obj[key] = ""
+
 
 def disable_component(obj: bpy.types.Object, component_id: str) -> None:
     enabled = enabled_component_ids(obj)
@@ -319,6 +333,80 @@ def values_for(obj: bpy.types.Object, component: authoring.AuthoredComponentSche
         is_array = hasattr(stored, "__len__") and not isinstance(stored, str)
         values[field.path] = list(stored) if is_array else stored
     return values
+
+
+def bake_transform_refs(
+    obj: bpy.types.Object,
+    component: authoring.AuthoredComponentSchema,
+    values: dict,
+) -> dict:
+    """Fill each ``transform`` reference's leaves from where its referenced object stands.
+
+    The asymmetry the whole mechanism rests on: authored as a REFERENCE, exported as a VALUE. A
+    Blender object name means nothing at runtime, so what travels is the pose -- rebased into the
+    contract's Y-up basis by the SAME conversion every other transform in the export goes through
+    (:func:`..export.transform.decompose_contract`). A second copy of the axis change is how the
+    two silently disagree about which way is up.
+
+    Filled BY NAME, and only the names the schema declared: a record takes the part of the pose it
+    means. ``Yaw`` is derived the way the runtime derives a heading -- ``atan2`` over the rotated
+    +Z -- rather than pulled out of an Euler, because the contract's rotation is a quaternion and
+    every other spelling of "which way is it facing" in this pipeline is that atan2.
+
+    An unassigned or dangling reference leaves its leaves ALONE, so the payload builder fills the
+    record's own defaults and the runtime sees an unauthored value. Warned, never guessed: a
+    reference to an object somebody renamed is an authoring mistake, and a silently-zeroed
+    destination is a real place.
+    """
+    # Imported here rather than at module scope: this module is the store, and export.transform
+    # imports the contract package too. Keeping the edge local avoids a cycle between them.
+    from ..export.transform import decompose_contract
+
+    for host in authoring.flatten(component)[1]:
+        if not host.is_authorable:
+            continue
+        name = obj.get(value_key(component.id, host.path), "")
+        if not isinstance(name, str) or not name:
+            continue
+        target = bpy.data.objects.get(name)
+        if target is None:
+            log.warn(
+                f"'{obj.name}' points '{component.display_name}.{host.path}' at an object named "
+                f"'{name}', which is not in this file. It is NOT exported, so the runtime sees "
+                "the field unauthored — re-pick the object."
+            )
+            continue
+        if target == obj:
+            log.warn(
+                f"'{obj.name}' points '{component.display_name}.{host.path}' at ITSELF. A "
+                "reference to the volume it lives on carries no information; it is NOT exported."
+            )
+            continue
+
+        position, rotation, scale, _ = decompose_contract(target.matrix_world)
+        baked = {
+            "Position": list(position),
+            "Rotation": list(rotation),
+            "Scale": list(scale),
+            "Yaw": _yaw_of(rotation),
+        }
+        for leaf in host.bakes:
+            values[f"{host.path}/{leaf}"] = baked[leaf]
+    return values
+
+
+def _yaw_of(rotation) -> float:
+    """Rotation about +Y, radians, from a contract ``(x, y, z, w)`` quaternion.
+
+    ``atan2`` over the rotated +Z axis — the same convention ``SceneBinding.HeadingOf`` reads an
+    authored matrix with, so an object's facing in Blender and the heading the runtime gives an
+    actor are the same number rather than two that happen to look similar.
+    """
+    x, y, z, w = rotation
+    # +Z rotated by the quaternion; only the X and Z components matter for a yaw.
+    forward_x = 2.0 * (x * z + w * y)
+    forward_z = 1.0 - 2.0 * (x * x + y * y)
+    return math.atan2(forward_x, forward_z)
 
 
 def storage_value(field: authoring.FlatField, value=None):
@@ -439,7 +527,8 @@ def build_component_payloads(obj: bpy.types.Object, data_dir: str) -> list:
                 "bake). It is NOT exported."
             )
             continue
-        payload = authoring.build_payload(component, values_for(obj, component))
+        values = bake_transform_refs(obj, component, values_for(obj, component))
+        payload = authoring.build_payload(component, values)
         pairs.append((component.id, component.type, payload))
 
     for component_id in enabled:

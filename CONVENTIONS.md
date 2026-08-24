@@ -174,3 +174,44 @@ hemisphere to produce the three zone colours and the L2 spherical-harmonic coeff
 the same math the Godot host uses. The integral returns `E/π` — the cosine-weighted average
 radiance, which is what the engine consumes directly. An extra π makes every scene π times too
 bright, which is why `tests/unit/test_sky.py` pins it.
+
+## 5. Host-object references — authored as a reference, exported as a value
+
+Some `[Authored]` fields are not typed in: they point at one of Blender's own objects, and the
+exporter bakes what that object IS into the field's own numbers. The engine calls this
+`[AuthoredByHost(kind)]`, and the kinds are a closed set (`Paradise.Authoring`'s
+`AuthoredBySources`): shape, mesh, sprite, light, asset, **transform**.
+
+**This host implements exactly one of them: `transform`.** The others are still reported in the
+Components panel as *"baked from …; not authored in Blender yet"* — colliders, meshes and lights
+reach the export through their own dedicated Blender-native paths instead, not through this
+mechanism.
+
+A `transform` reference is an **object slot**: you pick an object, and you place it with Blender's
+own move/rotate gizmo. That is the entire point — a destination you can see is a destination you
+can place correctly, where three floats in a panel are numbers nobody can check without running
+the game.
+
+Three rules, each of which is silent when broken:
+
+- **The store holds a NAME, the wire holds a POSE.** `obj["paradise:<id>/<Path>"]` is the
+  referenced object's name; nothing mirrors its transform into the panel, because a second copy of
+  the numbers is a copy that can disagree with the object. The pose is read at export, so *moving
+  the target is the whole edit*.
+- **Baked BY FIELD NAME**, filling whichever of `Position` (vector3), `Rotation` (quaternion),
+  `Yaw` (float) and `Scale` (vector3) the record declares, ignoring everything else. That keeps
+  this host general: it never learns what any particular record means by a pose. `Yaw` is
+  `atan2` over the rotated +Z — the same convention the runtime reads a heading with, so a Z
+  rotation in Blender and an actor's heading are the same number rather than two that look alike.
+- **The rebase is §1's, reused.** `export.transform.decompose_contract` does the Z-up → Y-up
+  conversion for this exactly as it does for every other transform; a second copy of the basis
+  change is how the two silently disagree about which way is up.
+
+An unassigned, dangling or self-referencing slot bakes **nothing**, so the payload carries the
+record's own defaults and the runtime sees the field unauthored. Warned, never guessed: the world
+origin is a real place, and a silently-zeroed destination is indistinguishable from one somebody
+meant. Whether that is acceptable is the *game's* decision — ShiningPie's trigger volumes refuse an
+unset destination at load — and it can only make it if the export is honest.
+
+`tests/unit/test_authoring.py::TestTransformReferences` pins the schema and payload halves;
+`tests/integration/test_authored_components.py` pins the bake, the rebase and the three refusals.

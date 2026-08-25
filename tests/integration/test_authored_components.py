@@ -275,7 +275,9 @@ def main() -> int:
     try:
         resolved = plain_obj.path_resolve(f'["{reference_key}"]')
         check(resolved == "", "the picker's RNA path resolves to the stored name", repr(resolved))
-    except Exception as error:  # noqa: BLE001 -- the check IS whether this raises
+    # Broad on purpose: the check IS whether path_resolve raises, so narrowing it would let
+    # the failure mode this exists to catch escape as a traceback instead of a failed check.
+    except Exception as error:
         check(False, "the picker's RNA path resolves to the stored name", str(error))
 
     export_scene(bpy.context.scene)

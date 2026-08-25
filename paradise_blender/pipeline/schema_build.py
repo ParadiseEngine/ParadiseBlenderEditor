@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -51,27 +52,77 @@ POLL_SECONDS = 1.0
 _SKIPPED_DIRS = frozenset({"obj", "bin", ".git", ".vs", ".idea"})
 
 
-def source_stamp(project_dir: str) -> tuple[int, int]:
+#: How deep the ProjectReference walk goes. A guard against a cycle in a hand-edited csproj,
+#: not a real limit: a game's project graph is a handful of layers.
+MAX_REFERENCE_DEPTH = 8
+
+_PROJECT_REFERENCE = re.compile(
+    r"""<ProjectReference\s[^>]*\bInclude\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
+
+
+def watched_dirs(project: str, _depth: int = 0) -> list[str]:
+    """Every directory whose C# the watched project is BUILT from: its own, plus those of the
+    projects it references, recursively.
+
+    The reference walk is not a refinement — without it the watcher is wrong for any game split
+    across projects. The schema is dumped from the assembly that sees the whole game (a launcher
+    over Core/Game/Ui, with ParadiseAuthoringScanReferences merging what its references publish),
+    while the ``[Authored]`` records themselves live in the library underneath. Stamping only the
+    launcher's own folder would mean adding a component never changed the stamp, no rebuild ever
+    started, and the Components panel silently kept offering yesterday's list — the exact failure
+    the dump exists to prevent.
+
+    Paths are read straight out of the csproj text rather than through MSBuild: this runs on a
+    Blender timer and must not shell out. A ProjectReference is a literal relative path in
+    practice, so a regex sees all of them; one hidden behind an MSBuild property is missed, and
+    the cost of that is a manual rebuild rather than a wrong schema.
+    """
+    directory = os.path.dirname(os.path.abspath(project))
+    found = [directory]
+    if _depth >= MAX_REFERENCE_DEPTH:
+        return found
+    try:
+        with open(project, encoding="utf-8") as file:
+            text = file.read()
+    except OSError:
+        return found
+    for include in _PROJECT_REFERENCE.findall(text):
+        referenced = os.path.normpath(
+            os.path.join(directory, include.replace("\\", os.sep)))
+        if not os.path.isfile(referenced):
+            continue
+        for nested in watched_dirs(referenced, _depth + 1):
+            if nested not in found:
+                found.append(nested)
+    return found
+
+
+def source_stamp(project_dir: str | list[str]) -> tuple[int, int]:
     """A cheap change detector over the project's sources: (max mtime_ns, file count) of every
-    ``.cs`` and ``.csproj`` under the directory, build output excluded. The count is in the
-    stamp because deleting a file lowers no mtime."""
+    ``.cs`` and ``.csproj`` under the directory (or each of the directories), build output
+    excluded. The count is in the stamp because deleting a file lowers no mtime.
+
+    Accepts a list so a caller can pass :func:`watched_dirs`; a bare string still works, and
+    every test and caller that watched one project keeps meaning what it did."""
+    roots = [project_dir] if isinstance(project_dir, str) else project_dir
     newest = 0
     count = 0
-    for root, dirs, files in os.walk(project_dir):
-        dirs[:] = [d for d in dirs if d not in _SKIPPED_DIRS]
-        for name in files:
-            if not name.endswith((".cs", ".csproj", ".props", ".targets")):
-                continue
-            try:
-                stat = os.stat(os.path.join(root, name))
-            except OSError:
-                continue  # vanished mid-walk; the next tick sees the settled state
-            newest = max(newest, stat.st_mtime_ns)
-            count += 1
+    for root_dir in roots:
+        for root, dirs, files in os.walk(root_dir):
+            dirs[:] = [d for d in dirs if d not in _SKIPPED_DIRS]
+            for name in files:
+                if not name.endswith((".cs", ".csproj", ".props", ".targets")):
+                    continue
+                try:
+                    stat = os.stat(os.path.join(root, name))
+                except OSError:
+                    continue  # vanished mid-walk; the next tick sees the settled state
+                newest = max(newest, stat.st_mtime_ns)
+                count += 1
     return (newest, count)
 
 
-def is_schema_stale(project_dir: str, schema_path: str) -> bool:
+def is_schema_stale(project_dir: str | list[str], schema_path: str) -> bool:
     """True when a source file is newer than the dumped schema — the state an author is in
     after editing C# with Blender closed, which a change-only watcher would never repair."""
     try:
@@ -328,7 +379,8 @@ def _tick_guarded() -> float:
         return 2.0
     _status = f"watching {os.path.basename(project)}"
 
-    project_dir = os.path.dirname(project)
+    # The project AND everything it is built from — see watched_dirs.
+    project_dir = watched_dirs(project)
     stamp = source_stamp(project_dir)
 
     if _last_stamp is None:

@@ -35,6 +35,10 @@ from bpy.types import Operator
 
 from .. import log
 from ..contract import authoring, component_ids
+# Both live in the contract layer now (component_ids has to read the schema during
+# export, and contract/ may not import anything that imports bpy). Re-exported so
+# every caller of authored_components keeps its spelling.
+from ..contract.authoring import schema_for_data_dir, schema_load_error  # noqa: F401
 from ..prefs import resolve_blender_data_dir
 
 __all__ = [
@@ -59,54 +63,6 @@ __all__ = [
 
 ENABLED_KEY = "paradise_components"
 VALUE_PREFIX = "paradise:"
-
-# One cache entry per data directory: (stamp, document, error). Keyed by directory rather than
-# held as a single value because two .blend files in different projects can be open in one
-# Blender session.
-_cache: dict[str, tuple[tuple[int, int], authoring.AuthoringSchemaDocument, str | None]] = {}
-
-
-def schema_for_data_dir(data_dir: str) -> authoring.AuthoringSchemaDocument:
-    """The game's schema, re-read when the file changes. A missing or unreadable file yields
-    an EMPTY document rather than an exception -- the panel reports why (see
-    :func:`schema_load_error`), and every other caller sees "no components" instead of dying
-    mid-draw or mid-export."""
-    path = authoring.schema_path(data_dir)
-    stamp = authoring.schema_stamp(path)
-    cached = _cache.get(data_dir)
-    if cached is not None and cached[0] == stamp:
-        return cached[1]
-
-    documents = [authoring.read_engine_schema()]
-    error: str | None = None
-    if stamp == (0, 0):
-        error = (
-            f"No '{authoring.SCHEMA_FILE_NAME}' in '{data_dir}'. Build the game project to "
-            "dump it (the engine writes the file on every build of an [Authored] assembly)."
-        )
-    else:
-        try:
-            with open(path, encoding="utf-8") as file:
-                documents.append(authoring.read(file.read()))
-        except (OSError, authoring.SchemaError) as failure:
-            # Named loudly: the symptom of a silently skipped schema is "my component is
-            # missing", which gives an author nothing to go on.
-            error = f"'{path}' is not a readable authoring schema: {failure}"
-            log.warn(error)
-
-    # Engine first, so a game cannot redefine an engine id — the same merge order as the
-    # Godot host's LoadSchema.
-    document = authoring.merge(documents)
-    _cache[data_dir] = (stamp, document, error)
-    return document
-
-
-def schema_load_error(data_dir: str) -> str | None:
-    """Why the schema for this directory is empty, or None when it loaded."""
-    schema_for_data_dir(data_dir)  # ensure the cache entry reflects the current stamp
-    cached = _cache.get(data_dir)
-    return cached[2] if cached is not None else None
-
 
 def schema_for(context) -> authoring.AuthoringSchemaDocument:
     return schema_for_data_dir(resolve_blender_data_dir(context.scene))

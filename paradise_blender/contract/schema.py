@@ -422,20 +422,35 @@ class EntityComponentsData:
 
     components: list[AuthoredComponentData] = field(default_factory=list)
 
+    #: Where the game's authoring schema lives, so :meth:`add_engine` can look a component's CLR
+    #: type name up in it. Not part of the wire format and never serialized -- :meth:`to_json`
+    #: writes only ``components`` -- but it has to be HERE rather than on each call, because the
+    #: seven call sites that add an engine component all already hold an ``ExportPaths`` and none
+    #: of them should have to think about where a type name comes from.
+    data_dir: str | None = None
+
     def add(self, component: AuthoredComponentData) -> None:
         self.components.append(component)
 
     def add_engine(self, component_id: str, payload) -> None:
         """One of the ENGINE's components, from the typed record that builds its payload.
 
-        The CLR type name comes from the vendored engine schema rather than a table here -- see
-        :func:`.component_ids.engine_type_name`.
+        The CLR type name is read out of the game's dumped schema -- which describes the engine's
+        components too, because the launcher that dumps it scans its references. See
+        :func:`.component_ids.engine_type_name`, including why a schema that cannot answer is an
+        error rather than an omitted field.
         """
         from . import component_ids
 
+        if self.data_dir is None:
+            raise ValueError(
+                "EntityComponentsData was built without a data_dir, so the CLR type name for "
+                f"engine component {component_id} cannot be resolved. Construct it with the "
+                "export's data directory (ExportPaths.data_dir).")
+
         self.components.append(AuthoredComponentData(
             id=component_id,
-            type=component_ids.engine_type_name(component_id),
+            type=component_ids.engine_type_name(component_id, self.data_dir),
             data=payload.to_json(),
         ))
 

@@ -71,23 +71,6 @@ else
 fi
 
 if command -v dotnet >/dev/null 2>&1; then
-  step "Conformance: the vendored engine schema matches Paradise.Export"
-  # The addon cannot load a C# assembly, so it ships a copy of the engine's authored-component
-  # schema. Value-compare it against the constant in the real Paradise.Export: a mismatch means
-  # the engine grew or changed a component and the copy must be regenerated (see
-  # contract/authoring.py read_engine_schema).
-  dotnet run --project tools/ParadiseBlenderBridge -- engine-schema \
-    | "$PYTHON" -c '
-import json, sys
-printed = json.loads(sys.stdin.read())
-vendored = json.load(open("paradise_blender/contract/engine_authoring_schema.json"))
-if printed != vendored:
-    print("DRIFT: engine_authoring_schema.json no longer matches Paradise.Export.AuthoringSchema")
-    sys.exit(1)
-print("OK — the vendored engine schema matches Paradise.Export.")
-'
-  check $? "vendored engine schema"
-
   step "Conformance: round-trip exported documents through Paradise.Export"
   # The export test above writes its documents here.
   DATA="${TMPDIR:-/tmp}/paradise_export_test"

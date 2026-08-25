@@ -15,8 +15,11 @@ namespace ParadiseBlenderBridge;
 /// Godot's own NavigationServer3D, and Blender has no equivalent.
 ///
 /// <b>engine-schema</b> prints <c>Paradise.Export.AuthoringSchema.Json</c> — the engine's own
-/// authored-component schema. The addon vendors a copy (it cannot load a C# assembly), and the
-/// test suite compares that copy against this output so the two cannot drift apart.
+/// authored-component schema. The addon no longer vendors a copy of it: a game's launcher merges
+/// every assembly it references into the document it dumps, so the engine's components reach the
+/// addon inside the GAME's schema, described by the engine that game actually builds against.
+/// This verb is now a diagnostic — what does the engine publish, before any game merges it — for
+/// when a component is missing from a panel and you need to know which half is at fault.
 ///
 /// <b>contract-check</b> is the drift gate. The Blender addon writes the contract in pure
 /// Python, so nothing structurally guarantees it stays in step with C# <c>Paradise.Export</c>
@@ -76,8 +79,9 @@ internal static class Program
 
               engine-schema
                   Print the engine's authored-component schema (the generated
-                  Paradise.Export.AuthoringSchema.Json constant). The addon's vendored copy at
-                  paradise_blender/contract/engine_authoring_schema.json must match it.
+                  Paradise.Export.AuthoringSchema.Json constant). A diagnostic: the addon reads
+                  the GAME's dumped schema, which already carries these components because the
+                  launcher that dumps it scans its references.
             """);
         return 2;
     }

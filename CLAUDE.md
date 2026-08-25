@@ -120,10 +120,20 @@ deliberately five members (`is_entity`, `entity_guid`, `model_path`, the two col
 every component — the engine's identity/agent/rigidbody/audio/particles included — is authored
 through the schema in the Components panel and routed to its typed slot by
 `contract/authoring_router.py`. Do not add fixed fields back: the ~40-field mirror this
-replaced is exactly the thing a schema change silently drifts away from. The engine's schema
-is a vendored JSON (`contract/engine_authoring_schema.json`) because Python cannot read the C#
-constant — the conformance suite compares it against the bridge's `engine-schema` verb, and a
-drift there means "regenerate the file", not "patch it by hand".
+replaced is exactly the thing a schema change silently drifts away from.
+
+**There is ONE schema, and it is the game's.** This host used to vendor a copy of the engine's
+own schema and merge it underneath — it can no longer read the C# constant, and the game's dump
+described only the game. It does not have to any more: a launcher built with
+`ParadiseAuthoringScanReferences` merges every assembly it references into the document it dumps,
+so the engine's components arrive inside `<data>/authoring-schema.json`, described by the engine
+that game is actually built against. The vendored copy was not merely redundant but a hazard —
+merges are first-wins, so a checked-in copy that had drifted would have won against the truth.
+
+Two consequences. A data directory with no dumped schema now has **no components at all**, not
+just no game components, so the panel says so loudly and the fix is "build the launcher". And
+`component_ids.engine_type_name` reads the CLR name out of that same document at export — see
+`check_engine_ids`, which replaced the unit test that used to police the vendored copy.
 
 **Authored components live in ID properties, not a PropertyGroup.** The game's own components
 (`<data>/authoring-schema.json` → `Components.Custom`) are schema-driven data that changes on

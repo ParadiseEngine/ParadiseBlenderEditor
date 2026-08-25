@@ -95,7 +95,7 @@ class PrefabExporter:
             prefab_asset_path=asset_path,
             prefab_guid=_prefab_guid(collection),
             prefab_asset_type=".blend" if collection.library is not None else ".collection",
-            entities=_shallow_entities(collection),
+            entities=_shallow_entities(collection, paths.data_dir),
         )
 
         field = prefab_file_field(collection.name)
@@ -103,7 +103,9 @@ class PrefabExporter:
         log.info(f"Exported prefab template: {field}")
 
 
-def _shallow_entities(collection: bpy.types.Collection) -> list[LevelEntityData]:
+def _shallow_entities(
+    collection: bpy.types.Collection, data_dir: str
+) -> list[LevelEntityData]:
     """Template entities: id/kind/transform/renderable only.
 
     Deliberately shallow, matching the Godot host: scene *placements* already carry the
@@ -134,17 +136,17 @@ def _shallow_entities(collection: bpy.types.Collection) -> list[LevelEntityData]
                 local_position=position,
                 local_rotation=rotation,
                 local_scale=scale,
-                components=_template_components(props),
+                components=_template_components(props, data_dir),
             )
         )
     return entities
 
 
-def _template_components(props):
+def _template_components(props, data_dir: str):
     from ..contract import component_ids
     from ..contract.schema import EntityComponentsData
 
-    components = EntityComponentsData()
+    components = EntityComponentsData(data_dir=data_dir)
     if props.model_path.strip():
         # A template says "this prefab renders", not what it renders — the placement's own
         # Renderable carries the mesh. No entry at all is what "no model" means now.

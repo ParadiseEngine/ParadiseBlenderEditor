@@ -41,6 +41,8 @@ No ``bpy`` import: this module is pure data and is unit-tested standalone.
 
 from __future__ import annotations
 
+from .. import log
+
 import json
 import os
 from collections.abc import Mapping
@@ -71,7 +73,8 @@ __all__ = [
     "merge",
     "outline",
     "read",
-    "read_engine_schema",
+    "schema_for_data_dir",
+    "schema_load_error",
     "relative_to",
     "removal_mapping",
     "renumber",
@@ -269,22 +272,6 @@ class AuthoringSchemaDocument:
     components: list[AuthoredComponentSchema] = dataclass_field(default_factory=list)
 
 
-def read_engine_schema() -> AuthoringSchemaDocument:
-    """The ENGINE's own component schema — what `Paradise.Export.AuthoringSchema.Json` holds.
-
-    Vendored as a JSON file beside this module because the constant lives in a C# assembly this
-    Python host cannot load. The copy is kept honest by the conformance suite: the bridge's
-    ``engine-schema`` verb prints the constant from the real Paradise.Export, and
-    ``tools/run_tests.sh`` fails if the two differ. Regenerate with::
-
-        dotnet run --project tools/ParadiseBlenderBridge -- engine-schema \
-            > paradise_blender/contract/engine_authoring_schema.json
-    """
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "engine_authoring_schema.json")
-    with open(path, encoding="utf-8") as file:
-        return read(file.read())
-
-
 def read(text: str) -> AuthoringSchemaDocument:
     """Parse one document, mirroring ``AuthoringSchemaReader.Read`` -- including its version
     gate, which is what keeps a newer engine's schema from being half-understood."""
@@ -330,6 +317,74 @@ def merge(documents: list[AuthoringSchemaDocument]) -> AuthoringSchemaDocument:
     return AuthoringSchemaDocument(
         components=sorted(by_id.values(), key=lambda component: (component.type, component.id))
     )
+
+
+# ---------------------------------------------------------------------------------------------
+# The game's schema, by data directory.
+#
+# HERE, in the Blender-free layer, rather than beside the panel that draws it — because
+# component_ids.engine_type_name has to read it during EXPORT, and contract/ may not import
+# anything that imports bpy. paradise_blender.authoring.authored_components re-exports both
+# functions, so every existing caller keeps its spelling.
+# ---------------------------------------------------------------------------------------------
+
+# One cache entry per data directory: (stamp, document, error). Keyed by directory rather than
+# held as a single value because two .blend files in different projects can be open in one
+# Blender session.
+_cache: dict[str, tuple[tuple[int, int], AuthoringSchemaDocument, str | None]] = {}
+
+
+def schema_for_data_dir(data_dir: str) -> AuthoringSchemaDocument:
+    """The game's schema, re-read when the file changes.
+
+    ONE DOCUMENT, AND IT IS THE GAME'S. This host used to merge a vendored copy of the engine's
+    own schema underneath it, because the game's dump described only the game. It no longer has
+    to: a launcher built with ``ParadiseAuthoringScanReferences`` merges every assembly it
+    references — the engine included — into the document it dumps, so the file already describes
+    everything an editor can author. The vendored copy was then not merely redundant but
+    ACTIVELY WRONG: merges are first-wins, so a checked-in copy that had drifted from the engine
+    the game actually builds against would win against the truth.
+
+    The consequence to know: with nothing vendored there is no floor. A data directory with no
+    dumped schema yields an EMPTY document — not the engine's components as before — so the
+    Components panel is empty until the game is built once. That is what
+    :func:`schema_load_error` is for, and the panel says it loudly.
+
+    A missing or unreadable file still yields an empty document rather than an exception: every
+    caller sees "no components" instead of dying mid-draw."""
+    path = schema_path(data_dir)
+    stamp = schema_stamp(path)
+    cached = _cache.get(data_dir)
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
+
+    document = AuthoringSchemaDocument()
+    error: str | None = None
+    if stamp == (0, 0):
+        error = (
+            f"No '{SCHEMA_FILE_NAME}' in '{data_dir}'. Build the game's LAUNCHER to "
+            "dump it — it is the project that references the whole game, so its dump is the one "
+            "that describes all of it (engine components included)."
+        )
+    else:
+        try:
+            with open(path, encoding="utf-8") as file:
+                document = read(file.read())
+        except (OSError, SchemaError) as failure:
+            # Named loudly: the symptom of a silently skipped schema is "my component is
+            # missing", which gives an author nothing to go on.
+            error = f"'{path}' is not a readable authoring schema: {failure}"
+            log.warn(error)
+
+    _cache[data_dir] = (stamp, document, error)
+    return document
+
+
+def schema_load_error(data_dir: str) -> str | None:
+    """Why the schema for this directory is empty, or None when it loaded."""
+    schema_for_data_dir(data_dir)  # ensure the cache entry reflects the current stamp
+    cached = _cache.get(data_dir)
+    return cached[2] if cached is not None else None
 
 
 def schema_path(data_dir: str) -> str:

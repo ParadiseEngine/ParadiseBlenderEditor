@@ -291,10 +291,12 @@ class TestComponentsInTheDocument:
         text = writer.dumps(components.to_json())
         assert CREATURE_ID in text and '"Friendly": true' in text
 
-    def test_an_engine_component_carries_the_type_the_schema_publishes(self):
-        """add_engine looks the CLR name up in the vendored engine schema rather than taking it
-        from a table here — the id is the only thing the caller has to know."""
-        components = schema.EntityComponentsData()
+    def test_an_engine_component_carries_the_type_the_schema_publishes(self, tmp_path):
+        """add_engine looks the CLR name up in the GAME's dumped schema — which describes the
+        engine's components too, because the launcher that dumps it scans its references. The id
+        is the only thing the caller has to know."""
+        data_dir = _data_dir_with_engine_schema(tmp_path)
+        components = schema.EntityComponentsData(data_dir=data_dir)
         components.add_engine(
             component_ids.RENDERABLE, schema.RenderableComponentData(mesh="Models/x.glb"))
         entry = components.to_json()[0]
@@ -302,12 +304,48 @@ class TestComponentsInTheDocument:
         assert entry["Type"] == "Paradise.Export.Data.RenderableComponentData"
         assert entry["Data"]["Mesh"] == "Models/x.glb"
 
-    def test_find_returns_the_entry_for_an_id(self):
-        components = schema.EntityComponentsData()
+    def test_find_returns_the_entry_for_an_id(self, tmp_path):
+        data_dir = _data_dir_with_engine_schema(tmp_path)
+        components = schema.EntityComponentsData(data_dir=data_dir)
         components.add_engine(component_ids.RENDERABLE, schema.RenderableComponentData())
         assert components.find(component_ids.RENDERABLE) is not None
         assert components.find(component_ids.AGENT) is None
 
+    def test_an_engine_component_without_a_schema_refuses_rather_than_omitting_the_type(
+            self, tmp_path):
+        """The determinism rule. The engine reads Type only when the id fails to resolve, so
+        dropping it would still export — and the same .blend would then produce two different
+        data/scenes/*.json depending on whether the game had been built, one of which gets
+        committed. An export is reproducible or it is not."""
+        components = schema.EntityComponentsData(data_dir=str(tmp_path))
+        with pytest.raises(KeyError, match="authoring schema"):
+            components.add_engine(component_ids.RENDERABLE, schema.RenderableComponentData())
+
+    def test_engine_components_need_a_data_dir_at_all(self):
+        components = schema.EntityComponentsData()
+        with pytest.raises(ValueError, match="data_dir"):
+            components.add_engine(component_ids.RENDERABLE, schema.RenderableComponentData())
+
+
+
+def _data_dir_with_engine_schema(tmp_path) -> str:
+    """A data directory holding the kind of document a LAUNCHER dumps: the engine's components
+    merged in alongside the game's, which is what makes this host able to name them at all."""
+    import json
+
+    (tmp_path / "authoring-schema.json").write_text(json.dumps({
+        "version": 3,
+        "components": [
+            {
+                "id": component_ids.RENDERABLE,
+                "type": "Paradise.Export.Data.RenderableComponentData",
+                "displayName": "Renderable",
+                "fields": [],
+            },
+        ],
+    }), encoding="utf-8")
+    authoring._cache.clear()
+    return str(tmp_path)
 
 class TestSchemaStamp:
     def test_a_missing_file_stamps_as_zero(self, tmp_path):
@@ -780,3 +818,52 @@ class TestTransformReferences:
 
         assert payload["Container"]["Destination"]["Position"] == [0.0, 0.0, 0.0]
         assert payload["Container"]["Destination"]["Scale"] == [0.0, 0.0, 0.0]
+
+
+class TestEngineIdDrift:
+    """``component_ids.check_engine_ids`` — what replaced the unit test that asserted every
+    constant appeared in a vendored copy of the engine's schema.
+
+    It checks the same thing against a better subject: the schema the game's launcher dumped, so
+    the constants are compared with the engine that game is actually built against rather than
+    with a checked-in copy of some engine.
+    """
+
+    @staticmethod
+    def _write(tmp_path, ids: list[str]) -> str:
+        import json
+
+        (tmp_path / "authoring-schema.json").write_text(json.dumps({
+            "version": 3,
+            "components": [
+                {"id": i, "type": f"Engine.C{n}", "displayName": "C", "fields": []}
+                for n, i in enumerate(ids)
+            ],
+        }), encoding="utf-8")
+        authoring._cache.clear()
+        return str(tmp_path)
+
+    def test_a_schema_carrying_every_constant_reports_nothing(self, tmp_path):
+        named = [
+            value for name, value in vars(component_ids).items()
+            if name.isupper() and isinstance(value, str)
+        ]
+        assert named, "no constants found — the introspection above stopped matching"
+        assert component_ids.check_engine_ids(self._write(tmp_path, named)) == []
+
+    def test_a_constant_the_schema_does_not_know_is_named(self, tmp_path):
+        """The drift this exists for: the engine renames or drops a component and the transcribed
+        constant is left pointing at nothing."""
+        named = [
+            value for name, value in vars(component_ids).items()
+            if name.isupper() and isinstance(value, str)
+        ]
+        reported = component_ids.check_engine_ids(self._write(tmp_path, named[1:]))
+        assert len(reported) == 1
+        assert named[0] in reported[0]
+
+    def test_no_schema_at_all_reports_nothing(self, tmp_path):
+        """Silence, not a wall of drift. An unbuilt project is already explained once by
+        schema_load_error; repeating it per constant would bury it."""
+        authoring._cache.clear()
+        assert component_ids.check_engine_ids(str(tmp_path)) == []

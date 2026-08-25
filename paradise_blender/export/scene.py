@@ -23,6 +23,7 @@ import os
 import bpy
 
 from .. import log
+from ..contract import component_ids
 from ..authoring import entity as authoring
 from ..authoring.guid import ensure_unique_guids
 from ..contract.schema import LevelData
@@ -118,6 +119,15 @@ def export_scene(scene: bpy.types.Scene, operator=None, force: bool = False) -> 
     repaired = ensure_unique_guids(scene)
     if repaired:
         log.info(f"Minted or repaired {repaired} entity GUID(s) before export.", operator)
+
+    # The id drift guard, run once per export rather than per entity. The engine component ids in
+    # contract/component_ids.py are transcribed from [Guid] attributes by hand and nothing keeps
+    # them in step; this checks them against the schema the game's launcher dumped, which
+    # describes the engine that game is actually built against. Reported, not fatal — the one
+    # failure that must stop an export (a component being written whose CLR name cannot be
+    # resolved) already raises, in engine_type_name.
+    for drift in component_ids.check_engine_ids(paths.data_dir):
+        log.warn(drift, operator)
 
     scene_name = resolve_scene_name(scene)
     document = build_level_data(scene, paths, force=force)

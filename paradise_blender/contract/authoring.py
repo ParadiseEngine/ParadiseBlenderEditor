@@ -29,9 +29,11 @@ The wire format, stated once (reference: ``AuthoredEntityCore.ValueOf``):
   the two halves of this module need to agree about a spelling.
 * Fields (or whole components) with ``authoredBy`` are host-object *references*: authored by
   pointing at one of the host's own objects, exported as the numbers baked out of it. This host
-  implements ONE kind, :data:`HOST_TRANSFORM` -- an object slot whose world pose is baked into
-  the reference's own leaves at export (see ``authored_components.bake_transform_refs``). Every
-  other kind is still reported and skipped, which the reader treats as unauthored;
+  implements TWO kinds -- :data:`HOST_TRANSFORM`, whose world pose is baked into the reference's
+  own leaves at export (``authored_components.bake_transform_refs``), and :data:`HOST_SHAPE`,
+  whose collider is (``bake_shape_refs``). Both are the same object slot; only what the exporter
+  takes off what you point at differs. Every other kind is still reported and skipped, which the
+  reader treats as unauthored;
   :func:`flatten` surfaces them so the UI can say so instead of drawing a control that exports
   nothing. An ``authoredBy`` LIST stays a reference regardless: a row editor over a collider's
   shapes would be a second, lying copy of the pointer list the entity already holds.
@@ -116,6 +118,11 @@ TYPE_COLOR = "color"
 #: ``authoredBy`` kinds. The engine's closed set is shape/mesh/sprite/light/asset/transform
 #: (``Paradise.Authoring``'s ``AuthoredBySources``); this host implements exactly one of them.
 HOST_TRANSFORM = "transform"
+
+#: A reference to a COLLISION SHAPE -- the engine's ``AuthoredBySources.Shape``. Authored as an
+#: object slot exactly as a transform is; what differs is that the exporter bakes the collider
+#: drawn on the object rather than where the object stands.
+HOST_SHAPE = "shape"
 
 #: Pose leaves a ``transform`` reference can bake into, by NAME. A record declares whichever
 #: parts of the pose it means and an exporter fills those, ignoring the rest -- which is what
@@ -462,8 +469,19 @@ class HostRef:
 
     @property
     def is_authorable(self) -> bool:
-        """Whether this host can actually author the reference, rather than only report it."""
-        return self.kind == HOST_TRANSFORM and not self.is_list and bool(self.leaves)
+        """Whether this host can actually author the reference, rather than only report it.
+
+        TWO KINDS now. Both are an object slot and differ only in what the exporter bakes out of
+        what you point at: a :data:`HOST_TRANSFORM` takes where the object STANDS, a
+        :data:`HOST_SHAPE` takes the collider drawn ON it. The picker is identical, which is the
+        point -- a kind is a statement about what the object IS, and a host implements as many of
+        them as it can rather than one.
+        """
+        return (
+            self.kind in (HOST_TRANSFORM, HOST_SHAPE)
+            and not self.is_list
+            and bool(self.leaves)
+        )
 
 
 @dataclass
@@ -593,11 +611,20 @@ def _walk_field(
 
     if field.authored_by is not None:
         # The leaves are what an exporter fills, so they travel with the reference — captured HERE,
-        # where the parent field is in hand and the path is already correct at any depth. Only the
-        # names the engine knows how to bake are kept: a record is free to carry others, and a host
-        # that tried to fill those would be inventing meaning for them.
-        leaves = tuple(
-            child for child in (field.fields or []) if child.name in TRANSFORM_FIELDS
+        # where the parent field is in hand and the path is already correct at any depth.
+        #
+        # WHICH leaves depends on the KIND, because the two bakes know different amounts about what
+        # they are filling. A pose has a closed vocabulary this contract defines (TRANSFORM_FIELDS),
+        # and a record is free to carry others a host would only be inventing meaning for. A SHAPE
+        # is the other way round: the exporter bakes a whole ColliderShapeData and writes back
+        # whatever names the record declared, so the record itself says which parts of a shape it
+        # means -- take them all and let the bake fill the ones it has.
+        children = tuple(field.fields or ())
+        leaves = (
+            tuple(child for child in children if child.name in TRANSFORM_FIELDS)
+            if field.authored_by == HOST_TRANSFORM
+            else children if field.authored_by == HOST_SHAPE
+            else ()
         )
         plan.hosts.append(HostRef(path=path, kind=field.authored_by, leaves=leaves))
         return

@@ -46,6 +46,7 @@ from ..prefs import resolve_blender_data_dir
 
 __all__ = [
     "apply_ui_metadata",
+    "bake_shape_refs",
     "bake_transform_refs",
     "build_component_payloads",
     "classes",
@@ -374,7 +375,7 @@ def bake_transform_refs(
     from ..export.transform import decompose_contract
 
     for host in authoring.flatten(component)[1]:
-        if not host.is_authorable:
+        if not host.is_authorable or host.kind != authoring.HOST_TRANSFORM:
             continue
         name = obj.get(value_key(component.id, host.path), "")
         if not isinstance(name, str) or not name:
@@ -403,6 +404,61 @@ def bake_transform_refs(
         }
         for leaf in host.bakes:
             values[f"{host.path}/{leaf}"] = baked[leaf]
+    return values
+
+
+def bake_shape_refs(
+    obj: bpy.types.Object,
+    component: authoring.AuthoredComponentSchema,
+    values: dict,
+) -> dict:
+    """Fill each ``shape`` reference from the collider drawn on the object it points at.
+
+    The transform bake's sibling, and the same asymmetry: authored as a REFERENCE, exported as a
+    VALUE. You point at a collider object, move and size it with Blender's own handles, and what
+    travels is the shape -- through :func:`..export.collider.export_shape`, the SAME conversion the
+    collider LIST goes through, so a scalar reference and a list entry cannot disagree about what a
+    capsule is.
+
+    Only the leaves the record declared are written, so a component takes the part of a shape it
+    means. An unassigned or dangling reference leaves them ALONE, and the payload builder then fills
+    the record's own defaults -- which the runtime is free to refuse, and can only refuse if the
+    export is honest rather than inventing a box.
+    """
+    from ..export.collider import export_shape
+    from ..authoring.collider import is_collider
+
+    for host in authoring.flatten(component)[1]:
+        if not host.is_authorable or host.kind != authoring.HOST_SHAPE:
+            continue
+        name = obj.get(value_key(component.id, host.path), "")
+        if not isinstance(name, str) or not name:
+            continue
+        target = bpy.data.objects.get(name)
+        if target is None:
+            log.warn(
+                f"'{obj.name}' points '{component.display_name}.{host.path}' at an object named "
+                f"'{name}', which is not in this file. It is NOT exported, so the runtime sees the "
+                "field unauthored — re-pick the object."
+            )
+            continue
+        if not is_collider(target):
+            # Assigning an unmarked object would export a shape with no kind, which the runtime
+            # reads as a box at the origin -- a volume in the wrong place rather than an absent one.
+            log.warn(
+                f"'{obj.name}' points '{component.display_name}.{host.path}' at '{target.name}', "
+                "which is not marked as a Paradise collider. It is NOT exported — use Make Paradise "
+                "Collider first."
+            )
+            continue
+
+        shape = export_shape(obj, target)
+        if shape is None:
+            continue
+        baked = shape.to_json()
+        for leaf in host.bakes:
+            if leaf in baked:
+                values[f"{host.path}/{leaf}"] = baked[leaf]
     return values
 
 
@@ -549,6 +605,7 @@ def build_component_payloads(obj: bpy.types.Object, data_dir: str) -> list:
             )
             continue
         values = bake_transform_refs(obj, component, values_for(obj, component))
+        values = bake_shape_refs(obj, component, values)
         payload = authoring.build_payload(component, values)
         pairs.append((component.id, component.type, payload))
 
@@ -579,7 +636,8 @@ def _host_list_payload(
     if field is None:
         return None
 
-    payload = authoring.build_payload(component, values_for(obj, component))
+    values = bake_transform_refs(obj, component, values_for(obj, component))
+    payload = authoring.build_payload(component, bake_shape_refs(obj, component, values))
     payload[field.name] = [
         shape.to_json() for shape in build_colliders(obj, host_entries(obj, component))
     ]

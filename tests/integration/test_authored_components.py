@@ -67,7 +67,10 @@ DOORWAY_ID = "7a1c9e04-3b52-4f18-9d6a-c084e2571b93"
 #: it drew as "not authorable in Blender yet" and exported nothing.
 BODY_ID = "7c4e0a19-3d55-4b8e-9a2c-6e8f1b4d0c23"
 
-GAME_IDS = {CREATURE_ID, MARKER_ID, DOORWAY_ID, BODY_ID}
+#: A game component referencing ONE shape, not a list -- the scalar case.
+VOLUME_ID = "3f7f5b6c-0346-4de7-9bf6-0dd4e25ac74c"
+
+GAME_IDS = {CREATURE_ID, MARKER_ID, DOORWAY_ID, BODY_ID, VOLUME_ID}
 
 # A LAUNCHER's dump, which is the only kind of authoring schema this host reads now: the game's
 # own components AND the engine's, in one document. It used to be a game-only fixture, with the
@@ -126,6 +129,24 @@ SCHEMA = {
                         ],
                     },
                 }
+            ],
+        },
+        {
+            "id": VOLUME_ID,
+            "type": "ShiningPie.Authoring.InteractionTriggerMarker",
+            "displayName": "Interaction trigger",
+            "fields": [
+                {"name": "Prompt", "type": "string"},
+                {
+                    "name": "Volume",
+                    "type": "object",
+                    "authoredBy": "shape",
+                    "fields": [
+                        {"name": "IsTrigger", "type": "bool"},
+                        {"name": "ShapeType", "type": "string"},
+                        {"name": "Radius", "type": "float"},
+                    ],
+                },
             ],
         },
         {
@@ -548,6 +569,64 @@ def main() -> int:
             f"shape={shape_json}",
         )
 
+    # -- a SCALAR shape reference: one object slot, baked like a transform's --------------
+    volume_component = authored.component_by_id(merged, VOLUME_ID)
+    hosts = contract_authoring.outline(volume_component).hosts
+    volume_host = next(h for h in hosts if h.path == "Volume")
+    check(
+        volume_host.kind == "shape" and volume_host.is_authorable,
+        "a scalar shape reference is authorable, not merely reported",
+    )
+
+    bpy.ops.object.empty_add(type="PLAIN_AXES", location=(8, 0, 0))
+    pad = bpy.context.active_object
+    pad.name = "Pad"
+    pad.paradise.is_entity = True
+    authored.enable_component(pad, volume_component)
+    pad[authored.value_key(VOLUME_ID, "Prompt")] = "Open the shutter"
+
+    bpy.ops.object.empty_add(type="CUBE", location=(8, 0, 0.5))
+    sensor = bpy.context.active_object
+    sensor.name = "PadSensor"
+    sensor.paradise_collider.is_collider = True
+    sensor.paradise_collider.shape = "Sphere"
+    sensor.paradise_collider.size_source = "EXPLICIT"
+    sensor.paradise_collider.radius = 2.5
+    sensor.paradise_collider.is_trigger = True
+    sensor.parent = pad
+
+    export_scene(bpy.context.scene)
+    unassigned = payload_for(exported_entities()["Pad"], VOLUME_ID)
+    check(
+        unassigned is not None and unassigned["Volume"]["ShapeType"] != "Sphere",
+        "an unassigned slot exports the record's defaults, not a guessed shape",
+        f"payload={unassigned}",
+    )
+
+    # The picker stores the object's NAME, exactly as a transform reference does.
+    pad[authored.value_key(VOLUME_ID, "Volume")] = "PadSensor"
+    export_scene(bpy.context.scene)
+    baked = payload_for(exported_entities()["Pad"], VOLUME_ID)
+    check(
+        baked is not None
+        and baked["Volume"]["ShapeType"] == "Sphere"
+        and abs(baked["Volume"]["Radius"] - 2.5) < 1e-5
+        and baked["Volume"]["IsTrigger"] is True,
+        "an assigned slot bakes the collider drawn on the object it points at",
+        f"payload={baked}",
+    )
+
+    pad[authored.value_key(VOLUME_ID, "Volume")] = "NoSuchCollider"
+    export_scene(bpy.context.scene)
+    dangling = payload_for(exported_entities()["Pad"], VOLUME_ID)
+    check(
+        dangling is not None and dangling["Volume"]["ShapeType"] != "Sphere",
+        "a dangling shape reference exports unauthored (and warns) rather than a stale shape",
+    )
+
+    # Back to the actor: an operator polls the ACTIVE object, and the scalar-shape block above
+    # left a collider selected.
+    bpy.context.view_layer.objects.active = actor
     bpy.ops.paradise.remove_collider(key=authored.host_ref_key(body_component), index=0)
     check(
         not authored.host_entries(actor, body_component),

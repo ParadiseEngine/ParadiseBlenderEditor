@@ -246,12 +246,19 @@ class TestBuildPayload:
         payload = authoring.build_payload(creature(), {"Tint": [0.1, 0.2, 0.3, 0.4]})
         assert payload["Tint"] == {"r": 0.1, "g": 0.2, "b": 0.3, "a": 0.4}
 
-    def test_host_references_are_absent_from_the_payload(self):
+    def test_a_reference_this_host_cannot_bake_is_absent_from_the_payload(self):
         """Absent means "unauthored" to the reader -- the truthful description of a bake this
-        host does not perform."""
-        payload = authoring.build_payload(creature(), {"Shape/SizeX": 5.0})
-        assert "Shape" not in payload
+        host does not perform. Extras is a MESH reference, which is still one of those."""
+        payload = authoring.build_payload(creature(), {"Extras/Whatever": 5.0})
         assert "Extras" not in payload
+
+    def test_a_shape_reference_contributes_its_declared_leaves(self):
+        """A shape is authorable here now: the exporter bakes a whole ColliderShapeData and writes
+        back whichever names the record declared, so the record says which parts of a shape it
+        means. A leaf the bake did not fill takes the record's own default, which is what an
+        unassigned object slot means -- and leaves the runtime free to refuse it."""
+        payload = authoring.build_payload(creature(), {"Shape/SizeX": 5.0})
+        assert payload["Shape"]["SizeX"] == 5.0
 
     def test_a_wrong_size_vector_falls_back_rather_than_exporting_garbage(self):
         payload = authoring.build_payload(creature(), {"Home": [1.0], "Facing": "bad"})
@@ -672,12 +679,21 @@ class TestTransformReferences:
         assert host.is_authorable
         assert host.bakes == ("Position", "Yaw")
 
-    def test_the_kinds_this_host_cannot_author_stay_unauthorable(self):
-        # Shapes, meshes, sprites, lights and assets are still baked by dedicated paths (or not at
-        # all here), and must keep reporting themselves as such — the panel says so out loud.
+    def test_a_shape_reference_is_authorable_and_names_what_it_bakes(self):
+        # The second kind this host implements. Same picker as a pose; what differs is only what
+        # the exporter takes off the object you point at — the collider drawn ON it, rather than
+        # where it stands. Every leaf the record declared travels, because the bake produces a
+        # whole shape and the record chooses which parts of it it means.
         hosts = {h.path: h for h in authoring.flatten(creature())[1]}
 
-        assert not hosts["Shape"].is_authorable
+        assert hosts["Shape"].is_authorable
+        assert "SizeX" in hosts["Shape"].bakes
+
+    def test_the_kinds_this_host_cannot_author_stay_unauthorable(self):
+        # Meshes, sprites, lights and assets are still baked by dedicated paths (or not at all
+        # here), and must keep reporting themselves as such — the panel says so out loud.
+        hosts = {h.path: h for h in authoring.flatten(creature())[1]}
+
         assert not hosts["Extras"].is_authorable
 
     def test_a_list_of_pose_references_is_not_authorable(self):

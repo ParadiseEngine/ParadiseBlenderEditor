@@ -19,44 +19,86 @@ def entity() -> schema.LevelEntityData:
     return schema.LevelEntityData(id="Thing", kind="Prop", spawn_phase="LevelStart")
 
 
+def _field(name: str, type_: str, default=None, has_default: bool = True):
+    return authoring.AuthoredFieldSchema(
+        name=name, type=type_, default=default, has_default=has_default)
+
+
+# The engine component shapes these tests build payloads from, declared HERE rather than read out
+# of a document.
+#
+# They used to come from a vendored copy of the engine's schema, which this host no longer keeps:
+# the game's dumped document describes the engine's components now (the launcher that dumps it
+# scans its references), and that document belongs to a game, not to a test. Only the fields these
+# tests actually exercise are declared — the subject is the ROUTER, which decides where a payload
+# lands and what normalization clamps, and neither answer depends on the fields it does not read.
+_SHAPES: dict[str, authoring.AuthoredComponentSchema] = {
+    component_ids.IDENTITY: authoring.AuthoredComponentSchema(
+        id=component_ids.IDENTITY,
+        type="Paradise.Export.Data.IdentityComponentData",
+        display_name="Identity",
+        fields=[
+            _field("Kind", authoring.TYPE_STRING, ""),
+            _field("DisplayName", authoring.TYPE_STRING, ""),
+            _field("SpawnPhase", authoring.TYPE_STRING, ""),
+            _field("Prefab", authoring.TYPE_STRING, ""),
+            _field("IsActive", authoring.TYPE_BOOL, True),
+        ],
+    ),
+    component_ids.AUDIO_EMITTER: authoring.AuthoredComponentSchema(
+        id=component_ids.AUDIO_EMITTER,
+        type="Paradise.Export.Data.AudioEmitterComponentData",
+        display_name="Audio emitter",
+        fields=[
+            _field("StartEvent", authoring.TYPE_STRING, ""),
+            _field("StopEvent", authoring.TYPE_STRING, ""),
+            _field("PlayOnStart", authoring.TYPE_BOOL, True),
+            _field("Is3D", authoring.TYPE_BOOL, True),
+            _field("AttenuationScale", authoring.TYPE_FLOAT, 1.0),
+        ],
+    ),
+    component_ids.PARTICLE_EMITTER: authoring.AuthoredComponentSchema(
+        id=component_ids.PARTICLE_EMITTER,
+        type="Paradise.Export.Data.ParticleEmitterComponentData",
+        display_name="Particle emitter",
+        fields=[
+            _field("Kind", authoring.TYPE_STRING, ""),
+            _field("Color", authoring.TYPE_COLOR, [1.0, 1.0, 1.0, 1.0]),
+            _field("MaxParticles", authoring.TYPE_INT, 0),
+            _field("EmitRate", authoring.TYPE_FLOAT, 1.0),
+            _field("LifetimeSeconds", authoring.TYPE_FLOAT, 1.0),
+            _field("InitialSpeed", authoring.TYPE_FLOAT, 0.0),
+            _field("SpreadDegrees", authoring.TYPE_FLOAT, 0.0),
+            _field("Gravity", authoring.TYPE_FLOAT, 0.0),
+            _field("Drag", authoring.TYPE_FLOAT, 0.0),
+            _field("StartSize", authoring.TYPE_FLOAT, 1.0),
+            _field("EndSize", authoring.TYPE_FLOAT, 1.0),
+            _field("Seed", authoring.TYPE_INT, 0),
+            _field("Columns", authoring.TYPE_INT, 1),
+            _field("Rows", authoring.TYPE_INT, 1),
+            _field("FrameCount", authoring.TYPE_INT, 1),
+            _field("Fps", authoring.TYPE_FLOAT, 1.0),
+        ],
+    ),
+    component_ids.RIGIDBODY: authoring.AuthoredComponentSchema(
+        id=component_ids.RIGIDBODY,
+        type="Paradise.Export.Data.RigidbodyComponentData",
+        display_name="Rigidbody",
+        fields=[
+            _field("BodyType", authoring.TYPE_STRING, "Static"),
+            _field("Mass", authoring.TYPE_FLOAT, 0.0),
+        ],
+    ),
+}
+
+
 def engine_component(component_id: str) -> authoring.AuthoredComponentSchema:
-    document = authoring.read_engine_schema()
-    for component in document.components:
-        if component.id == component_id:
-            return component
-    raise AssertionError(f"{component_id} not in the engine schema")
+    return _SHAPES[component_id]
 
 
 def payload(component_id: str, values: dict) -> dict:
     """The wire payload the exporter would build: schema defaults filled, values on top."""
     return authoring.build_payload(engine_component(component_id), values)
-
-
-class TestVendoredEngineSchema:
-    def test_the_engine_schema_loads_and_declares_the_known_components(self):
-        ids = {c.id for c in authoring.read_engine_schema().components}
-        assert ids >= {component_ids.RIGIDBODY, component_ids.COLLIDER, component_ids.LIGHT}
-
-    def test_every_named_constant_still_names_a_real_component(self):
-        """component_ids.py is transcribed from the [Guid] attributes in LevelDocument.cs by
-        hand and nothing keeps the two in step. This is the guard: a component the engine
-        renames or drops fails here instead of leaving a constant that resolves to nothing
-        at runtime.
-
-        Deliberately NOT an equality check against the schema. Two reasons: the module is not a
-        complete mirror -- a constant earns its place by being referenced -- so a component ADDED
-        upstream must not fail this."""
-        ids = {c.id for c in authoring.read_engine_schema().components}
-        named = {
-            value for name, value in vars(component_ids).items()
-            if name.isupper() and isinstance(value, str)
-        }
-        assert named, "no constants found -- the introspection above stopped matching"
-        assert named <= ids
-
-    def test_every_routed_id_exists_in_the_engine_schema(self):
-        ids = {c.id for c in authoring.read_engine_schema().components}
-        assert ids >= authoring_router.ROUTED_IDS
 
 
 class TestIdentity:

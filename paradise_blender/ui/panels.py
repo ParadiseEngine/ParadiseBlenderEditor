@@ -520,12 +520,18 @@ class PARADISE_PT_entity_components(_ParadisePanel, Panel):
                            text="Game build failed — components may be stale", icon="ERROR")
 
         if authored.schema_load_error(data_dir) is not None:
+            # LOUD, because there is nothing behind it any more. This host used to vendor a copy
+            # of the engine's schema and merge it underneath the game's, so a project that had
+            # never been built still offered the engine's components. That copy is gone — the
+            # launcher's dump describes the engine's components too — which makes an unbuilt
+            # project an EMPTY panel rather than a partial one.
             box = layout.box()
-            box.label(text="No game authoring schema found.", icon="INFO")
-            box.label(text="Build the game project to dump it (see console).")
+            box.alert = True
+            box.label(text="No authoring schema — no components at all.", icon="ERROR")
+            box.label(text="Build the game's LAUNCHER to dump it.")
+            box.label(text="It is the project that describes the whole game,")
+            box.label(text="engine components included.")
             box.operator("paradise.build_game_schema", icon="FILE_REFRESH")
-            # The engine's own components are still available below: the vendored engine
-            # schema needs no game build.
 
         # One list, everything the entity exports: derived components as read-only rows,
         # host-list components (colliders) with their reference lists, form components with

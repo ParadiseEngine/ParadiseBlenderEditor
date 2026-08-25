@@ -64,9 +64,41 @@ MARKER_ID = "2d7f36ae-51c8-4b90-8e42-9a0b7cd1e5f3"
 DOORWAY_ID = "7a1c9e04-3b52-4f18-9d6a-c084e2571b93"
 GAME_IDS = {CREATURE_ID, MARKER_ID, DOORWAY_ID}
 
+# A LAUNCHER's dump, which is the only kind of authoring schema this host reads now: the game's
+# own components AND the engine's, in one document. It used to be a game-only fixture, with the
+# engine's half supplied by a vendored copy this addon merged underneath — that copy is gone,
+# because a launcher built with ParadiseAuthoringScanReferences merges every assembly it
+# references into what it dumps. The engine entries below are transcribed from that dump; only
+# the ones these checks actually reason about are present.
 SCHEMA = {
     "version": 3,
     "components": [
+        {
+            "id": component_ids.RIGIDBODY,
+            "type": "Paradise.Export.Data.RigidbodyComponentData",
+            "displayName": "Rigidbody",
+            "fields": [{"name": "Mass", "type": "float", "default": 0}],
+        },
+        {
+            "id": component_ids.AGENT,
+            "type": "Paradise.Export.Data.AgentComponentData",
+            "displayName": "Agent (movement)",
+            "fields": [{"name": "MoveSpeed", "type": "float", "default": 1}],
+        },
+        {
+            "id": component_ids.RENDERABLE,
+            "type": "Paradise.Export.Data.RenderableComponentData",
+            "displayName": "Renderable",
+            "authoredBy": "mesh",
+            "fields": [{"name": "Mesh", "type": "string"}],
+        },
+        {
+            "id": component_ids.LIGHT,
+            "type": "Paradise.Export.Data.SceneLightData",
+            "displayName": "Light",
+            "authoredBy": "light",
+            "fields": [{"name": "Energy", "type": "float", "default": 1}],
+        },
         {
             "id": CREATURE_ID,
             "type": "Game.Creature",
@@ -196,7 +228,7 @@ def main() -> int:
     check(game_ids == GAME_IDS, "every game component is read")
     check(
         authored.component_by_id(document, component_ids.RIGIDBODY) is not None,
-        "the engine's own schema is merged in",
+        "the launcher's dump carries the engine's components beside the game's",
     )
     check(
         not authored.is_authorable(authored.component_by_id(document, component_ids.RENDERABLE))

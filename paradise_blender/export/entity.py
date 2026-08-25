@@ -104,7 +104,7 @@ def _build_components(
     meshes,  # MeshExporter
 ) -> EntityComponentsData:
     props = obj.paradise
-    components = EntityComponentsData()
+    components = EntityComponentsData(data_dir=paths.data_dir)
 
     mesh_field = meshes.resolve_mesh_field(obj, paths)
     if mesh_field is not None or props.model_path.strip():

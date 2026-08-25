@@ -88,10 +88,13 @@ along verbatim and the game deserializes it through its generated readers.
 
 Entity identity (`Kind`, `IsActive`, `InitialAnimation`, `DisplayName`, `SpawnPhase`) is the
 authored `paradise.identity` component, spread onto the entity itself at export; an entity
-without one exports the defaults (`Prop`, active, `LevelStart`). The engine's own schema is
-vendored at `contract/engine_authoring_schema.json` (Python cannot read the C# constant) and
-merged in front of the game's, exactly as the Godot host merges; the bridge's `engine-schema`
-verb plus the conformance suite keep the copy honest.
+without one exports the defaults (`Prop`, active, `LevelStart`). The engine's own components
+arrive in the SAME document: a launcher built with `ParadiseAuthoringScanReferences` merges every
+assembly it references into its dump, so `<data>/authoring-schema.json` describes the engine's
+components and the game's alike. Nothing is vendored here any more — a checked-in copy could
+disagree with the engine the game builds against, and being merged first it would have won. The
+bridge's `engine-schema` verb still prints the engine's half on its own, as a diagnostic for when
+a component is missing and you need to know which side dropped it.
 
 The wire format is pinned by the Godot host (`AuthoredEntityCore.ValueOf`) and by
 `tests/unit/test_authoring.py`: every schema field written at its schema type, defaults filling

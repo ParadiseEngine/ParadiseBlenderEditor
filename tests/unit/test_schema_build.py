@@ -104,3 +104,70 @@ class TestSchemaStaleness:
         dump_time = schema_build.source_stamp(str(tmp_path))[0] + 5_000_000
         os.utime(schema, ns=(dump_time, dump_time))
         assert not schema_build.is_schema_stale(str(tmp_path), str(schema))
+
+class TestWatchedDirs:
+    """The watch scope follows ProjectReferences, because the project that DUMPS the schema is
+    not always the one that declares the components."""
+
+    @staticmethod
+    def _project(path, *references):
+        refs = "".join(
+            f'<ProjectReference Include="{r}" />' for r in references)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"<Project><ItemGroup>{refs}</ItemGroup></Project>")
+        return str(path)
+
+    def test_a_lone_project_watches_its_own_directory(self, tmp_path):
+        project = self._project(tmp_path / "Solo" / "Solo.csproj")
+        assert schema_build.watched_dirs(project) == [str(tmp_path / "Solo")]
+
+    def test_a_referenced_project_is_watched_too(self, tmp_path):
+        """The regression this exists for: components live in Core, the dump is owned by the
+        Launcher, and stamping only the Launcher would never see a component being added."""
+        self._project(tmp_path / "Core" / "Core.csproj")
+        launcher = self._project(
+            tmp_path / "Launcher" / "Launcher.csproj", r"..\Core\Core.csproj")
+        assert schema_build.watched_dirs(launcher) == [
+            str(tmp_path / "Launcher"), str(tmp_path / "Core")]
+
+    def test_references_are_followed_transitively(self, tmp_path):
+        self._project(tmp_path / "Core" / "Core.csproj")
+        self._project(tmp_path / "Game" / "Game.csproj", r"..\Core\Core.csproj")
+        launcher = self._project(
+            tmp_path / "Launcher" / "Launcher.csproj", r"..\Game\Game.csproj")
+        assert set(schema_build.watched_dirs(launcher)) == {
+            str(tmp_path / "Launcher"), str(tmp_path / "Game"), str(tmp_path / "Core")}
+
+    def test_a_directory_shared_by_two_references_is_listed_once(self, tmp_path):
+        """Otherwise every file under it would be counted twice, and the file COUNT is half the
+        change detector — a doubled count makes a deletion invisible."""
+        self._project(tmp_path / "Core" / "Core.csproj")
+        self._project(tmp_path / "Game" / "Game.csproj", r"..\Core\Core.csproj")
+        launcher = self._project(
+            tmp_path / "Launcher" / "Launcher.csproj",
+            r"..\Game\Game.csproj", r"..\Core\Core.csproj")
+        watched = schema_build.watched_dirs(launcher)
+        assert len(watched) == len(set(watched)) == 3
+
+    def test_a_reference_cycle_terminates(self, tmp_path):
+        """Not reachable from a csproj MSBuild would accept, but a hand-edited one can say it,
+        and a Blender timer must not be the thing that discovers the recursion limit."""
+        self._project(tmp_path / "A" / "A.csproj", r"..\B\B.csproj")
+        self._project(tmp_path / "B" / "B.csproj", r"..\A\A.csproj")
+        assert set(schema_build.watched_dirs(str(tmp_path / "A" / "A.csproj"))) == {
+            str(tmp_path / "A"), str(tmp_path / "B")}
+
+    def test_a_missing_reference_is_skipped(self, tmp_path):
+        project = self._project(
+            tmp_path / "Solo" / "Solo.csproj", r"..\Gone\Gone.csproj")
+        assert schema_build.watched_dirs(project) == [str(tmp_path / "Solo")]
+
+    def test_the_stamp_spans_every_watched_directory(self, tmp_path):
+        """The whole point: a change under a REFERENCED project must move the stamp."""
+        self._project(tmp_path / "Core" / "Core.csproj")
+        launcher = self._project(
+            tmp_path / "Launcher" / "Launcher.csproj", r"..\Core\Core.csproj")
+        watched = schema_build.watched_dirs(launcher)
+        before = schema_build.source_stamp(watched)
+        write(tmp_path / "Core" / "NewComponent.cs")
+        assert schema_build.source_stamp(watched) != before

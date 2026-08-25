@@ -18,6 +18,7 @@ Run with::
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 import tempfile
@@ -60,7 +61,8 @@ def check(condition: bool, description: str, detail: str = "") -> None:
 #: the assertions below can name them.
 CREATURE_ID = "c4e8a1b2-9f60-4d33-8a17-6b2e50d9fc84"
 MARKER_ID = "2d7f36ae-51c8-4b90-8e42-9a0b7cd1e5f3"
-GAME_IDS = {CREATURE_ID, MARKER_ID}
+DOORWAY_ID = "7a1c9e04-3b52-4f18-9d6a-c084e2571b93"
+GAME_IDS = {CREATURE_ID, MARKER_ID, DOORWAY_ID}
 
 SCHEMA = {
     "version": 3,
@@ -98,6 +100,31 @@ SCHEMA = {
             "type": "Game.Marker",
             "displayName": "Marker",
             "fields": [{"name": "Label", "type": "string", "default": "spawn"}],
+        },
+        {
+            # The one authoredBy kind this host authors: an object slot whose world pose is baked.
+            # Declares only PART of the pose, which is the interesting case — an exporter fills
+            # what the record asked for and invents nothing.
+            "id": DOORWAY_ID,
+            "type": "Game.Doorway",
+            "displayName": "Doorway",
+            "fields": [
+                {
+                    "name": "Destination",
+                    "type": "object",
+                    "authoredBy": "transform",
+                    # All four pose leaves the exporter knows how to bake. ShiningPie's real record
+                    # takes Position/Rotation/Scale and derives its heading at load; Yaw is here so
+                    # the derived leaf is covered too. (The "a declared leaf that is not a pose
+                    # field is left alone" case is a unit test — it needs no Blender.)
+                    "fields": [
+                        {"name": "Position", "type": "vector3"},
+                        {"name": "Rotation", "type": "quaternion"},
+                        {"name": "Scale", "type": "vector3"},
+                        {"name": "Yaw", "type": "float", "unit": "radians"},
+                    ],
+                },
+            ],
         },
     ],
 }
@@ -137,6 +164,18 @@ def build_scene() -> None:
     fill = bpy.context.active_object
     fill.name = "SceneFill"
 
+    # A reference TARGET, deliberately not an entity: what a pose reference points at is a place,
+    # not something the document has to contain. Blender (3, -5, 2) is contract (3, 2, 5) — the
+    # (x, y, z) -> (x, z, -y) rebase — and a Z rotation survives as the contract yaw unchanged.
+    bpy.ops.object.empty_add(type="PLAIN_AXES", location=(3, -5, 2))
+    target = bpy.context.active_object
+    target.name = "DoorTarget"
+    target.rotation_euler = (0.0, 0.0, math.pi / 4)
+    # NON-UNIFORM on purpose: the basis change PERMUTES the axes, so a Blender scale of (2, 3, 4)
+    # is a contract scale of (2, 4, 3). A converted-then-decomposed matrix gets that right by
+    # construction and a per-component conversion does not — the trap CONVENTIONS.md opens with.
+    target.scale = (2.0, 3.0, 4.0)
+
 
 def exported_entities() -> dict[str, dict]:
     path = os.path.join(DATA_DIR, "scenes", "authored_test.json")
@@ -154,7 +193,7 @@ def main() -> int:
     document = authored.schema_for_data_dir(DATA_DIR)
     check(authored.schema_load_error(DATA_DIR) is None, "the schema file loads")
     game_ids = {c.id for c in document.components if c.id in GAME_IDS}
-    check(game_ids == {CREATURE_ID, MARKER_ID}, "both game components are read")
+    check(game_ids == GAME_IDS, "every game component is read")
     check(
         authored.component_by_id(document, component_ids.RIGIDBODY) is not None,
         "the engine's own schema is merged in",
@@ -212,6 +251,121 @@ def main() -> int:
     check(
         not [e for e in entities["Plain"]["Components"] if e["Id"] in GAME_IDS],
         "an entity with nothing authored contributes no game components",
+    )
+
+    # -- pose references: the one authoredBy kind this host authors ----------------------
+    #
+    # Authored as a REFERENCE, exported as a VALUE. Everything below is about that asymmetry:
+    # what is stored is an object NAME, what travels is where that object stands, and the
+    # conversion into the contract's Y-up basis is the same one every other transform goes
+    # through. None of it is visible to a unit test, which has no bpy and therefore no objects.
+    plain_obj = bpy.data.objects["Plain"]
+    doorway = authored.component_by_id(authored.schema_for_data_dir(DATA_DIR), DOORWAY_ID)
+    authored.enable_component(plain_obj, doorway)
+    reference_key = authored.value_key(DOORWAY_ID, "Destination")
+    check(
+        reference_key in plain_obj.keys(),  # noqa: SIM118 -- bpy Object is not a dict
+        "enabling a component creates a key for its object slot",
+    )
+    check(plain_obj[reference_key] == "", "an object slot starts unassigned")
+    # The panel binds its picker with prop_search(obj, '["<key>"]', bpy.data, "objects"), and that
+    # RNA path is the half that can be wrong without anyone noticing: the key carries a ':' and a
+    # '/' inside the brackets, and a background run draws no panel to catch it. Resolving the path
+    # is not the widget, but it IS the binding — a path that does not resolve cannot draw.
+    try:
+        resolved = plain_obj.path_resolve(f'["{reference_key}"]')
+        check(resolved == "", "the picker's RNA path resolves to the stored name", repr(resolved))
+    # Broad on purpose: the check IS whether path_resolve raises, so narrowing it would let
+    # the failure mode this exists to catch escape as a traceback instead of a failed check.
+    except Exception as error:
+        check(False, "the picker's RNA path resolves to the stored name", str(error))
+
+    export_scene(bpy.context.scene)
+    payload = payload_for(exported_entities()["Plain"], DOORWAY_ID)
+    check(
+        payload is not None and payload["Destination"]["Position"] == [0.0, 0.0, 0.0]
+        and payload["Destination"]["Scale"] == [0.0, 0.0, 0.0],
+        "an unassigned slot exports every leaf at its schema default, not a guessed pose",
+        str(payload),
+    )
+
+    plain_obj[reference_key] = "DoorTarget"
+    export_scene(bpy.context.scene)
+    payload = payload_for(exported_entities()["Plain"], DOORWAY_ID)
+    check(
+        payload["Destination"]["Position"] == [3.0, 2.0, 5.0],
+        "an assigned slot bakes the target's world position, rebased Z-up -> Y-up",
+        str(payload),
+    )
+    check(
+        abs(payload["Destination"]["Yaw"] - math.pi / 4) < 1e-5,
+        "and its yaw, as the atan2 the runtime reads a heading with",
+        str(payload),
+    )
+    # A Blender Z rotation of pi/4 is a contract rotation about +Y of the same angle: the basis
+    # change moves the axis and leaves the angle alone. Both halves are asserted because a
+    # quaternion converted with the wrong component ORDER (Blender is wxyz, the contract xyzw)
+    # produces a rotation that looks plausible and is wrong.
+    rotation = payload["Destination"]["Rotation"]
+    check(
+        abs(rotation[1] - math.sin(math.pi / 8)) < 1e-5
+        and abs(rotation[3] - math.cos(math.pi / 8)) < 1e-5
+        and abs(rotation[0]) < 1e-5 and abs(rotation[2]) < 1e-5,
+        "a rotation bakes about the contract's +Y, in xyzw order",
+        str(rotation),
+    )
+    check(
+        [round(v, 5) for v in payload["Destination"]["Scale"]] == [2.0, 4.0, 3.0],
+        "a non-uniform scale is PERMUTED by the basis change, not copied component-wise",
+        str(payload["Destination"]["Scale"]),
+    )
+    # The state the runtime tells "unassigned" apart by. An assigned slot always bakes a real
+    # scale; only an unbaked one is all zeros, which is what makes it a reliable sentinel where
+    # position (the world origin is a real place) is not.
+    check(
+        payload["Destination"]["Scale"] != [0.0, 0.0, 0.0],
+        "and an assigned slot therefore never exports the unassigned sentinel",
+    )
+
+    # A reference is baked at EXPORT, so moving the target is the whole edit — nothing in the
+    # panel mirrors the pose, and there is nothing to keep in sync.
+    bpy.data.objects["DoorTarget"].location = (1, -1, 0)
+    # matrix_world is evaluated, not stored: without this the bake reads the pose the object had
+    # before the move and the check passes on stale data. Blender's own UI does this between
+    # edits, which is why it is invisible until a script moves something and exports immediately.
+    bpy.context.view_layer.update()
+    export_scene(bpy.context.scene)
+    payload = payload_for(exported_entities()["Plain"], DOORWAY_ID)
+    check(
+        payload["Destination"]["Position"] == [1.0, 0.0, 1.0],
+        "moving the target is the edit — the pose is read at export, never mirrored",
+        str(payload),
+    )
+
+    # A renamed or deleted target must NOT export as the origin: the origin is a real place, and
+    # a silently-zeroed destination is indistinguishable from one somebody meant.
+    plain_obj[reference_key] = "NoSuchObject"
+    export_scene(bpy.context.scene)
+    payload = payload_for(exported_entities()["Plain"], DOORWAY_ID)
+    check(
+        payload["Destination"]["Position"] == [0.0, 0.0, 0.0],
+        "a dangling reference exports unauthored (and warns) rather than a made-up pose",
+        str(payload),
+    )
+
+    plain_obj[reference_key] = "Plain"
+    export_scene(bpy.context.scene)
+    payload = payload_for(exported_entities()["Plain"], DOORWAY_ID)
+    check(
+        payload["Destination"]["Position"] == [0.0, 0.0, 0.0],
+        "a self-reference carries no information and is refused the same way",
+        str(payload),
+    )
+
+    authored.disable_component(plain_obj, DOORWAY_ID)
+    check(
+        reference_key not in plain_obj.keys(),  # noqa: SIM118 -- bpy Object is not a dict
+        "removing the component removes its object slot too",
     )
 
     # -- entity-owned lights --------------------------------------------------------------

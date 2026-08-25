@@ -577,3 +577,206 @@ class TestRowPaths:
     def test_relative_to_strips_the_container(self):
         assert authoring.relative_to("Tables/0/Entries/1/Weight", "Tables/0/Entries/1") == "Weight"
         assert authoring.relative_to("Box/SizeX", "") == "Box/SizeX"
+
+
+#: A component authored the way ShiningPie's trigger volumes are: a pose reference beside a plain
+#: field. The reference declares only PART of the pose, plus a leaf no exporter knows how to bake,
+#: because both are the interesting cases — a record takes what it means and an exporter fills only
+#: what it recognises.
+TRIGGER_LIKE = json.dumps(
+    {
+        "version": 3,
+        "components": [
+            {
+                "id": "b6c7e010-577b-475c-ae94-7951b00f8558",
+                "type": "ShiningPie.Authoring.CameraTriggerMarker",
+                "displayName": "Camera trigger",
+                "fields": [
+                    {
+                        "name": "Framing",
+                        "type": "object",
+                        "authoredBy": "transform",
+                        "fields": [
+                            {"name": "Position", "type": "vector3"},
+                            {"name": "Yaw", "type": "float", "unit": "radians"},
+                            {"name": "Label", "type": "string", "default": ""},
+                        ],
+                    },
+                    {"name": "Fov", "type": "float", "default": 50},
+                ],
+            }
+        ],
+    }
+)
+
+
+def camera_trigger() -> authoring.AuthoredComponentSchema:
+    return authoring.read(TRIGGER_LIKE).components[0]
+
+
+class TestTransformReferences:
+    """The one ``authoredBy`` kind this host authors rather than merely reports."""
+
+    def test_a_pose_reference_is_a_host_ref_not_a_set_of_leaves(self):
+        # Same rule every host reference follows: the leaves are what the EXPORTER writes, so
+        # they must not also become editable fields — two ways to set one value is two values.
+        fields, hosts = authoring.flatten(camera_trigger())
+
+        assert [f.path for f in fields] == ["Fov"]
+        assert [(h.path, h.kind) for h in hosts] == [("Framing", authoring.HOST_TRANSFORM)]
+
+    def test_a_pose_reference_is_authorable_here_and_names_what_it_bakes(self):
+        # `bakes` IS the contract between the picker and the exporter: it says which parts of the
+        # pose this record asked for. Label is declared and is not a pose leaf, so it is left out
+        # rather than filled with something invented.
+        host = authoring.flatten(camera_trigger())[1][0]
+
+        assert host.is_authorable
+        assert host.bakes == ("Position", "Yaw")
+
+    def test_the_kinds_this_host_cannot_author_stay_unauthorable(self):
+        # Shapes, meshes, sprites, lights and assets are still baked by dedicated paths (or not at
+        # all here), and must keep reporting themselves as such — the panel says so out loud.
+        hosts = {h.path: h for h in authoring.flatten(creature())[1]}
+
+        assert not hosts["Shape"].is_authorable
+        assert not hosts["Extras"].is_authorable
+
+    def test_a_list_of_pose_references_is_not_authorable(self):
+        # A row editor over a pointer list would be a second, lying copy of the list itself — the
+        # same reason a collider list stays a reference. Guarded because `bakes` alone would
+        # otherwise make one look authorable.
+        document = json.dumps(
+            {
+                "version": 3,
+                "components": [
+                    {
+                        "id": "b6c7e010-577b-475c-ae94-7951b00f8559",
+                        "type": "Game.Waypoints",
+                        "fields": [
+                            {
+                                "name": "Points",
+                                "type": "array",
+                                "items": {
+                                    "name": "",
+                                    "type": "object",
+                                    "authoredBy": "transform",
+                                    "fields": [{"name": "Position", "type": "vector3"}],
+                                },
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+        host = authoring.flatten(
+            authoring.read(document).components[0])[1][0]
+
+        assert host.is_list
+        assert not host.is_authorable
+
+    def test_baked_leaves_re_nest_into_the_payload(self):
+        # What the exporter produces has to land under the reference's own object, exactly as a
+        # composed field would — the runtime deserializes one record either way and cannot tell
+        # that half of it came from an object slot.
+        payload = authoring.build_payload(
+            camera_trigger(),
+            {"Framing/Position": [1.0, 2.0, 3.0], "Framing/Yaw": 0.5, "Fov": 40.0},
+        )
+
+        assert payload["Framing"]["Position"] == [1.0, 2.0, 3.0]
+        assert payload["Framing"]["Yaw"] == 0.5
+        assert payload["Fov"] == 40.0
+
+    def test_an_unassigned_reference_leaves_the_records_own_defaults(self):
+        # An empty object slot bakes nothing, so the payload carries what the record declares.
+        # The RUNTIME decides whether that is acceptable — ShiningPie refuses an unset destination,
+        # because the world origin is a real place — and it can only do that if the export is
+        # honest about the field being unauthored rather than inventing a pose here.
+        payload = authoring.build_payload(camera_trigger(), {"Fov": 40.0})
+
+        assert payload["Framing"]["Position"] == [0.0, 0.0, 0.0]
+        assert payload["Framing"]["Yaw"] == 0.0
+
+    def test_a_reference_nested_in_a_composed_field_still_bakes(self):
+        # The regression. `path` is built by the same `prefix + name` recursion every composed
+        # field uses, so a reference inside one gets a MULTI-SEGMENT path. Re-deriving its leaves
+        # afterwards by matching that path against the component's top-level field names found
+        # nothing, and build_payload dropped the whole reference — baked pose and defaults alike,
+        # silently, which is worse than the unassigned case this design goes out of its way to
+        # make refusable. The engine permits the nesting (its generator reads `authoredBy` at
+        # every depth), so this was live rather than latent.
+        document = json.dumps(
+            {
+                "version": 3,
+                "components": [
+                    {
+                        "id": "b6c7e010-577b-475c-ae94-7951b00f855a",
+                        "type": "Game.Nested",
+                        "fields": [
+                            {
+                                "name": "Container",
+                                "type": "object",
+                                "fields": [
+                                    {
+                                        "name": "Destination",
+                                        "type": "object",
+                                        "authoredBy": "transform",
+                                        "fields": [{"name": "Position", "type": "vector3"}],
+                                    },
+                                    {"name": "Radius", "type": "float", "default": 2},
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+        component = authoring.read(document).components[0]
+
+        host = authoring.flatten(component)[1][0]
+        assert host.path == "Container/Destination"
+        assert host.is_authorable and host.bakes == ("Position",)
+
+        payload = authoring.build_payload(
+            component, {"Container/Destination/Position": [1.0, 2.0, 3.0]}
+        )
+        assert payload["Container"]["Destination"]["Position"] == [1.0, 2.0, 3.0]
+        assert payload["Container"]["Radius"] == 2.0
+
+    def test_a_nested_reference_nobody_assigned_still_carries_its_defaults(self):
+        # The other half: the dropped-entirely bug also robbed the runtime of the values its
+        # "refuse an unset destination" check reads. An unassigned nested slot must reach the wire
+        # at its schema defaults, exactly as a top-level one does.
+        document = json.dumps(
+            {
+                "version": 3,
+                "components": [
+                    {
+                        "id": "b6c7e010-577b-475c-ae94-7951b00f855b",
+                        "type": "Game.Nested",
+                        "fields": [
+                            {
+                                "name": "Container",
+                                "type": "object",
+                                "fields": [
+                                    {
+                                        "name": "Destination",
+                                        "type": "object",
+                                        "authoredBy": "transform",
+                                        "fields": [
+                                            {"name": "Position", "type": "vector3"},
+                                            {"name": "Scale", "type": "vector3"},
+                                        ],
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+        payload = authoring.build_payload(authoring.read(document).components[0], {})
+
+        assert payload["Container"]["Destination"]["Position"] == [0.0, 0.0, 0.0]
+        assert payload["Container"]["Destination"]["Scale"] == [0.0, 0.0, 0.0]

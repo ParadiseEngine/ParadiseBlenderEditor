@@ -27,12 +27,14 @@ The wire format, stated once (reference: ``AuthoredEntityCore.ValueOf``):
   row count is DATA and arrives from the caller -- see :func:`outline` and :func:`counts_of`.
   A numeric segment re-nests into a JSON array rather than an object, which is the only place
   the two halves of this module need to agree about a spelling.
-* Fields (or whole components) with ``authoredBy`` are host-object *references* that the Godot
-  host bakes into values at export. This host does not bake any of them yet; such fields are
-  skipped, which the reader treats as unauthored. :func:`flatten` reports them so the UI can
-  say so instead of drawing a control that exports nothing. An ``authoredBy`` LIST stays a
-  reference for the same reason: a row editor over a collider's shapes would be a second,
-  lying copy of the pointer list the entity already holds.
+* Fields (or whole components) with ``authoredBy`` are host-object *references*: authored by
+  pointing at one of the host's own objects, exported as the numbers baked out of it. This host
+  implements ONE kind, :data:`HOST_TRANSFORM` -- an object slot whose world pose is baked into
+  the reference's own leaves at export (see ``authored_components.bake_transform_refs``). Every
+  other kind is still reported and skipped, which the reader treats as unauthored;
+  :func:`flatten` surfaces them so the UI can say so instead of drawing a control that exports
+  nothing. An ``authoredBy`` LIST stays a reference regardless: a row editor over a collider's
+  shapes would be a second, lying copy of the pointer list the entity already holds.
 
 No ``bpy`` import: this module is pure data and is unit-tested standalone.
 """
@@ -107,6 +109,15 @@ TYPE_VECTOR2 = "vector2"
 TYPE_VECTOR3 = "vector3"
 TYPE_QUATERNION = "quaternion"
 TYPE_COLOR = "color"
+
+#: ``authoredBy`` kinds. The engine's closed set is shape/mesh/sprite/light/asset/transform
+#: (``Paradise.Authoring``'s ``AuthoredBySources``); this host implements exactly one of them.
+HOST_TRANSFORM = "transform"
+
+#: Pose leaves a ``transform`` reference can bake into, by NAME. A record declares whichever
+#: parts of the pose it means and an exporter fills those, ignoring the rest -- which is what
+#: keeps the host general: it never learns what a particular record means by a pose.
+TRANSFORM_FIELDS = ("Position", "Rotation", "Yaw", "Scale")
 
 # AuthoredBySources. (v1 spelled this kind "nativeShape" and it was normalized on read; the v3
 # floor makes such a document unreadable, so the alias is gone rather than dead.)
@@ -362,13 +373,42 @@ class FlatField:
 
 @dataclass
 class HostRef:
-    """A field this host cannot author yet: a reference to a host object (a shape, an asset,
-    a node) that the Godot host bakes into values at export. Reported so the UI can say what
-    is missing and why, instead of silently exporting a component with holes."""
+    """A field authored by REFERENCING a host object rather than by typing its numbers.
+
+    ``kind`` names what the object IS (see ``HOST_TRANSFORM`` and the engine's
+    ``AuthoredBySources``). Whether THIS host can author one depends on the kind:
+    :data:`HOST_TRANSFORM` is authorable here -- an object slot, baked at export -- and every
+    other kind is still reported so the UI can say what is missing and why, instead of silently
+    exporting a component with holes.
+
+    ``leaves`` is the field schemas the reference fills, for an authorable kind: the record
+    declares which parts of the pose it means, and that list IS the contract between the picker
+    and the exporter.
+
+    The SCHEMAS travel, not their names, and that is load-bearing. They are captured during the
+    walk, where the parent field is in hand — the alternative was re-deriving them afterwards by
+    matching the ref's path against the component's fields, which worked only for a top-level
+    reference: ``path`` is built by the same ``prefix + name`` recursion every composed field
+    uses, so a reference nested inside one (``Container/Destination``) matched no top-level name
+    and its leaves came back EMPTY. The pose baked correctly and was then dropped from the payload
+    entirely, with no warning on either side. A second traversal that has to stay in step with the
+    first is the bug; not having one is the fix.
+    """
 
     path: str
     kind: str
     is_list: bool = False
+    leaves: tuple[AuthoredFieldSchema, ...] = ()
+
+    @property
+    def bakes(self) -> tuple[str, ...]:
+        """The leaf NAMES, for a caller that only needs to know which parts of the pose to fill."""
+        return tuple(leaf.name for leaf in self.leaves)
+
+    @property
+    def is_authorable(self) -> bool:
+        """Whether this host can actually author the reference, rather than only report it."""
+        return self.kind == HOST_TRANSFORM and not self.is_list and bool(self.leaves)
 
 
 @dataclass
@@ -497,7 +537,14 @@ def _walk_field(
         return
 
     if field.authored_by is not None:
-        plan.hosts.append(HostRef(path=path, kind=field.authored_by))
+        # The leaves are what an exporter fills, so they travel with the reference — captured HERE,
+        # where the parent field is in hand and the path is already correct at any depth. Only the
+        # names the engine knows how to bake are kept: a record is free to carry others, and a host
+        # that tried to fill those would be inventing meaning for them.
+        leaves = tuple(
+            child for child in (field.fields or []) if child.name in TRANSFORM_FIELDS
+        )
+        plan.hosts.append(HostRef(path=path, kind=field.authored_by, leaves=leaves))
         return
 
     if field.fields:
@@ -729,9 +776,17 @@ def build_payload(
     """The component's exported ``Data`` payload, from a flat ``{path: value}`` mapping.
 
     Every plain field is written at its schema type, defaults filling anything ``values`` does
-    not carry -- see the module docstring for the wire rules. Host references are skipped: an
-    absent key is "unauthored" to the reader, which is the truthful description of a bake this
-    host does not perform.
+    not carry -- see the module docstring for the wire rules.
+
+    An AUTHORABLE host reference (:data:`HOST_TRANSFORM`) contributes its declared leaves, so a
+    baked pose lands under the reference's own object exactly as a composed field would: the
+    runtime deserializes one record either way and cannot tell that half of it came from an
+    object slot. Its leaves take the record's own defaults when the caller baked nothing, which
+    is what an unassigned object slot means -- and leaves the RUNTIME free to refuse that, which
+    it can only do if the export is honest rather than inventing a pose.
+
+    Every other host reference is skipped: an absent key is "unauthored" to the reader, which is
+    the truthful description of a bake this host does not perform.
 
     ``counts`` is the exact inverse of :func:`counts_of`, and the ``None`` case is meaningful
     rather than merely a default: it says the caller holds no list data AT ALL -- an entity
@@ -751,7 +806,36 @@ def build_payload(
                 _write_path(payload, item.path, [])
             continue
         _write_path(payload, item.path, _wire_value(item, values.get(item.path, item.default)))
+
+    # Authorable references, after the plain fields. Their leaves are not in `plan.sequence` --
+    # `_walk_field` stops at a host reference by design, so nothing can edit them as fields -- so
+    # they are written from the schemas the ref CARRIES, which are correct at any nesting depth.
+    for host in plan.hosts:
+        if not host.is_authorable:
+            continue
+        for leaf in host.leaves:
+            path = f"{host.path}/{leaf.name}"
+            _write_path(payload, path, _wire_value(
+                _leaf_field(path, leaf), values.get(path, default_of(leaf))))
     return payload
+
+
+def _leaf_field(path: str, leaf: AuthoredFieldSchema) -> FlatField:
+    """A baked leaf as the flat field ``_wire_value`` expects. Built here rather than during the
+    walk because these deliberately never enter it — see :func:`build_payload`."""
+    return FlatField(
+        path=path,
+        type=leaf.type,
+        unit=leaf.unit,
+        doc=leaf.doc,
+        minimum=leaf.minimum,
+        maximum=leaf.maximum,
+        values=leaf.values,
+        visible_when=leaf.visible_when,
+        default=default_of(leaf),
+        has_default=leaf.has_default,
+        asset_kinds=leaf.asset_kinds,
+    )
 
 
 def value_at(payload: Any, path: str, fallback: Any = None) -> Any:

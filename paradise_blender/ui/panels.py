@@ -562,7 +562,14 @@ class PARADISE_PT_entity_components(_ParadisePanel, Panel):
         remove.component = component.id
 
         fields, hosts = contract_authoring.flatten(component)
-        missing = [f for f in fields if authored.value_key(component.id, f.path) not in obj]
+        # Authorable host references have a stored key too (the referenced object's name), so a
+        # component that gained one needs the same sync click a new field does — otherwise the
+        # picker below has nothing to bind to and simply does not appear.
+        missing = [
+            item.path
+            for item in [*fields, *[h for h in hosts if h.is_authorable]]
+            if authored.value_key(component.id, item.path) not in obj
+        ]
         if missing:
             # The schema grew since this component was enabled. Draw() may not write ID data,
             # so the fields are created by an operator click rather than silently here.
@@ -592,6 +599,14 @@ class PARADISE_PT_entity_components(_ParadisePanel, Panel):
                 column.prop(obj, f'["{key}"]', text=field.path)
 
         for host in hosts:
+            key = authored.value_key(component.id, host.path)
+            if host.is_authorable and key in obj:
+                # An OBJECT SLOT, not a text field. You point at the empty and move it with
+                # Blender's own gizmo; the exporter bakes where it ended up. Nothing is mirrored
+                # into this panel, because the reference IS the authoring surface — a second copy
+                # of the numbers here would be a copy that can disagree with the object.
+                box.prop_search(obj, f'["{key}"]', bpy.data, "objects", text=host.path)
+                continue
             row = box.row()
             row.enabled = False
             row.label(text=f"{host.path} — baked from {host.kind}; not authored in Blender yet",

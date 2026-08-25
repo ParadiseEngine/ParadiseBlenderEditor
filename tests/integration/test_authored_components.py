@@ -268,6 +268,15 @@ def main() -> int:
         "enabling a component creates a key for its object slot",
     )
     check(plain_obj[reference_key] == "", "an object slot starts unassigned")
+    # The panel binds its picker with prop_search(obj, '["<key>"]', bpy.data, "objects"), and that
+    # RNA path is the half that can be wrong without anyone noticing: the key carries a ':' and a
+    # '/' inside the brackets, and a background run draws no panel to catch it. Resolving the path
+    # is not the widget, but it IS the binding — a path that does not resolve cannot draw.
+    try:
+        resolved = plain_obj.path_resolve(f'["{reference_key}"]')
+        check(resolved == "", "the picker's RNA path resolves to the stored name", repr(resolved))
+    except Exception as error:  # noqa: BLE001 -- the check IS whether this raises
+        check(False, "the picker's RNA path resolves to the stored name", str(error))
 
     export_scene(bpy.context.scene)
     payload = payload_for(exported_entities()["Plain"], DOORWAY_ID)

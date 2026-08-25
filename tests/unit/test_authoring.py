@@ -697,3 +697,86 @@ class TestTransformReferences:
 
         assert payload["Framing"]["Position"] == [0.0, 0.0, 0.0]
         assert payload["Framing"]["Yaw"] == 0.0
+
+    def test_a_reference_nested_in_a_composed_field_still_bakes(self):
+        # The regression. `path` is built by the same `prefix + name` recursion every composed
+        # field uses, so a reference inside one gets a MULTI-SEGMENT path. Re-deriving its leaves
+        # afterwards by matching that path against the component's top-level field names found
+        # nothing, and build_payload dropped the whole reference — baked pose and defaults alike,
+        # silently, which is worse than the unassigned case this design goes out of its way to
+        # make refusable. The engine permits the nesting (its generator reads `authoredBy` at
+        # every depth), so this was live rather than latent.
+        document = json.dumps(
+            {
+                "version": 3,
+                "components": [
+                    {
+                        "id": "b6c7e010-577b-475c-ae94-7951b00f855a",
+                        "type": "Game.Nested",
+                        "fields": [
+                            {
+                                "name": "Container",
+                                "type": "object",
+                                "fields": [
+                                    {
+                                        "name": "Destination",
+                                        "type": "object",
+                                        "authoredBy": "transform",
+                                        "fields": [{"name": "Position", "type": "vector3"}],
+                                    },
+                                    {"name": "Radius", "type": "float", "default": 2},
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+        component = authoring.read(document).components[0]
+
+        host = authoring.flatten(component)[1][0]
+        assert host.path == "Container/Destination"
+        assert host.is_authorable and host.bakes == ("Position",)
+
+        payload = authoring.build_payload(
+            component, {"Container/Destination/Position": [1.0, 2.0, 3.0]}
+        )
+        assert payload["Container"]["Destination"]["Position"] == [1.0, 2.0, 3.0]
+        assert payload["Container"]["Radius"] == 2.0
+
+    def test_a_nested_reference_nobody_assigned_still_carries_its_defaults(self):
+        # The other half: the dropped-entirely bug also robbed the runtime of the values its
+        # "refuse an unset destination" check reads. An unassigned nested slot must reach the wire
+        # at its schema defaults, exactly as a top-level one does.
+        document = json.dumps(
+            {
+                "version": 3,
+                "components": [
+                    {
+                        "id": "b6c7e010-577b-475c-ae94-7951b00f855b",
+                        "type": "Game.Nested",
+                        "fields": [
+                            {
+                                "name": "Container",
+                                "type": "object",
+                                "fields": [
+                                    {
+                                        "name": "Destination",
+                                        "type": "object",
+                                        "authoredBy": "transform",
+                                        "fields": [
+                                            {"name": "Position", "type": "vector3"},
+                                            {"name": "Scale", "type": "vector3"},
+                                        ],
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+        payload = authoring.build_payload(authoring.read(document).components[0], {})
+
+        assert payload["Container"]["Destination"]["Position"] == [0.0, 0.0, 0.0]
+        assert payload["Container"]["Destination"]["Scale"] == [0.0, 0.0, 0.0]

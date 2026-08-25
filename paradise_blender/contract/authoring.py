@@ -381,20 +381,34 @@ class HostRef:
     other kind is still reported so the UI can say what is missing and why, instead of silently
     exporting a component with holes.
 
-    ``bakes`` is the leaf names the reference fills, for an authorable kind: the record declares
-    which parts of the pose it means, and that list IS the contract between the picker and the
-    exporter.
+    ``leaves`` is the field schemas the reference fills, for an authorable kind: the record
+    declares which parts of the pose it means, and that list IS the contract between the picker
+    and the exporter.
+
+    The SCHEMAS travel, not their names, and that is load-bearing. They are captured during the
+    walk, where the parent field is in hand — the alternative was re-deriving them afterwards by
+    matching the ref's path against the component's fields, which worked only for a top-level
+    reference: ``path`` is built by the same ``prefix + name`` recursion every composed field
+    uses, so a reference nested inside one (``Container/Destination``) matched no top-level name
+    and its leaves came back EMPTY. The pose baked correctly and was then dropped from the payload
+    entirely, with no warning on either side. A second traversal that has to stay in step with the
+    first is the bug; not having one is the fix.
     """
 
     path: str
     kind: str
     is_list: bool = False
-    bakes: tuple[str, ...] = ()
+    leaves: tuple[AuthoredFieldSchema, ...] = ()
+
+    @property
+    def bakes(self) -> tuple[str, ...]:
+        """The leaf NAMES, for a caller that only needs to know which parts of the pose to fill."""
+        return tuple(leaf.name for leaf in self.leaves)
 
     @property
     def is_authorable(self) -> bool:
         """Whether this host can actually author the reference, rather than only report it."""
-        return self.kind == HOST_TRANSFORM and not self.is_list and bool(self.bakes)
+        return self.kind == HOST_TRANSFORM and not self.is_list and bool(self.leaves)
 
 
 @dataclass
@@ -523,15 +537,14 @@ def _walk_field(
         return
 
     if field.authored_by is not None:
-        # The leaves are what an exporter fills, so they travel with the reference. Only the
-        # names the engine knows how to bake are kept: a record is free to carry others, and a
-        # host that tried to fill those would be inventing meaning for them.
-        bakes = tuple(
-            child.name
-            for child in (field.fields or [])
-            if child.name in TRANSFORM_FIELDS
+        # The leaves are what an exporter fills, so they travel with the reference — captured HERE,
+        # where the parent field is in hand and the path is already correct at any depth. Only the
+        # names the engine knows how to bake are kept: a record is free to carry others, and a host
+        # that tried to fill those would be inventing meaning for them.
+        leaves = tuple(
+            child for child in (field.fields or []) if child.name in TRANSFORM_FIELDS
         )
-        plan.hosts.append(HostRef(path=path, kind=field.authored_by, bakes=bakes))
+        plan.hosts.append(HostRef(path=path, kind=field.authored_by, leaves=leaves))
         return
 
     if field.fields:
@@ -796,28 +809,15 @@ def build_payload(
 
     # Authorable references, after the plain fields. Their leaves are not in `plan.sequence` --
     # `_walk_field` stops at a host reference by design, so nothing can edit them as fields -- so
-    # they are written from the schema here, where "the exporter fills these" is the only rule
-    # that applies.
+    # they are written from the schemas the ref CARRIES, which are correct at any nesting depth.
     for host in plan.hosts:
         if not host.is_authorable:
             continue
-        for leaf in _leaves_of(component, host.path):
+        for leaf in host.leaves:
             path = f"{host.path}/{leaf.name}"
             _write_path(payload, path, _wire_value(
                 _leaf_field(path, leaf), values.get(path, default_of(leaf))))
     return payload
-
-
-def _leaves_of(
-    component: AuthoredComponentSchema, path: str
-) -> list[AuthoredFieldSchema]:
-    """The declared children of the composed field at ``path``. Only ever one segment deep: a
-    host reference is a leaf of the editing tree, and nesting one inside another has no meaning
-    (an object has one pose)."""
-    for field in component.fields:
-        if field.name == path:
-            return [child for child in (field.fields or []) if child.name in TRANSFORM_FIELDS]
-    return []
 
 
 def _leaf_field(path: str, leaf: AuthoredFieldSchema) -> FlatField:

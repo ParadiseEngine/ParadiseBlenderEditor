@@ -207,11 +207,22 @@ Three rules, each of which is silent when broken:
   conversion for this exactly as it does for every other transform; a second copy of the basis
   change is how the two silently disagree about which way is up.
 
+A reference resolves against the FILE, not the scene (`bpy.data.objects`), so an object living
+only in another scene of the same .blend still bakes. That is deliberate — what a pose reference
+points at is a place, not something the document has to contain — but it does mean a target you
+cannot see in the current scene is not an error.
+
 An unassigned, dangling or self-referencing slot bakes **nothing**, so the payload carries the
 record's own defaults and the runtime sees the field unauthored. Warned, never guessed: the world
 origin is a real place, and a silently-zeroed destination is indistinguishable from one somebody
 meant. Whether that is acceptable is the *game's* decision — ShiningPie's trigger volumes refuse an
 unset destination at load — and it can only make it if the export is honest.
 
-`tests/unit/test_authoring.py::TestTransformReferences` pins the schema and payload halves;
-`tests/integration/test_authored_components.py` pins the bake, the rebase and the three refusals.
+A reference may be **nested inside an ordinary composed field** — the engine reads `authoredBy` at
+every depth — so its path is multi-segment (`Container/Destination`). The leaf schemas therefore
+travel ON the `HostRef`, captured during the walk; re-deriving them afterwards from the path is
+what dropped a nested reference's whole payload once.
+
+`tests/unit/test_authoring.py::TestTransformReferences` pins the schema and payload halves,
+nesting included; `tests/integration/test_authored_components.py` pins the bake, the rebase and
+the three refusals.

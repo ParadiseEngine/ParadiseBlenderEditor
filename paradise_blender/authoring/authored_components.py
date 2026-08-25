@@ -294,6 +294,19 @@ def enable_component(obj: bpy.types.Object, component: authoring.AuthoredCompone
         if not host.is_authorable:
             continue
         key = value_key(component.id, host.path)
+        # The same guard the field loop above applies, and for the same reason: an over-long
+        # property name raises out of Blender saying only that a name was too long. Unguarded,
+        # this was the one ID-property write in the addon that could throw instead of warn — out of
+        # the Add-component button or the sync click, with nothing naming the field. A reference's
+        # path is as capable of being long as a field's (a nested one carries its parent's name
+        # too), so it needs the same treatment.
+        if len(key) > MAX_KEY_LENGTH:
+            log.warn(
+                f"'{component.display_name}.{host.path}' does not fit Blender's "
+                f"{MAX_KEY_LENGTH}-character property name limit ({len(key)} used). "
+                "It is NOT authorable; shorten the field name."
+            )
+            continue
         if key not in obj:
             obj[key] = ""
 

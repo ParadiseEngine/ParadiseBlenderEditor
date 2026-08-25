@@ -31,8 +31,6 @@ and braced spellings throw on read -- so these strings go onto the wire unchange
 
 from __future__ import annotations
 
-import functools
-
 __all__ = [
     "AGENT",
     "AUDIO_EMITTER",

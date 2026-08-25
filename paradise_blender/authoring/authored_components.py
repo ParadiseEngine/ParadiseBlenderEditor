@@ -35,10 +35,11 @@ from bpy.types import Operator
 
 from .. import log
 from ..contract import authoring, component_ids
+
 # Both live in the contract layer now (component_ids has to read the schema during
 # export, and contract/ may not import anything that imports bpy). Re-exported so
 # every caller of authored_components keeps its spelling.
-from ..contract.authoring import schema_for_data_dir, schema_load_error  # noqa: F401
+from ..contract.authoring import schema_for_data_dir, schema_load_error
 from ..prefs import resolve_blender_data_dir
 
 __all__ = [

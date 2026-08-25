@@ -41,14 +41,14 @@ No ``bpy`` import: this module is pure data and is unit-tested standalone.
 
 from __future__ import annotations
 
-from .. import log
-
 import json
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from typing import Any
+
+from .. import log
 
 __all__ = [
     "COUNT_SUFFIX",
@@ -73,13 +73,13 @@ __all__ = [
     "merge",
     "outline",
     "read",
-    "schema_for_data_dir",
-    "schema_load_error",
     "relative_to",
     "removal_mapping",
     "renumber",
     "row_container_of",
     "row_index_of",
+    "schema_for_data_dir",
+    "schema_load_error",
     "schema_path",
     "schema_stamp",
     "swap_mapping",

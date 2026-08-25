@@ -23,9 +23,9 @@ import os
 import bpy
 
 from .. import log
-from ..contract import component_ids
 from ..authoring import entity as authoring
 from ..authoring.guid import ensure_unique_guids
+from ..contract import component_ids
 from ..contract.schema import LevelData
 from ..contract.writer import write_json_document
 from ..paths import ExportPaths

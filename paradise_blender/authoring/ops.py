@@ -99,14 +99,9 @@ class PARADISE_OT_assign_colliders(Operator):
     bl_label = "Assign Colliders To Entity"
     bl_options = {"REGISTER", "UNDO"}
 
-    slot: bpy.props.EnumProperty(  # type: ignore[valid-type]
-        name="Slot",
-        items=[
-            ("PHYSICS", "Physics", "Solid collision shapes"),
-            ("INTERACTION", "Interaction", "Interaction/sensor volumes"),
-        ],
-        default="PHYSICS",
-    )
+    #: Which component field the references fill: ``<component-id>/<field-path>``. Every host
+    #: reference lives in one store and is told apart by this.
+    key: bpy.props.StringProperty(default="")  # type: ignore[valid-type]
 
     @classmethod
     def poll(cls, context) -> bool:
@@ -114,13 +109,8 @@ class PARADISE_OT_assign_colliders(Operator):
 
     def execute(self, context):
         entity = context.active_object
-        collection = (
-            entity.paradise.physics_colliders
-            if self.slot == "PHYSICS"
-            else entity.paradise.interaction_colliders
-        )
-
-        existing = {item.target for item in collection if item.target}
+        collection = entity.paradise.host_refs
+        existing = {item.target for item in collection if item.target and item.key == self.key}
         added = 0
         skipped_non_colliders = 0
 
@@ -132,7 +122,11 @@ class PARADISE_OT_assign_colliders(Operator):
                 # so require the mark rather than guessing Box.
                 skipped_non_colliders += 1
                 continue
-            collection.add().target = obj
+            entry = collection.add()
+            entry.target = obj
+            # The store is shared by every component's host fields, so a row has to say which field
+            # it fills or nothing can tell them apart.
+            entry.key = self.key
             added += 1
 
         if skipped_non_colliders:
@@ -152,7 +146,7 @@ class PARADISE_OT_remove_collider(Operator):
     bl_label = "Remove Collider"
     bl_options = {"REGISTER", "UNDO"}
 
-    slot: bpy.props.StringProperty(default="PHYSICS")  # type: ignore[valid-type]
+    key: bpy.props.StringProperty(default="")  # type: ignore[valid-type]
     index: bpy.props.IntProperty(default=-1)  # type: ignore[valid-type]
 
     @classmethod
@@ -160,10 +154,9 @@ class PARADISE_OT_remove_collider(Operator):
         return bool(context.active_object and is_entity(context.active_object))
 
     def execute(self, context):
-        props = context.active_object.paradise
-        collection = (
-            props.physics_colliders if self.slot == "PHYSICS" else props.interaction_colliders
-        )
+        collection = context.active_object.paradise.host_refs
+        # ABSOLUTE within its own store, which is what host_entries hands out — so removing from a
+        # filtered view still takes the row the user pointed at.
         if 0 <= self.index < len(collection):
             collection.remove(self.index)
         return {"FINISHED"}

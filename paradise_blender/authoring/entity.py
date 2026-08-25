@@ -41,7 +41,7 @@ from bpy.props import (
 from bpy.types import Object, PropertyGroup
 
 __all__ = [
-    "ColliderReference",
+    "HostReference",
     "ParadiseEntityProperties",
     "classes",
     "entity_objects",
@@ -49,18 +49,37 @@ __all__ = [
 ]
 
 
-class ColliderReference(PropertyGroup):
-    """One entry in an entity's physics or interaction collider list.
+class HostReference(PropertyGroup):
+    """One object reference held for an arbitrary authored component's host field.
 
-    Godot stores these as ``NodePath`` arrays into the scene tree. Blender has no node paths,
-    so this holds a direct object pointer -- which is strictly better: it survives renames and
-    Blender maintains the reference itself.
+    Plain authored values are stored as
+    ID-properties, keyed by component id and field path, so ANY component -- the engine's or a
+    game's -- gets storage for free. Object references cannot be: Blender ID-properties hold no
+    pointers, so a reference needs a REGISTERED property, and registered properties are declared
+    in Python at addon-registration time when no project schema has been loaded yet.
+
+    That asymmetry is what made host references an engine-component privilege: two collections were
+    declared by hand and mapped to two known ids, so a game component declaring ``authoredBy: shape``
+    was detected off the schema and then had nowhere to put a pointer -- it drew as "not authorable
+    in Blender yet". Those two collections are gone; a .blend authored before this re-assigns its
+    colliders through the same panel, which now serves every component the same way.
+
+    ONE keyed collection closes that without knowing any component in advance: the key is
+    ``<component-id>/<field-path>``, so every host field of every component shares one registered
+    property and is told apart by what it says about itself. Nothing here needs the schema at
+    registration time, which is the constraint that ruled out registering a collection per field.
     """
+
+    key: StringProperty(  # type: ignore[valid-type]
+        name="Field",
+        description="Which component field this reference fills: <component-id>/<field-path>",
+        default="",
+    )
 
     target: PointerProperty(  # type: ignore[valid-type]
         type=Object,
-        name="Collider",
-        description="Object whose shape and transform define this collider",
+        name="Object",
+        description="Object whose shape and transform fill this field",
     )
 
 
@@ -84,10 +103,9 @@ class ParadiseEntityProperties(PropertyGroup):
         default="",
     )
 
-    physics_colliders: CollectionProperty(type=ColliderReference)  # type: ignore[valid-type]
-    physics_colliders_index: IntProperty(default=0)  # type: ignore[valid-type]
-    interaction_colliders: CollectionProperty(type=ColliderReference)  # type: ignore[valid-type]
-    interaction_colliders_index: IntProperty(default=0)  # type: ignore[valid-type]
+    #: EVERY host reference on this object, for every component -- see HostReference. One store,
+    #: because two hand-declared ones were what made object references an engine privilege.
+    host_refs: CollectionProperty(type=HostReference)  # type: ignore[valid-type]
 
     entity_guid: StringProperty(  # type: ignore[valid-type]
         name="Entity GUID",
@@ -119,8 +137,8 @@ def entity_objects(scene: bpy.types.Scene) -> list[Object]:
     return sorted((obj for obj in scene.objects if is_entity(obj)), key=lambda o: o.name)
 
 
-#: Registered in order; ColliderReference must precede the group that points at it.
-classes = (ColliderReference, ParadiseEntityProperties)
+#: Registered in order; HostReference must precede the group that points at it.
+classes = (HostReference, ParadiseEntityProperties)
 
 
 def register_pointers() -> None:

@@ -30,6 +30,8 @@ import base64
 import math
 import uuid
 
+from dataclasses import dataclass
+
 import bpy
 from bpy.types import Operator
 
@@ -49,7 +51,8 @@ __all__ = [
     "classes",
     "enabled_component_ids",
     "has_component",
-    "host_list_collection",
+    "host_entries",
+    "host_ref_key",
     "host_list_field",
     "is_host_list",
     "is_present",
@@ -151,21 +154,6 @@ def stored_value(obj: bpy.types.Object, component_id: str, path: str, default=No
 #: be a second copy of a fact the document states. Anything the schema can say, let it say.
 HOST_DERIVED_IDS = frozenset({component_ids.RENDERABLE})
 
-#: Which of ``obj.paradise``'s pointer collections backs a host-list component.
-#:
-#: Membership here is NOT how a host list is recognised — :func:`host_list_field` reads that off
-#: the schema (an array whose ``items.authoredBy`` names a host object, which is how collider
-#: declares its shapes). This map answers only the part no schema can: which BLENDER collection
-#: holds them, ID properties being unable to carry object references.
-#:
-#: Interactable has no schema signal at all — no array, no ``authoredBy`` — and is pure Blender
-#: policy, which is why detection falls back to this map's keys.
-HOST_LIST_COLLECTIONS = {
-    component_ids.COLLIDER: "physics_colliders",
-    component_ids.INTERACTABLE: "interaction_colliders",
-}
-
-
 def host_list_field(component: authoring.AuthoredComponentSchema):
     """The schema field that MAKES this component a host list — an array whose items are authored
     by pointing at a host object — or None.
@@ -180,8 +168,12 @@ def host_list_field(component: authoring.AuthoredComponentSchema):
 
 
 def is_host_list(component: authoring.AuthoredComponentSchema) -> bool:
-    """Whether this component's body is a host-object list rather than form fields."""
-    return component.id in HOST_LIST_COLLECTIONS or host_list_field(component) is not None
+    """Whether this component's body is a host-object list rather than form fields.
+
+    THE SCHEMA DECIDES, and nothing else does. This used to fall back to a hand-written map of two
+    engine ids, which is what made host references an engine privilege: a game component saying the
+    same thing about itself was detected and then had nowhere to store a pointer."""
+    return host_list_field(component) is not None
 
 
 def is_authorable(component: authoring.AuthoredComponentSchema) -> bool:
@@ -193,13 +185,58 @@ def is_authorable(component: authoring.AuthoredComponentSchema) -> bool:
     return component.authored_by is None and component.id not in HOST_DERIVED_IDS
 
 
-def host_list_collection(obj: bpy.types.Object, component_id: str):
-    """The pointer collection backing a host-list component, or None for every other id."""
-    attribute = HOST_LIST_COLLECTIONS.get(component_id)
-    if attribute is None:
-        return None
+def host_ref_key(component: authoring.AuthoredComponentSchema) -> str:
+    """The key a component's host references are stored under: ``<component-id>/<field-path>``.
+
+    Per FIELD, not per component, so a component declaring two host lists keeps them apart —
+    which nothing declares today and which costs nothing to allow."""
+    field = host_list_field(component)
+    return f"{component.id}/{field.name if field is not None else ''}"
+
+
+@dataclass(frozen=True)
+class HostEntry:
+    """One object a component references, and enough to remove it again.
+
+    ``key`` says which component field it fills, so the remove operator reaches the right row of
+    the one store every host reference lives in."""
+
+    target: object
+    index: int
+    key: str = ""
+
+
+def host_entries(
+    obj: bpy.types.Object, component: authoring.AuthoredComponentSchema
+) -> list[HostEntry]:
+    """Every object this entity references for a host-list component, from whichever store holds
+    them.
+
+    ONE store for every component, filtered to this one's field. Indices are ABSOLUTE within it, so
+    a filtered view still removes the row the panel pointed at."""
     props = getattr(obj, "paradise", None)
-    return getattr(props, attribute, None) if props is not None else None
+    if props is None:
+        return []
+
+    key = host_ref_key(component)
+    return [
+        HostEntry(target=item.target, index=index, key=key)
+        for index, item in enumerate(getattr(props, "host_refs", []) or [])
+        if item.key == key
+    ]
+
+
+
+def collider_entries(obj: bpy.types.Object, data_dir: str) -> list[HostEntry]:
+    """The objects this entity references as its COLLIDERS.
+
+    A named shortcut for the one component two other subsystems ask about by name -- the exporter,
+    which derives a static rigidbody from having any, and the navmesh bake, which walks them as
+    geometry. Everything else reaches host references through :func:`host_entries` without naming a
+    component at all; these two genuinely mean colliders and nothing else.
+    """
+    component = component_by_id(schema_for_data_dir(data_dir), component_ids.COLLIDER)
+    return host_entries(obj, component) if component is not None else []
 
 
 def is_present(obj: bpy.types.Object, component: authoring.AuthoredComponentSchema) -> bool:
@@ -209,8 +246,7 @@ def is_present(obj: bpy.types.Object, component: authoring.AuthoredComponentSche
     ever touching the marker — and the export is driven by the lists either way."""
     if component.id in enabled_component_ids(obj):
         return True
-    collection = host_list_collection(obj, component.id)
-    return collection is not None and len(collection) > 0
+    return bool(host_entries(obj, component))
 
 
 def enable_component(obj: bpy.types.Object, component: authoring.AuthoredComponentSchema) -> None:
@@ -282,11 +318,16 @@ def disable_component(obj: bpy.types.Object, component_id: str) -> None:
     for key in [key for key in obj.keys() if key.startswith(prefix)]:  # noqa: SIM118 -- IDPropertyGroup supports `in` only via .keys()
         del obj[key]
 
-    # A host-list component's data is its collection; removing the component and leaving the
-    # references would keep exporting it, which makes "remove" a lie.
-    collection = host_list_collection(obj, component_id)
-    if collection is not None:
-        collection.clear()
+    # A host-list component's data is its object references; removing the component and leaving
+    # them would keep exporting it, which makes "remove" a lie. Matched by the key's component half
+    # so this needs no schema — disable is reachable for a component the schema no longer declares,
+    # which is exactly when its rows most need clearing.
+    props = getattr(obj, "paradise", None)
+    refs = getattr(props, "host_refs", None) if props is not None else None
+    if refs is not None:
+        prefix = f"{component_id}/"
+        for index in reversed([i for i, item in enumerate(refs) if item.key.startswith(prefix)]):
+            refs.remove(index)
 
 
 def values_for(obj: bpy.types.Object, component: authoring.AuthoredComponentSchema) -> dict:
@@ -488,8 +529,18 @@ def build_component_payloads(obj: bpy.types.Object, data_dir: str) -> list:
     for component in document.components:  # already type-ordered by merge()
         if component.id not in enabled:
             continue
+        if component.id == component_ids.COLLIDER:
+            # The one component still exported by a dedicated path, and not for storage reasons:
+            # a collider list also DERIVES a static rigidbody, which is a rule about physics rather
+            # than about payloads. See _build_components.
+            continue
         if is_host_list(component):
-            continue  # exported from the entity's collider lists, never from a payload
+            # Every other host list, the engine's and a game's alike, exports here from the objects
+            # it references -- with no Python that knows any component's name.
+            payload = _host_list_payload(obj, component)
+            if payload is not None:
+                pairs.append((component.id, component.type, payload))
+            continue
         if not is_authorable(component):
             log.warn(
                 f"'{obj.name}' authors '{component.id}', which is not exportable from this "
@@ -509,6 +560,30 @@ def build_component_payloads(obj: bpy.types.Object, data_dir: str) -> list:
                 "re-add it; if the schema is stale, rebuild the game project."
             )
     return pairs
+
+
+def _host_list_payload(
+    obj: bpy.types.Object, component: authoring.AuthoredComponentSchema
+) -> dict | None:
+    """A host-list component's payload: its plain fields, plus the shapes its references bake to.
+
+    The array is written under the field's own NAME, which is what the runtime deserializes it by
+    -- the same wire shape ``Collider`` has produced all along, reached generically.
+
+    Imported here rather than at module scope: this module is the authoring store, and the export
+    package imports it, so a top-level import would close the cycle.
+    """
+    from ..export.collider import build_colliders
+
+    field = host_list_field(component)
+    if field is None:
+        return None
+
+    payload = authoring.build_payload(component, values_for(obj, component))
+    payload[field.name] = [
+        shape.to_json() for shape in build_colliders(obj, host_entries(obj, component))
+    ]
+    return payload
 
 
 # --------------------------------------------------------------------------------------

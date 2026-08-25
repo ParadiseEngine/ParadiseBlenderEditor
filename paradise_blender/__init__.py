@@ -16,7 +16,7 @@ break:
 
 1. **Property-group classes before the pointers that reference them.** Blender resolves
    ``PointerProperty(type=X)`` at assignment time, so ``X`` must already be registered.
-2. **Nested groups before their containers** -- ``ColliderReference`` before the entity group
+2. **Nested groups before their containers** -- ``HostReference`` before the entity group
    that holds a ``CollectionProperty`` of it.
 3. **Handlers last, and removed first on unregister.** A handler that survives unregistration
    holds a reference to a class Blender has already torn down, and the resulting crash points

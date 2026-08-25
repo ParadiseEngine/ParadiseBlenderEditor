@@ -62,7 +62,12 @@ def check(condition: bool, description: str, detail: str = "") -> None:
 CREATURE_ID = "c4e8a1b2-9f60-4d33-8a17-6b2e50d9fc84"
 MARKER_ID = "2d7f36ae-51c8-4b90-8e42-9a0b7cd1e5f3"
 DOORWAY_ID = "7a1c9e04-3b52-4f18-9d6a-c084e2571b93"
-GAME_IDS = {CREATURE_ID, MARKER_ID, DOORWAY_ID}
+#: A game component whose BODY is object references, exactly as the engine's collider is. Before
+#: host storage became schema-driven this was detected and then had nowhere to put a pointer, so
+#: it drew as "not authorable in Blender yet" and exported nothing.
+BODY_ID = "7c4e0a19-3d55-4b8e-9a2c-6e8f1b4d0c23"
+
+GAME_IDS = {CREATURE_ID, MARKER_ID, DOORWAY_ID, BODY_ID}
 
 # A LAUNCHER's dump, which is the only kind of authoring schema this host reads now: the game's
 # own components AND the engine's, in one document. It used to be a game-only fixture, with the
@@ -98,6 +103,52 @@ SCHEMA = {
             "displayName": "Light",
             "authoredBy": "light",
             "fields": [{"name": "Energy", "type": "float", "default": 1}],
+        },
+        {
+            # The engine's own host list. Declared here because this fixture IS the whole document
+            # now -- the vendored engine schema was removed on purpose ("ONE DOCUMENT, AND IT IS
+            # THE GAME'S"), and the checks below ask for this component by id.
+            "id": component_ids.COLLIDER,
+            "type": "Paradise.Export.Data.ColliderComponentData",
+            "displayName": "Collider",
+            "fields": [
+                {
+                    "name": "Colliders",
+                    "type": "array",
+                    "items": {
+                        "name": "Colliders",
+                        "type": "object",
+                        "authoredBy": "shape",
+                        "fields": [
+                            {"name": "IsTrigger", "type": "bool"},
+                            {"name": "ShapeType", "type": "string"},
+                            {"name": "Size", "type": "vector3"},
+                        ],
+                    },
+                }
+            ],
+        },
+        {
+            "id": BODY_ID,
+            "type": "ShiningPie.Authoring.ActorBody",
+            "displayName": "Actor body",
+            "fields": [
+                {
+                    "name": "Shapes",
+                    "type": "array",
+                    "items": {
+                        "name": "Shapes",
+                        "type": "object",
+                        "authoredBy": "shape",
+                        "fields": [
+                            {"name": "IsTrigger", "type": "bool"},
+                            {"name": "ShapeType", "type": "string"},
+                            {"name": "Radius", "type": "float"},
+                            {"name": "Height", "type": "float"},
+                        ],
+                    },
+                }
+            ],
         },
         {
             "id": CREATURE_ID,
@@ -427,6 +478,82 @@ def main() -> int:
     )
     bpy.data.objects.remove(duplicate, do_unlink=True)
 
+    # -- a GAME component whose items are host-authored shapes ---------------------------
+    #
+    # The capability this file exists to pin: storage for object references follows from the
+    # SCHEMA (an array whose items say authoredBy) rather than from a hand-written map of the two
+    # ids the engine happened to ship. Nothing in the addon knows this component's name.
+    merged = authored.schema_for_data_dir(DATA_DIR)
+    body_component = authored.component_by_id(merged, BODY_ID)
+    check(body_component is not None, "the game's host-list component is read from the schema")
+    check(
+        authored.is_host_list(body_component),
+        "a game component whose items are host-authored is a host list",
+    )
+    check(
+        authored.host_ref_key(body_component) == f"{BODY_ID}/Shapes",
+        "its references are keyed by component id and field path",
+    )
+
+    bpy.ops.object.empty_add(type="PLAIN_AXES", location=(4, 0, 0))
+    actor = bpy.context.active_object
+    actor.name = "Actor"
+    actor.paradise.is_entity = True
+    authored.enable_component(actor, body_component)
+
+    bpy.ops.object.empty_add(type="SPHERE", location=(4, 0, 0.9))
+    body_shape = bpy.context.active_object
+    body_shape.name = "ActorCapsule"
+    body_shape.paradise_collider.is_collider = True
+    body_shape.paradise_collider.shape = "Capsule"
+    body_shape.paradise_collider.size_source = "EXPLICIT"
+    body_shape.paradise_collider.radius = 0.35
+    body_shape.paradise_collider.height = 1.8
+    body_shape.parent = actor
+
+    check(
+        not authored.host_entries(actor, body_component),
+        "no references before any object is assigned",
+    )
+
+    # Through the OPERATOR, which is what the panel's + button calls -- so this covers the key
+    # reaching the store, not just the store working when written by hand.
+    bpy.context.view_layer.objects.active = actor
+    body_shape.select_set(True)
+    bpy.ops.paradise.assign_colliders(key=authored.host_ref_key(body_component))
+    entries = authored.host_entries(actor, body_component)
+    check(
+        len(entries) == 1 and entries[0].target is body_shape,
+        "the operator stores the reference under the component's own key",
+    )
+    check(
+        all(item.key == authored.host_ref_key(body_component) for item in actor.paradise.host_refs),
+        "and every row in the shared store says which field it fills",
+    )
+
+    export_scene(bpy.context.scene)
+    body_payload = payload_for(exported_entities()["Actor"], BODY_ID)
+    check(
+        body_payload is not None and len(body_payload.get("Shapes", [])) == 1,
+        "the reference exports as a baked shape under the field's own name",
+        f"payload={body_payload}",
+    )
+    if body_payload and body_payload.get("Shapes"):
+        shape_json = body_payload["Shapes"][0]
+        check(
+            shape_json["ShapeType"] == "Capsule"
+            and abs(shape_json["Radius"] - 0.35) < 1e-5
+            and abs(shape_json["Height"] - 1.8) < 1e-5,
+            "and it is the capsule the author drew, baked to values",
+            f"shape={shape_json}",
+        )
+
+    bpy.ops.paradise.remove_collider(key=authored.host_ref_key(body_component), index=0)
+    check(
+        not authored.host_entries(actor, body_component),
+        "removing takes the row the panel pointed at",
+    )
+
     # -- host-list components: colliders live in the same panel now ----------------------
     merged = authored.schema_for_data_dir(DATA_DIR)
     collider_component = authored.component_by_id(merged, component_ids.COLLIDER)
@@ -456,7 +583,9 @@ def main() -> int:
     shape.paradise_collider.size_source = "EXPLICIT"
     shape.paradise_collider.size = (1.0, 1.0, 1.0)
     shape.parent = creature_obj
-    creature_obj.paradise.physics_colliders.add().target = shape
+    bpy.context.view_layer.objects.active = creature_obj
+    shape.select_set(True)
+    bpy.ops.paradise.assign_colliders(key=authored.host_ref_key(collider_component))
     export_scene(bpy.context.scene)
     creature = exported_entities()["Creature"]
     collider = payload_for(creature, component_ids.COLLIDER)
@@ -476,7 +605,7 @@ def main() -> int:
 
     authored.disable_component(creature_obj, component_ids.COLLIDER)
     check(
-        len(creature_obj.paradise.physics_colliders) == 0,
+        not authored.host_entries(creature_obj, collider_component),
         "removing the component clears the references too",
     )
     bpy.data.objects.remove(shape, do_unlink=True)

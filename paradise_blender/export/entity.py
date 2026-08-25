@@ -124,7 +124,10 @@ def _build_components(
             materials=materials.export_material_slots(obj),
         ))
 
-    physics = build_colliders(obj, props.physics_colliders)
+    # The collider component's own references, resolved off the SCHEMA rather than a collection
+    # named in Python. This is the last dedicated collider path, and it is not here for storage: a
+    # collider list also DERIVES a static rigidbody below, which is a rule about physics.
+    physics = build_colliders(obj, authored_components.collider_entries(obj, paths.data_dir))
     if physics:
         components.add_engine(component_ids.COLLIDER, ColliderComponentData(colliders=physics))
         # A derived body: a wall, a shelf, a parked car — static, no mass. An authored
@@ -137,13 +140,6 @@ def _build_components(
             linear_damping=0.0,
             layer_name="",  # the C# record's default; None would round-trip but diff noisily
         ))
-
-    # Interaction collider geometry is not forwarded (the contract's interactable component
-    # only carries a display name today); presence is enough to flag the component. Matches
-    # the Godot host, so both produce the same document for the same scene.
-    if build_colliders(obj, props.interaction_colliders):
-        components.add_engine(
-            component_ids.INTERACTABLE, EntityInteractableComponentData(display_name=obj.name))
 
     if obj.type == "LIGHT":
         # A lamp marked as an entity OWNS its light: it travels as Components.Light (the same

@@ -142,7 +142,7 @@ def bake_navmesh(
     axes) — what the viewport preview is built from.
     """
     try:
-        vertices, triangles = collect_walkable_geometry(scene)
+        vertices, triangles = collect_walkable_geometry(scene, paths.data_dir)
     except Exception as error:  # a bad mesh must not abort the scene export
         log.warn(f"NavMesh geometry collection failed: {error}")
         return None
@@ -221,6 +221,7 @@ def bake_navmesh(
 
 def collect_walkable_geometry(
     scene: bpy.types.Scene,
+    data_dir: str,
 ) -> tuple[list[float], list[int]]:
     """Triangulated world-space geometry of static, collidable entities, in contract axes.
 
@@ -239,7 +240,7 @@ def collect_walkable_geometry(
         # An agent stands ON the navmesh; baking its capsule would punch a hole where it spawns.
         if authored_components.has_component(obj, authoring_router.AGENT):
             continue
-        if not len(props.physics_colliders):
+        if not authored_components.collider_entries(obj, data_dir):
             continue
         # Dynamic bodies move; baking one freezes it into the walkable surface at its SPAWN --
         # the car would leave a permanent hole in the navmesh where it started. The Godot host
@@ -247,7 +248,7 @@ def collect_walkable_geometry(
         if authored_components.stored_value(obj, authoring_router.RIGIDBODY, "BodyType") == "Dynamic":
             continue
 
-        if not _append_colliders(obj, vertices, triangles) and obj.type == "MESH":
+        if not _append_colliders(obj, data_dir, vertices, triangles) and obj.type == "MESH":
             # No box collider could be emitted (non-box shapes, or dangling references):
             # the render mesh is the best remaining approximation of what the runtime blocks.
             _append_object(obj, depsgraph, vertices, triangles)
@@ -273,7 +274,7 @@ _BOX_TRIANGLES = (
 
 
 def _append_colliders(
-    obj: bpy.types.Object, vertices: list[float], triangles: list[int]
+    obj: bpy.types.Object, data_dir: str, vertices: list[float], triangles: list[int]
 ) -> bool:
     """Append world-space triangles for the entity's BOX colliders; True if any was emitted.
 
@@ -285,7 +286,7 @@ def _append_colliders(
     from ..contract.schema import PhysicsShapeType
 
     emitted = False
-    for reference in obj.paradise.physics_colliders:
+    for reference in authored_components.collider_entries(obj, data_dir):
         target = reference.target
         if target is None or not is_collider(target):
             continue

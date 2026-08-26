@@ -17,7 +17,18 @@ __all__ = ["classes"]
 # How long to keep watching a launched runtime for an early death. It has to outlast a cold
 # `dotnet run`, whose build can take several seconds before the failure surfaces -- the whole
 # point is to catch build errors, and those are the slow ones.
-WATCH_SECONDS = 30.0
+#
+# THREE MINUTES, because thirty seconds was not enough and the way it failed was the worst
+# available: the watch expired, the operator reported success, and the build died a minute later
+# with nobody listening. "Play does nothing and says nothing" is a far harder thing to diagnose
+# than any error message, and it is what this constant produces whenever it is too small.
+#
+# The slow cases are not slow because they are big. A restore that cannot reach nuget.org spends
+# ~75 s in connection timeouts before failing (NU1900 is an error here -- both repos set
+# TreatWarningsAsErrors), and a cold build after a package bump is minutes. Waiting is free: the
+# timer polls a `poll()` and passes every other event straight through, so a long window costs
+# nothing and buys the error message.
+WATCH_SECONDS = 180.0
 POLL_INTERVAL = 0.4
 
 
@@ -59,7 +70,13 @@ class PARADISE_OT_play(Operator):
             )
             return {"CANCELLED"}
 
-        process = launch_runtime(["--scene", scene_json], self)
+        # IN THE PROJECT ROOT, not in whatever directory Blender happens to have.
+        #
+        # ``--scene`` is absolute, so the scene is always found; everything else a runtime reads
+        # is its own business and is conventionally relative to the directory holding ``data/``.
+        # That directory is exactly ``project_root`` -- the Blender analogue of Godot's ``res://``
+        # -- so it is what the child gets. See ``launch_runtime`` for the failure this prevents.
+        process = launch_runtime(["--scene", scene_json], self, cwd=paths.project_root)
         if process is None:
             return {"CANCELLED"}
 

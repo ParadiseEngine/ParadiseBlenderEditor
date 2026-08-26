@@ -79,7 +79,9 @@ def resolve_runtime_command(warn: bool = True) -> list[str] | None:
     return None
 
 
-def launch_runtime(arguments: list[str], operator=None) -> subprocess.Popen | None:
+def launch_runtime(
+    arguments: list[str], operator=None, cwd: str | None = None
+) -> subprocess.Popen | None:
     """Launch the runtime detached with the given arguments. Returns the process, or ``None``.
 
     Detached on purpose: the runtime is an interactive window with its own lifetime, and
@@ -89,6 +91,23 @@ def launch_runtime(arguments: list[str], operator=None) -> subprocess.Popen | No
     that dies immediately -- a build error, a missing asset -- is otherwise indistinguishable
     from one that launched fine, because its output went to :func:`log_path` and Blender only
     ever saw a successful ``fork``.
+
+    ``cwd`` is the directory to run IN, and passing it is not optional in practice. A runtime
+    resolves its own non-scene paths relative to the working directory -- ShiningPie's launcher
+    reads ``data/<game>/config.json`` and ``ui/GameShell.xaml`` that way, and says so when it
+    fails -- and a detached child inherits BLENDER's working directory, which is whatever the OS
+    handed it. Started from a terminal that is the project root and everything works; started
+    from Finder or the Dock it is ``/``, and the runtime dies looking for
+    ``/data/<game>/config.json``. The bug is invisible to whoever wrote the launcher and
+    reproduces only for whoever launched Blender the other way.
+
+    ONLY THE POSIX BRANCH REDIRECTS OUTPUT INTO :func:`log_path`, and that asymmetry is
+    long-standing rather than introduced here. The Windows branch passes ``creationflags`` and no
+    ``stdout``/``stderr``, so nothing writes the log -- which means :func:`first_error_line` has no
+    file to read and the operator falls through to reporting a path that does not exist. The
+    diagnosis this module performs is therefore POSIX-only in practice. Fixing it means opening
+    the log and handing the child its handles, which is a small change nobody here can test; it is
+    named rather than guessed at.
     """
     command = resolve_runtime_command()
     if command is None:
@@ -112,6 +131,7 @@ def launch_runtime(arguments: list[str], operator=None) -> subprocess.Popen | No
         if os.name == "nt":
             process = subprocess.Popen(  # argv is built from resolved paths
                 argv,
+                cwd=cwd,
                 creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
             )
         else:
@@ -120,6 +140,7 @@ def launch_runtime(arguments: list[str], operator=None) -> subprocess.Popen | No
             script = f'export PATH="{dotnet_dir}:$PATH"; exec {quoted} > {shlex.quote(log_path())} 2>&1'
             process = subprocess.Popen(
                 ["/bin/sh", "-c", script],
+                cwd=cwd,
                 start_new_session=True,
             )
     except OSError as error:
@@ -142,6 +163,14 @@ def first_error_line(path: str) -> str | None:
     Falls back to the *first* line rather than the last: a launcher that fails its own
     precondition check prints the cause first and a generic hint after it, so the tail is the
     least informative part. Anything that fails later, after real output, is caught by a marker.
+
+    <b>Build WARNINGS are skipped on that fallback, and skipping them is the whole point.</b> A
+    runtime that fails a precondition need not use any of the words in ``_FAILURE_MARKERS`` --
+    "Could not find a part of the path 'data/game/config.json'" contains none of them -- so the
+    fallback is what actually reports most real failures. And the first line of a ``dotnet run``
+    log is almost never the program's: it is whatever MSBuild warned about, which is both
+    permanent and irrelevant. Reporting that back reads as the diagnosis and sends the reader off
+    to fix an SDK warning that was never going to stop anything.
     """
     try:
         with open(path, encoding="utf-8", errors="replace") as handle:
@@ -154,9 +183,33 @@ def first_error_line(path: str) -> str | None:
 
     match = next(
         (line for line in lines if any(m in line.lower() for m in _FAILURE_MARKERS)),
-        lines[0],
+        None,
     )
+    if match is None:
+        # Nothing named itself an error, so take the first line that is not build noise -- and
+        # only fall back to the true first line if the log is nothing BUT noise, where a wrong
+        # answer is better than no answer.
+        match = next((line for line in lines if not _is_build_noise(line)), lines[0])
     return match if len(match) <= 300 else match[:297] + "..."
+
+
+def _is_build_noise(line: str) -> bool:
+    """A compiler or SDK warning, which a failed RUN is never explained by.
+
+    Deliberately narrow: it matches the word "warning", not "did this line come from MSBuild".
+    A build that actually fails emits "error", which ``_FAILURE_MARKERS`` catches before this is
+    ever consulted -- including under ``TreatWarningsAsErrors``, where MSBuild prints
+    ``error NU1900: Warning As Error: ...`` and the marker scan wins on the word "error".
+
+    STRUCTURED, not a bare word search, and the distinction is what keeps a RUNTIME's own output
+    safe. Every compiler and SDK warning is printed as ``<origin>: warning <CODE>: <text>`` --
+    ``…Sdk.targets(308,5): warning NETSDK1206:``, ``A.csproj : warning NU1701:`` -- so the colon is
+    part of the shape rather than incidental to it. Matching the bare word "warning" would also
+    swallow a launcher's own fatal line if it happened to contain it ("…ignoring warning file…"),
+    which is precisely the sort of line this function exists to surface. Same convention
+    ``schema_build.failure_summary`` uses for the error side (``": error "``), for the same reason.
+    """
+    return ": warning " in line.lower()
 
 
 def _dotnet_run(project: str, warn: bool = True) -> list[str] | None:

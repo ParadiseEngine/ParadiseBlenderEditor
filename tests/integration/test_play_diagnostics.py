@@ -50,6 +50,38 @@ Unhandled exception. System.NullReferenceException: Object reference not set.
    at ShiningPie.Game.Tick()
 """
 
+#: The log a `dotnet run` actually produces, and the reason the fallback skips warnings.
+#:
+#: NETSDK1206 is permanent (Noesis.GUI declares win10-* RIDs), irrelevant to every failure, and
+#: FIRST -- so a fallback that took line 0 reported it as the diagnosis and sent the reader off to
+#: fix an SDK warning that was never going to stop anything. The real cause is two lines down and
+#: matches no failure marker, which is what puts it in the fallback's hands at all.
+WARNING_PREAMBLE_THEN_PRECONDITION = """\
+/usr/local/share/dotnet/sdk/10.0.203/Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.targets(308,5): \
+warning NETSDK1206: Found version-specific or distribution-specific runtime identifier(s): \
+win10-arm, win10-x64, win10-x86. Affected libraries: Noesis.GUI. \
+[/Users/x/ParadiseEngine/src/Paradise.Ui.Noesis/Paradise.Ui.Noesis.csproj]
+[ShiningPie] Could not find a part of the path '/data/shiningpie/config.json'.
+[ShiningPie] Working directory is '/'. Run from the repository root, or pass --scene/--config.
+"""
+
+#: A runtime's own fatal line that happens to contain the word "warning". It matches no failure
+#: marker, so the fallback decides -- and skipping it would hand the reader the NEXT line, which
+#: says less. This is why the noise check matches the MSBuild SHAPE (``": warning "``) rather than
+#: the bare word.
+RUNTIME_LINE_MENTIONING_WARNINGS = """\
+[ShiningPie] Refusing to start: config.json is unreadable, ignoring warning suppressions.
+[ShiningPie] Working directory is '/'.
+"""
+
+#: Nothing but noise. There is no good answer here, and the contract is that a bad one beats none:
+#: the caller reports the exit code plus whatever this returns, and a silent failure is the thing
+#: this whole extraction exists to prevent.
+ONLY_WARNINGS = """\
+/Users/x/A/A.csproj : warning NU1701: Package restored using .NETFramework.
+/Users/x/B/B.csproj : warning NETSDK1206: Found version-specific runtime identifier(s).
+"""
+
 
 def main() -> int:
     failures: list[str] = []
@@ -92,6 +124,35 @@ def main() -> int:
         extract(CRASH_AFTER_OUTPUT),
         lambda line: line is not None and line.startswith("Unhandled exception."),
         "the unhandled-exception line",
+    )
+
+    # THE REGRESSION. Both interesting lines are marker-free, so the marker scan declines and the
+    # fallback decides -- and the first line is a build warning. Reporting it is what this pins
+    # against: the fix is one branch, and without this case deleting that branch leaves the suite
+    # green.
+    check(
+        "a build-warning preamble does not become the diagnosis",
+        extract(WARNING_PREAMBLE_THEN_PRECONDITION),
+        lambda line: (
+            line == "[ShiningPie] Could not find a part of the path '/data/shiningpie/config.json'."
+        ),
+        "the missing-path line, not the NETSDK1206 warning",
+    )
+
+    # The skip is shaped, not lexical: a runtime line is kept even when it says "warning".
+    check(
+        "a runtime line mentioning warnings is not mistaken for build noise",
+        extract(RUNTIME_LINE_MENTIONING_WARNINGS),
+        lambda line: line is not None and line.startswith("[ShiningPie] Refusing to start"),
+        "the refusal line",
+    )
+
+    # And the degenerate case the skip must not turn into silence.
+    check(
+        "a log of nothing but warnings still yields its first line",
+        extract(ONLY_WARNINGS),
+        lambda line: line is not None and "NU1701" in line,
+        "the first warning rather than None",
     )
 
     check(

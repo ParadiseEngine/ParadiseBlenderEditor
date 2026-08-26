@@ -24,7 +24,6 @@ No ``bpy`` import: this module is pure data and is unit-tested standalone.
 
 from __future__ import annotations
 
-import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -115,29 +114,28 @@ def _matrix_json(m) -> list[float] | None:  # axes.Mat4 | None
 
 @dataclass
 class RenderableComponentData:
-    """Mesh reference and the material slots that index against it.
+    """A mesh reference, and nothing else.
 
     ``mesh`` is a GLB path relative to ``data/``. Textures inside the GLB must be KTX2 -- the
     engine reader rejects PNG/JPEG.
 
-    Contract rule the exporter must uphold: the GLB's primitive order equals ``materials`` slot
-    order, and a null slot means the GLB's own embedded material wins. ``materials`` lived on the
-    ENTITY until v4, which made that rule a statement about two fields nothing held together --
-    an entity could carry slots with no mesh to index them against.
+    The material slots are NOT here. They were, from v4, and they moved to
+    :class:`MaterialsComponentData` in v5: they are not geometry, and two objects sharing a GLB and
+    differing only in their slots are two drawable VARIANTS and one mesh. Two records asserting one
+    wire fact is an ambiguity a future exporter has no way to resolve.
+
+    This host no longer writes this component at all -- what an object draws is authored, not
+    derived from it having mesh data -- but the mirror is kept because the record still exists in
+    the contract and another host writes it.
     """
 
     mesh: str | None = None
     mesh_node: str | None = None
-    materials: list[str | None] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
-        return {
-            "Mesh": self.mesh,
-            "MeshNode": self.mesh_node,
-            # Declaration order matches the C# record: System.Text.Json writes properties in that
-            # order, and a Blender export has to stay diffable against a Godot one.
-            "Materials": list(self.materials),
-        }
+        # Declaration order matches the C# record: System.Text.Json writes properties in that
+        # order, and a Blender export has to stay diffable against a Godot one.
+        return {"Mesh": self.mesh, "MeshNode": self.mesh_node}
 
 
 @dataclass

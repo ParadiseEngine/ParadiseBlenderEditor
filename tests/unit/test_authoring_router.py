@@ -16,7 +16,6 @@ from paradise_blender.contract import (
     authoring,
     authoring_router,
     component_ids,
-    schema,
 )
 
 
@@ -134,5 +133,5 @@ class TestRefusals:
             assert authoring_router.normalize(component_id, original) is original
 
     def test_only_the_two_clamped_ids_are_routed(self):
-        assert authoring_router.ROUTED_IDS == frozenset(
-            {component_ids.AUDIO_EMITTER, component_ids.PARTICLE_EMITTER})
+        assert set(authoring_router.ROUTED_IDS) == {
+            component_ids.AUDIO_EMITTER, component_ids.PARTICLE_EMITTER}

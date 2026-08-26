@@ -57,7 +57,6 @@ from .. import log
 from ..authoring import authored_components
 from ..authoring import entity as authoring
 from ..contract import authoring_router, axes
-from ..contract.schema import LevelData
 from ..paths import ExportPaths
 from ..pipeline.cache import artifact_cache, digest
 
@@ -235,7 +234,6 @@ def collect_walkable_geometry(
     triangles: list[int] = []
 
     for obj in authoring.entity_objects(scene):
-        props = obj.paradise
         # An agent stands ON the navmesh; baking its capsule would punch a hole where it spawns.
         if authored_components.has_component(obj, authoring_router.AGENT):
             continue

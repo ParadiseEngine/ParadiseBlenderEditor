@@ -34,7 +34,6 @@ import bpy
 from bpy.props import (
     BoolProperty,
     CollectionProperty,
-    IntProperty,
     PointerProperty,
     StringProperty,
 )

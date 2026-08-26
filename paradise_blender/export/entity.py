@@ -99,8 +99,6 @@ def _build_derived(
     collider with Blender's own tools, which is exactly what "authored" means for geometry. They
     are derived here because the alternative is an object slot pointing at the object's own data.
     """
-    props = obj.paradise
-
     # NO RENDERABLE. It used to be derived here — "this object has mesh data, so it draws" — which
     # made drawing something an exporter inferred rather than something an author said, and left a
     # game with no way to distinguish a prop's mesh from a skinned actor's. Both are components an

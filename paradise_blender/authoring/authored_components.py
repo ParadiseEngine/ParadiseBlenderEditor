@@ -29,7 +29,6 @@ from __future__ import annotations
 import base64
 import math
 import uuid
-
 from dataclasses import dataclass
 
 import bpy
@@ -53,8 +52,8 @@ __all__ = [
     "enabled_component_ids",
     "has_component",
     "host_entries",
-    "host_ref_key",
     "host_list_field",
+    "host_ref_key",
     "is_host_list",
     "is_present",
     "key_token",
@@ -504,8 +503,8 @@ def bake_shape_refs(
     the record's own defaults -- which the runtime is free to refuse, and can only refuse if the
     export is honest rather than inventing a box.
     """
-    from ..export.collider import export_shape
     from ..authoring.collider import is_collider
+    from ..export.collider import export_shape
 
     for host in authoring.flatten(component)[1]:
         if not host.is_authorable or host.kind != authoring.HOST_SHAPE:

@@ -108,7 +108,8 @@ def build_scene() -> bpy.types.Object:
     # object the export had already dropped. An agent is the cheapest engine component with plain
     # fields, and this test is about the message stream rather than about what it carries.
     from paradise_blender.authoring import authored_components
-    from paradise_blender.contract import authoring as contract_authoring, component_ids
+    from paradise_blender.contract import authoring as contract_authoring
+    from paradise_blender.contract import component_ids
 
     for component in contract_authoring.schema_for_data_dir(DATA_DIR).components:
         if component.id == component_ids.AGENT:

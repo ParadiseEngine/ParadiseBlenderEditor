@@ -39,22 +39,23 @@ class TestRenderableComponentData:
         assert list(schema.RenderableComponentData().to_json()) == [
             "Mesh",
             "MeshNode",
-            "Materials",
         ]
 
     def test_slots_are_written_even_when_empty(self):
         """Empty, not absent. The engine's reader distinguishes "no overrides" from "key missing"
-        only if the key is always written."""
-        assert schema.RenderableComponentData().to_json()["Materials"] == []
+        only if the key is always written.
+
+        On MaterialsComponentData since v5 -- the slots left the renderable, because they are not
+        geometry."""
+        assert schema.MaterialsComponentData().to_json()["Slots"] == []
 
     def test_a_null_slot_survives(self):
         """A null slot MEANS something -- the GLB's own embedded material wins for that primitive
         -- so it cannot be compacted away. Slot order is the contract: dropping one shifts every
         override after it onto the wrong primitive."""
-        renderable = schema.RenderableComponentData(
-            mesh="Models/x.glb", materials=["materials/a.json", None, "materials/c.json"]
-        )
-        assert renderable.to_json()["Materials"] == ["materials/a.json", None, "materials/c.json"]
+        materials = schema.MaterialsComponentData(
+            slots=["materials/a.json", None, "materials/c.json"])
+        assert materials.to_json()["Slots"] == ["materials/a.json", None, "materials/c.json"]
 
 
 class TestPlacementComponents:

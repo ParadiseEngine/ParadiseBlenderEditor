@@ -72,7 +72,7 @@ Blender                                   runtime
 |---|---|---|
 | `hello` | `protocol`, `scene`, `dataDir` | on connect. `dataDir` lets the runtime resolve the mesh and material paths the payloads reference |
 | `scene/full` | `scene`: a complete `LevelData` | at handshake, and after any structural change |
-| `scene/patch` | `updated[]`, `added[]` (whole `LevelEntityData`), `removed[]` (GUIDs) | transform or property edits |
+| `scene/patch` | `updated[]`, `added[]` (whole objects — component arrays), `removed[]` (object names) | transform or property edits |
 | `asset/invalidate` | `fields[]`: data-relative contract paths | after a GLB or material is rewritten |
 | `bye` | — | preview stopped cleanly |
 

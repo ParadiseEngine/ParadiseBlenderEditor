@@ -57,7 +57,6 @@ from .. import log
 from ..authoring import authored_components
 from ..authoring import entity as authoring
 from ..contract import authoring_router, axes
-from ..contract.schema import LevelData
 from ..paths import ExportPaths
 from ..pipeline.cache import artifact_cache, digest
 
@@ -107,17 +106,16 @@ def bake_settings(scene: bpy.types.Scene) -> dict[str, float]:
 
 
 def export_navmesh(
-    scene: bpy.types.Scene,
-    scene_name: str,
-    paths: ExportPaths,
-    document: LevelData,
-    force: bool = False,
+    scene: bpy.types.Scene, scene_name: str, paths: ExportPaths, force: bool = False
 ) -> None:
-    """Bake and record the navmesh, or leave ``NavMeshFile`` null."""
-    if bake_navmesh(scene, scene_name, paths, force=force) is None:
-        return
+    """Bake the navmesh beside the scene document.
 
-    document.nav_mesh_file = paths.nav_mesh_file_field(scene_name)
+    Nothing records the result in the document any more: the ``NavMeshFile`` key went with the
+    rest of the document shell in schema v5, and it was a field stating what the filename already
+    says — the bake writes ``<scene>.navmesh.bin`` next to ``<scene>.json``, so a consumer that
+    can open one can find the other.
+    """
+    bake_navmesh(scene, scene_name, paths, force=force)
 
 
 def bake_navmesh(
@@ -142,7 +140,7 @@ def bake_navmesh(
     axes) — what the viewport preview is built from.
     """
     try:
-        vertices, triangles = collect_walkable_geometry(scene)
+        vertices, triangles = collect_walkable_geometry(scene, paths.data_dir)
     except Exception as error:  # a bad mesh must not abort the scene export
         log.warn(f"NavMesh geometry collection failed: {error}")
         return None
@@ -221,6 +219,7 @@ def bake_navmesh(
 
 def collect_walkable_geometry(
     scene: bpy.types.Scene,
+    data_dir: str,
 ) -> tuple[list[float], list[int]]:
     """Triangulated world-space geometry of static, collidable entities, in contract axes.
 
@@ -235,11 +234,14 @@ def collect_walkable_geometry(
     triangles: list[int] = []
 
     for obj in authoring.entity_objects(scene):
-        props = obj.paradise
         # An agent stands ON the navmesh; baking its capsule would punch a hole where it spawns.
         if authored_components.has_component(obj, authoring_router.AGENT):
             continue
-        if not len(props.physics_colliders):
+        # RESOLVED ONCE, and passed down. collider_entries reads the schema document to find the
+        # collider component before it can answer, so asking twice per object — the gate here and
+        # the walk in _append_colliders — did that lookup twice for every entity in the scene.
+        entries = authored_components.collider_entries(obj, data_dir)
+        if not entries:
             continue
         # Dynamic bodies move; baking one freezes it into the walkable surface at its SPAWN --
         # the car would leave a permanent hole in the navmesh where it started. The Godot host
@@ -247,7 +249,7 @@ def collect_walkable_geometry(
         if authored_components.stored_value(obj, authoring_router.RIGIDBODY, "BodyType") == "Dynamic":
             continue
 
-        if not _append_colliders(obj, vertices, triangles) and obj.type == "MESH":
+        if not _append_colliders(entries, vertices, triangles) and obj.type == "MESH":
             # No box collider could be emitted (non-box shapes, or dangling references):
             # the render mesh is the best remaining approximation of what the runtime blocks.
             _append_object(obj, depsgraph, vertices, triangles)
@@ -273,9 +275,12 @@ _BOX_TRIANGLES = (
 
 
 def _append_colliders(
-    obj: bpy.types.Object, vertices: list[float], triangles: list[int]
+    entries, vertices: list[float], triangles: list[int]
 ) -> bool:
     """Append world-space triangles for the entity's BOX colliders; True if any was emitted.
+
+    Takes the resolved references rather than the object: the caller has already asked which
+    colliders this entity has, and asking again would re-read the schema document per object.
 
     Triggers are not solid and are skipped, mirroring the runtime's obstacle collection. The
     collider object's own world matrix carries every inherited rotation and scale, so the
@@ -285,7 +290,7 @@ def _append_colliders(
     from ..contract.schema import PhysicsShapeType
 
     emitted = False
-    for reference in obj.paradise.physics_colliders:
+    for reference in entries:
         target = reference.target
         if target is None or not is_collider(target):
             continue

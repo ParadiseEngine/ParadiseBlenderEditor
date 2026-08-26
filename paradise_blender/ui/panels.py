@@ -607,10 +607,20 @@ class PARADISE_PT_entity_components(_ParadisePanel, Panel):
         for host in hosts:
             key = authored.value_key(component.id, host.path)
             if host.is_authorable and key in obj:
-                # An OBJECT SLOT, not a text field. You point at the empty and move it with
-                # Blender's own gizmo; the exporter bakes where it ended up. Nothing is mirrored
-                # into this panel, because the reference IS the authoring surface — a second copy
-                # of the numbers here would be a copy that can disagree with the object.
+                if host.kind == contract_authoring.HOST_ASSET:
+                    # A FILE, not an object: there is nothing in the scene to point at. Drawn as
+                    # the plain field it is — the extensions the schema declares are enforced at
+                    # export, where the path can be checked against what is actually on disk.
+                    label = host.path
+                    if host.asset_kinds:
+                        label = f"{host.path} ({', '.join(host.asset_kinds)})"
+                    box.prop(obj, f'["{key}"]', text=label)
+                    continue
+                # An OBJECT SLOT, not a text field. You point at the object and move it with
+                # Blender's own gizmo; the exporter bakes what the KIND says to take from it —
+                # where it stands, the collider drawn on it, its geometry, or its name. Nothing is
+                # mirrored into this panel, because the reference IS the authoring surface, and a
+                # second copy of the numbers here would be one that can disagree with the object.
                 box.prop_search(obj, f'["{key}"]', bpy.data, "objects", text=host.path)
                 continue
             row = box.row()
@@ -767,13 +777,6 @@ class PARADISE_PT_material(Panel):
             column.prop(props, "color_b")
 
 
-#: Which assign/remove slot each host-list component's operators use.
-_HOST_LIST_SLOTS = {
-    component_ids.COLLIDER: "PHYSICS",
-    component_ids.INTERACTABLE: "INTERACTION",
-}
-
-
 def _draw_derived_components(layout, obj, component) -> None:
     """A read-only row for a component this host derives outright, so the panel is a complete
     inventory of what the entity exports even for the parts nobody authors."""
@@ -801,36 +804,30 @@ def _draw_host_list_component(layout, context, obj, component) -> None:
     """A component whose body is object references: the entity's collider lists — this host's
     half of the schema's ``authoredBy: shape``. Same box, header and remove button as every
     other component; the fields are just pointers you assign instead of values you type."""
-    slot = _HOST_LIST_SLOTS.get(component.id)
-    collection = authored.host_list_collection(obj, component.id)
-    if slot is None:
-        row = layout.row()
-        row.enabled = False
-        row.label(text=f"{component.display_name} — not authorable in Blender yet", icon="ERROR")
-        return
+    # NO per-component gate any more. A component is a host list because the SCHEMA says its
+    # items are authored by pointing at a host object, and storage now follows from that rather
+    # than from a hand-written map of the two ids the engine happened to ship — so a game's
+    # component draws here exactly as the engine's does, with no Python that knows its name.
+    key = authored.host_ref_key(component)
+    entries = authored.host_entries(obj, component)
 
     box = layout.box()
     header = box.row(align=True)
     header.label(text=component.display_name, icon="PROPERTIES")
     assign = header.operator("paradise.assign_colliders", text="", icon="ADD")
-    assign.slot = slot
+    assign.key = key
     remove = header.operator("paradise.remove_authored_component", text="", icon="X")
     remove.component = component.id
 
-    if component.id == component_ids.INTERACTABLE:
-        note = box.row()
-        note.enabled = False
-        note.label(text="DisplayName — the object's name", icon="DECORATE_LINKED")
-
-    if collection is None or not len(collection):
+    if not entries:
         box.label(text="Select collider objects and press +", icon="BLANK1")
         return
-    for index, item in enumerate(collection):
+    for entry in entries:
         row = box.row(align=True)
-        row.label(text=item.target.name if item.target else "<missing>", icon="MESH_CUBE")
+        row.label(text=entry.target.name if entry.target else "<missing>", icon="MESH_CUBE")
         drop = row.operator("paradise.remove_collider", text="", icon="X")
-        drop.slot = slot
-        drop.index = index
+        drop.key = entry.key
+        drop.index = entry.index
 
 
 classes = (

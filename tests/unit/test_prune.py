@@ -13,6 +13,7 @@ import struct
 
 import pytest
 
+from paradise_blender.contract import component_ids, schema
 from paradise_blender.paths import ExportPaths
 from paradise_blender.pipeline.prune import prune_orphans
 
@@ -33,17 +34,22 @@ def glb(images: list[str] | None = None) -> bytes:
     return struct.pack("<III", 0x46546C67, 2, 12 + len(body)) + body
 
 
-def scene_document(entities: list[dict], **extra) -> str:
-    return json.dumps({"SchemaVersion": 1, "Entities": entities, **extra})
+def scene_document(entities: list[list[dict]], **extra) -> str:
+    return json.dumps({"SchemaVersion": schema.SCHEMA_VERSION, "Entities": entities, **extra})
 
 
-def entity(mesh: str | None = None, materials: list[str | None] | None = None, **extra) -> dict:
-    return {
-        "Id": "e",
-        "Components": {"Renderable": {"Mesh": mesh} if mesh else None},
-        "Materials": materials or [],
-        **extra,
-    }
+def entity(mesh: str | None = None, materials: list[str | None] | None = None) -> list[dict]:
+    """One object, which since schema v5 is a bare list of component entries.
+
+    The sweep reads STRINGS wherever they appear and never looks at the shape, so the exact
+    payload matters less here than that the fixture is a document the exporter could actually
+    have written -- a test whose input is a shape nothing produces stops being evidence.
+    """
+    return [{
+        "Id": component_ids.RENDERABLE,
+        "Type": "Paradise.Export.Data.RenderableComponentData",
+        "Data": {"Mesh": mesh, "Materials": materials or []},
+    }]
 
 
 @pytest.fixture
@@ -137,18 +143,6 @@ class TestNeverTouches:
         write(field(data, "scenes/b.json"), scene_document([entity("Models/OnlyInB.glb")]))
         write(field(data, "Models/OnlyInA.glb"), glb())
         write(field(data, "Models/OnlyInB.glb"), glb())
-
-        assert prune_orphans(data) == []
-
-    def test_assets_only_a_prefab_template_references(self, data):
-        prefab = {"PrefabAssetPath": "Props", "Entities": [entity("Models/InPrefab.glb")]}
-        write(
-            field(data, "scenes/level.json"),
-            scene_document([entity("Models/Used.glb", PrefabAssetPath="Props")]),
-        )
-        write(field(data, "prefabs/Props.json"), json.dumps(prefab))
-        write(field(data, "Models/Used.glb"), glb())
-        write(field(data, "Models/InPrefab.glb"), glb())
 
         assert prune_orphans(data) == []
 

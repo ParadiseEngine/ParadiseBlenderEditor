@@ -30,7 +30,6 @@ from ..authoring import entity as authoring
 from ..export.entity import export_entity
 from ..export.material import MaterialExporter
 from ..export.mesh import MeshExporter
-from ..export.prefab import PrefabExporter
 from ..prefs import export_paths, get_preferences
 from . import protocol
 
@@ -156,6 +155,14 @@ def _send_patch(scene: bpy.types.Scene) -> None:
 
     Rebuilds each dirty entity's full document rather than diffing fields -- see
     :func:`..live.protocol.scene_patch` for why whole entities are the unit of change.
+
+    AN ENTITY THAT STOPS AUTHORING ANYTHING forces a full resync. ``export_entity`` returns None
+    for an object that says nothing beyond its name and placement, and such an object is no longer
+    in the document -- but nothing else here would notice: the roster comparison in
+    :func:`_on_depsgraph_update` is built from the ``is_entity`` FLAG, which does not change when
+    the last authored component is removed. Without this the object would simply be missing from
+    the patch, and a patch says nothing about what it omits, so the runtime would keep drawing a
+    thing the scene no longer describes until an unrelated structural change or a restart.
     """
     paths = export_paths(scene)
 
@@ -164,14 +171,21 @@ def _send_patch(scene: bpy.types.Scene) -> None:
     # here only resolve references, since re-exporting a GLB mid-drag would stall Blender.
     materials = MaterialExporter()
     meshes = MeshExporter()
-    prefabs = PrefabExporter(materials, meshes)
+
+    global _needs_full_resync
 
     updated = []
     for name in sorted(_dirty_objects):
         obj = scene.objects.get(name)
         if obj is None or not authoring.is_entity(obj):
             continue
-        updated.append(export_entity(obj, paths, materials, meshes, prefabs).to_json())
+        components = export_entity(obj, paths, materials, meshes)
+        if components is None:
+            # It exports to nothing now. A patch has no way to say "this one is gone" about an
+            # object it never names, so the whole scene goes again -- see the docstring.
+            _needs_full_resync = True
+            continue
+        updated.append(components.to_json())
 
     _dirty_objects.clear()
 

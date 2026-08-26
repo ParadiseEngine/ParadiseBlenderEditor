@@ -38,7 +38,7 @@ from paradise_blender.export.scene import export_scene  # noqa: E402
 def payload_for(entity, component_id):
     """One component's Data on an exported entity, or None. Components are a LIST now, so a test
     asks by id rather than by a key whose absence used to mean "no such component"."""
-    for component in entity["Components"]:
+    for component in entity:
         if component["Id"] == component_id:
             return component["Data"]
     return None
@@ -62,7 +62,20 @@ def check(condition: bool, description: str, detail: str = "") -> None:
 CREATURE_ID = "c4e8a1b2-9f60-4d33-8a17-6b2e50d9fc84"
 MARKER_ID = "2d7f36ae-51c8-4b90-8e42-9a0b7cd1e5f3"
 DOORWAY_ID = "7a1c9e04-3b52-4f18-9d6a-c084e2571b93"
-GAME_IDS = {CREATURE_ID, MARKER_ID, DOORWAY_ID}
+#: A game component whose BODY is object references, exactly as the engine's collider is. Before
+#: host storage became schema-driven this was detected and then had nowhere to put a pointer, so
+#: it drew as "not authorable in Blender yet" and exported nothing.
+BODY_ID = "7c4e0a19-3d55-4b8e-9a2c-6e8f1b4d0c23"
+
+#: A game component referencing ONE shape, not a list -- the scalar case.
+VOLUME_ID = "3f7f5b6c-0346-4de7-9bf6-0dd4e25ac74c"
+
+#: A game component whose references ARE their values -- a mesh to export, another object to name,
+#: a file on disk. The other family of host reference: where a pose or a shape fills the LEAVES a
+#: record declares under it, these three write at the reference's own path.
+LEAFY_ID = "07f29866-de34-49ef-a2a9-4e71b1d4e250"
+
+GAME_IDS = {CREATURE_ID, MARKER_ID, DOORWAY_ID, BODY_ID, VOLUME_ID, LEAFY_ID}
 
 # A LAUNCHER's dump, which is the only kind of authoring schema this host reads now: the game's
 # own components AND the engine's, in one document. It used to be a game-only fixture, with the
@@ -73,6 +86,36 @@ GAME_IDS = {CREATURE_ID, MARKER_ID, DOORWAY_ID}
 SCHEMA = {
     "version": 3,
     "components": [
+        # The three every export writes for every object it emits. They are host-derived rather
+        # than authored in the panel, but they still have to be NAMEABLE: the exporter reads each
+        # engine component's CLR type name out of this document.
+        {
+            "id": component_ids.NAME,
+            "type": "Paradise.Export.Data.NameComponentData",
+            "displayName": "Name",
+            "fields": [{"name": "Value", "type": "string", "default": ""}],
+        },
+        {
+            "id": component_ids.TRANSFORM,
+            "type": "Paradise.Export.Data.TransformComponentData",
+            "displayName": "Transform",
+            "fields": [{"name": "World", "type": "matrix4x4"}],
+        },
+        {
+            "id": component_ids.ENVIRONMENT,
+            "type": "Paradise.Export.Data.EnvironmentData",
+            "displayName": "Environment",
+            "fields": [{"name": "TonemapMode", "type": "string", "default": "Linear"}],
+        },
+        {
+            "id": LEAFY_ID,
+            "type": "Game.Leafy",
+            "displayName": "Leafy",
+            "fields": [
+                {"name": "Mesh", "type": "string", "authoredBy": "mesh"},
+                {"name": "Target", "type": "string", "authoredBy": "entity"},
+            ],
+        },
         {
             "id": component_ids.RIGIDBODY,
             "type": "Paradise.Export.Data.RigidbodyComponentData",
@@ -98,6 +141,70 @@ SCHEMA = {
             "displayName": "Light",
             "authoredBy": "light",
             "fields": [{"name": "Energy", "type": "float", "default": 1}],
+        },
+        {
+            # The engine's own host list. Declared here because this fixture IS the whole document
+            # now -- the vendored engine schema was removed on purpose ("ONE DOCUMENT, AND IT IS
+            # THE GAME'S"), and the checks below ask for this component by id.
+            "id": component_ids.COLLIDER,
+            "type": "Paradise.Export.Data.ColliderComponentData",
+            "displayName": "Collider",
+            "fields": [
+                {
+                    "name": "Colliders",
+                    "type": "array",
+                    "items": {
+                        "name": "Colliders",
+                        "type": "object",
+                        "authoredBy": "shape",
+                        "fields": [
+                            {"name": "IsTrigger", "type": "bool"},
+                            {"name": "ShapeType", "type": "string"},
+                            {"name": "Size", "type": "vector3"},
+                        ],
+                    },
+                }
+            ],
+        },
+        {
+            "id": VOLUME_ID,
+            "type": "ShiningPie.Authoring.InteractionTriggerMarker",
+            "displayName": "Interaction trigger",
+            "fields": [
+                {"name": "Prompt", "type": "string"},
+                {
+                    "name": "Volume",
+                    "type": "object",
+                    "authoredBy": "shape",
+                    "fields": [
+                        {"name": "IsTrigger", "type": "bool"},
+                        {"name": "ShapeType", "type": "string"},
+                        {"name": "Radius", "type": "float"},
+                    ],
+                },
+            ],
+        },
+        {
+            "id": BODY_ID,
+            "type": "ShiningPie.Authoring.ActorBody",
+            "displayName": "Actor body",
+            "fields": [
+                {
+                    "name": "Shapes",
+                    "type": "array",
+                    "items": {
+                        "name": "Shapes",
+                        "type": "object",
+                        "authoredBy": "shape",
+                        "fields": [
+                            {"name": "IsTrigger", "type": "bool"},
+                            {"name": "ShapeType", "type": "string"},
+                            {"name": "Radius", "type": "float"},
+                            {"name": "Height", "type": "float"},
+                        ],
+                    },
+                }
+            ],
         },
         {
             "id": CREATURE_ID,
@@ -209,11 +316,21 @@ def build_scene() -> None:
     target.scale = (2.0, 3.0, 4.0)
 
 
-def exported_entities() -> dict[str, dict]:
+def exported_entities() -> dict[str, list]:
+    """The exported objects by name, and an object IS its component list since schema v5.
+
+    The name comes off the object's own Name component, because there is nowhere else for it to
+    come from — which is exactly the property being relied on here."""
     path = os.path.join(DATA_DIR, "scenes", "authored_test.json")
     with open(path, encoding="utf-8") as file:
         document = json.load(file)
-    return {entity["Id"]: entity for entity in document["Entities"]}
+
+    objects = {}
+    for entity in document["Entities"]:
+        payload = payload_for(entity, component_ids.NAME)
+        if payload is not None:
+            objects[payload["Value"]] = entity
+    return objects
 
 
 def main() -> int:
@@ -265,7 +382,7 @@ def main() -> int:
     export_scene(bpy.context.scene)
     entities = exported_entities()
 
-    game_entries = [e for e in entities["Creature"]["Components"] if e["Id"] in GAME_IDS]
+    game_entries = [e for e in entities["Creature"] if e["Id"] in GAME_IDS]
     check(len(game_entries) == 1, "the authored component is exported")
     payload = game_entries[0]["Data"]
     check(game_entries[0]["Id"] == CREATURE_ID, "under its schema id")
@@ -278,11 +395,19 @@ def main() -> int:
     check(payload["Home"] == [1.0, 2.0, 3.0], "a vector exports as a flat float array")
     check(payload["Tint"] == {"r": 1.0, "g": 0.5, "b": 0.0, "a": 1.0}, "a color exports as rgba")
     check(payload["Box"] == {"SizeX": 4.0, "SizeY": 2.0}, "a composed group re-nests from its paths")
-    check("Shape" not in payload, "a host-baked field is absent, not guessed at")
+    # An UNASSIGNED object slot exports its leaves at the record's own defaults, and does not
+    # vanish from the payload. That is build_payload's stated rule and the one the runtime depends
+    # on: a field that is simply absent reads as "this host does not implement the kind", while a
+    # field present and empty reads as "nobody picked an object" — and only the second is something
+    # a loader can refuse by name. The trigger volumes rely on exactly this.
+    check(payload["Shape"] == {"SizeX": 0.0},
+          "an unassigned object slot exports its declared leaves at their defaults",
+          str(payload.get("Shape")))
 
     check(
-        not [e for e in entities["Plain"]["Components"] if e["Id"] in GAME_IDS],
-        "an entity with nothing authored contributes no game components",
+        "Plain" not in entities,
+        "an entity with nothing authored is not exported at all",
+        str(sorted(entities)),
     )
 
     # -- pose references: the one authoredBy kind this host authors ----------------------
@@ -405,15 +530,19 @@ def main() -> int:
     check(owned is not None and owned["Type"] == "Directional", "a lamp entity owns its light")
     check(payload_for(entities["Creature"], component_ids.LIGHT) is None,
           "non-lamp entities author no light")
-    path = os.path.join(DATA_DIR, "scenes", "authored_test.json")
-    with open(path, encoding="utf-8") as file:
-        whole = json.load(file)
-    state_lights = [light["Id"] for light in whole["Lighting"]["States"][0]["Lights"]]
-    check(
-        state_lights == ["SceneFill"],
-        "an entity-owned lamp leaves the scene-level light list; an unowned one stays",
-        f"state lights: {state_lights}",
-    )
+    # The routing rule this used to check is GONE, and that is the point of checking it here.
+    # A lamp used to be either an entry in a document-level lighting state or a component on an
+    # entity that owned it, with a rule saying it must not be both or the runtime would light it
+    # twice. Since schema v5 every lamp is an OBJECT carrying a Light — an owned one because the
+    # entity walk writes it, an unowned one because the scene walk gives it an object of its own —
+    # so the two cannot disagree and there is no list to leave.
+    fill = payload_for(entities["SceneFill"], component_ids.LIGHT)
+    check(fill is not None, "an unowned lamp is an object carrying a Light too",
+          str(sorted(entities)))
+    lit = [name for name, obj in entities.items()
+           if payload_for(obj, component_ids.LIGHT) is not None]
+    check(sorted(lit) == ["OwnedSun", "SceneFill"],
+          "each lamp is described exactly once, by exactly one object", str(sorted(lit)))
 
     # -- duplicate carries the values (same mechanism as the GUID gotcha) ----------------
     bpy.ops.object.select_all(action="DESELECT")
@@ -426,6 +555,187 @@ def main() -> int:
         "a duplicated object carries its authored components",
     )
     bpy.data.objects.remove(duplicate, do_unlink=True)
+
+    # -- a GAME component whose items are host-authored shapes ---------------------------
+    #
+    # The capability this file exists to pin: storage for object references follows from the
+    # SCHEMA (an array whose items say authoredBy) rather than from a hand-written map of the two
+    # ids the engine happened to ship. Nothing in the addon knows this component's name.
+    merged = authored.schema_for_data_dir(DATA_DIR)
+    body_component = authored.component_by_id(merged, BODY_ID)
+    check(body_component is not None, "the game's host-list component is read from the schema")
+    check(
+        authored.is_host_list(body_component),
+        "a game component whose items are host-authored is a host list",
+    )
+    check(
+        authored.host_ref_key(body_component) == f"{BODY_ID}/Shapes",
+        "its references are keyed by component id and field path",
+    )
+
+    bpy.ops.object.empty_add(type="PLAIN_AXES", location=(4, 0, 0))
+    actor = bpy.context.active_object
+    actor.name = "Actor"
+    actor.paradise.is_entity = True
+    authored.enable_component(actor, body_component)
+
+    bpy.ops.object.empty_add(type="SPHERE", location=(4, 0, 0.9))
+    body_shape = bpy.context.active_object
+    body_shape.name = "ActorCapsule"
+    body_shape.paradise_collider.is_collider = True
+    body_shape.paradise_collider.shape = "Capsule"
+    body_shape.paradise_collider.size_source = "EXPLICIT"
+    body_shape.paradise_collider.radius = 0.35
+    body_shape.paradise_collider.height = 1.8
+    body_shape.parent = actor
+
+    check(
+        not authored.host_entries(actor, body_component),
+        "no references before any object is assigned",
+    )
+
+    # Through the OPERATOR, which is what the panel's + button calls -- so this covers the key
+    # reaching the store, not just the store working when written by hand.
+    bpy.context.view_layer.objects.active = actor
+    body_shape.select_set(True)
+    bpy.ops.paradise.assign_colliders(key=authored.host_ref_key(body_component))
+    entries = authored.host_entries(actor, body_component)
+    check(
+        len(entries) == 1 and entries[0].target is body_shape,
+        "the operator stores the reference under the component's own key",
+    )
+    check(
+        all(item.key == authored.host_ref_key(body_component) for item in actor.paradise.host_refs),
+        "and every row in the shared store says which field it fills",
+    )
+
+    export_scene(bpy.context.scene)
+    body_payload = payload_for(exported_entities()["Actor"], BODY_ID)
+    check(
+        body_payload is not None and len(body_payload.get("Shapes", [])) == 1,
+        "the reference exports as a baked shape under the field's own name",
+        f"payload={body_payload}",
+    )
+    if body_payload and body_payload.get("Shapes"):
+        shape_json = body_payload["Shapes"][0]
+        check(
+            shape_json["ShapeType"] == "Capsule"
+            and abs(shape_json["Radius"] - 0.35) < 1e-5
+            and abs(shape_json["Height"] - 1.8) < 1e-5,
+            "and it is the capsule the author drew, baked to values",
+            f"shape={shape_json}",
+        )
+
+    # -- a SCALAR shape reference: one object slot, baked like a transform's --------------
+    volume_component = authored.component_by_id(merged, VOLUME_ID)
+    hosts = contract_authoring.outline(volume_component).hosts
+    volume_host = next(h for h in hosts if h.path == "Volume")
+    check(
+        volume_host.kind == "shape" and volume_host.is_authorable,
+        "a scalar shape reference is authorable, not merely reported",
+    )
+
+    bpy.ops.object.empty_add(type="PLAIN_AXES", location=(8, 0, 0))
+    pad = bpy.context.active_object
+    pad.name = "Pad"
+    pad.paradise.is_entity = True
+    authored.enable_component(pad, volume_component)
+    pad[authored.value_key(VOLUME_ID, "Prompt")] = "Open the shutter"
+
+    bpy.ops.object.empty_add(type="CUBE", location=(8, 0, 0.5))
+    sensor = bpy.context.active_object
+    sensor.name = "PadSensor"
+    sensor.paradise_collider.is_collider = True
+    sensor.paradise_collider.shape = "Sphere"
+    sensor.paradise_collider.size_source = "EXPLICIT"
+    sensor.paradise_collider.radius = 2.5
+    sensor.paradise_collider.is_trigger = True
+    sensor.parent = pad
+
+    export_scene(bpy.context.scene)
+    unassigned = payload_for(exported_entities()["Pad"], VOLUME_ID)
+    check(
+        unassigned is not None and unassigned["Volume"]["ShapeType"] != "Sphere",
+        "an unassigned slot exports the record's defaults, not a guessed shape",
+        f"payload={unassigned}",
+    )
+
+    # The picker stores the object's NAME, exactly as a transform reference does.
+    pad[authored.value_key(VOLUME_ID, "Volume")] = "PadSensor"
+    export_scene(bpy.context.scene)
+    baked = payload_for(exported_entities()["Pad"], VOLUME_ID)
+    check(
+        baked is not None
+        and baked["Volume"]["ShapeType"] == "Sphere"
+        and abs(baked["Volume"]["Radius"] - 2.5) < 1e-5
+        and baked["Volume"]["IsTrigger"] is True,
+        "an assigned slot bakes the collider drawn on the object it points at",
+        f"payload={baked}",
+    )
+
+    pad[authored.value_key(VOLUME_ID, "Volume")] = "NoSuchCollider"
+    export_scene(bpy.context.scene)
+    dangling = payload_for(exported_entities()["Pad"], VOLUME_ID)
+    check(
+        dangling is not None and dangling["Volume"]["ShapeType"] != "Sphere",
+        "a dangling shape reference exports unauthored (and warns) rather than a stale shape",
+    )
+
+    # -- leaf references: the reference IS the value -------------------------------------
+    #
+    # The other family. A pose or a shape fills the LEAVES a record declares under the reference;
+    # a mesh, an object name or an asset path is written at the reference's own path. Exercised
+    # here because bake_leaf_refs needs a real scene: one resolves geometry through the export's
+    # own MeshExporter, and one resolves an object by name.
+    bpy.ops.mesh.primitive_cube_add(size=1.0, location=(6, 0, 0))
+    leafy = bpy.context.active_object
+    leafy.name = "Leafy"
+    leafy.paradise.is_entity = True
+    authored.enable_component(leafy, authored.component_by_id(document, LEAFY_ID))
+
+    export_scene(bpy.context.scene)
+    unset = payload_for(exported_entities()["Leafy"], LEAFY_ID)
+    check(
+        unset is not None and unset["Mesh"] is None and unset["Target"] is None,
+        "an unassigned leaf reference exports empty rather than vanishing from the payload",
+        f"payload={unset}",
+    )
+
+    # POINTING AT ITSELF, which is the normal case for a mesh and the one the pose bake refuses:
+    # an object usually draws its own geometry, and the slot exists so that "this draws" is
+    # something the scene SAYS rather than something the exporter infers from it having a mesh.
+    leafy[authored.value_key(LEAFY_ID, "Mesh")] = "Leafy"
+    leafy[authored.value_key(LEAFY_ID, "Target")] = "Creature"
+    export_scene(bpy.context.scene)
+    baked = payload_for(exported_entities()["Leafy"], LEAFY_ID)
+    check(
+        baked is not None and (baked["Mesh"] or "").endswith(".glb"),
+        "a mesh reference bakes the data-relative GLB the referenced object exported to",
+        f"payload={baked}",
+    )
+    check(
+        baked is not None and baked["Target"] == "Creature",
+        "an entity reference bakes the target's NAME, which is what every object carries",
+        f"payload={baked}",
+    )
+
+    leafy[authored.value_key(LEAFY_ID, "Target")] = "NoSuchObject"
+    export_scene(bpy.context.scene)
+    dangling_target = payload_for(exported_entities()["Leafy"], LEAFY_ID)
+    check(
+        dangling_target is not None and dangling_target["Target"] is None,
+        "a dangling entity reference exports empty rather than the name nobody could resolve",
+        f"payload={dangling_target}",
+    )
+
+    # Back to the actor: an operator polls the ACTIVE object, and the scalar-shape block above
+    # left a collider selected.
+    bpy.context.view_layer.objects.active = actor
+    bpy.ops.paradise.remove_collider(key=authored.host_ref_key(body_component), index=0)
+    check(
+        not authored.host_entries(actor, body_component),
+        "removing takes the row the panel pointed at",
+    )
 
     # -- host-list components: colliders live in the same panel now ----------------------
     merged = authored.schema_for_data_dir(DATA_DIR)
@@ -456,7 +766,9 @@ def main() -> int:
     shape.paradise_collider.size_source = "EXPLICIT"
     shape.paradise_collider.size = (1.0, 1.0, 1.0)
     shape.parent = creature_obj
-    creature_obj.paradise.physics_colliders.add().target = shape
+    bpy.context.view_layer.objects.active = creature_obj
+    shape.select_set(True)
+    bpy.ops.paradise.assign_colliders(key=authored.host_ref_key(collider_component))
     export_scene(bpy.context.scene)
     creature = exported_entities()["Creature"]
     collider = payload_for(creature, component_ids.COLLIDER)
@@ -470,13 +782,13 @@ def main() -> int:
         "the derived static body still rides along",
     )
     check(
-        len([e for e in creature["Components"] if e["Id"] == component_ids.RIGIDBODY]) == 1,
+        len([e for e in creature if e["Id"] == component_ids.RIGIDBODY]) == 1,
         "and exactly once — a list does not enforce at-most-one the way a slot did",
     )
 
     authored.disable_component(creature_obj, component_ids.COLLIDER)
     check(
-        len(creature_obj.paradise.physics_colliders) == 0,
+        not authored.host_entries(creature_obj, collider_component),
         "removing the component clears the references too",
     )
     bpy.data.objects.remove(shape, do_unlink=True)
@@ -504,9 +816,15 @@ def main() -> int:
     bpy.data.objects.remove(derived_obj, do_unlink=True)
 
     # -- hot reload ---------------------------------------------------------------------
+    # BY ID, never by position. This grew a field onto components[0] and deleted components[1]
+    # back when those happened to be the game's two; every engine entry added to the fixture since
+    # has shifted them, so the mutation landed on whatever was there — which is how it came to add
+    # "Grumpy" to the rigidbody and assert it on the creature.
     grown = json.loads(json.dumps(SCHEMA))
-    grown["components"][0]["fields"].append({"name": "Grumpy", "type": "bool", "default": False})
-    del grown["components"][1]  # game.marker is gone: the game renamed or removed it
+    by_id = {component["id"]: component for component in grown["components"]}
+    by_id[CREATURE_ID]["fields"].append({"name": "Grumpy", "type": "bool", "default": False})
+    # game.marker is gone: the game renamed or removed it.
+    grown["components"] = [c for c in grown["components"] if c["id"] != MARKER_ID]
     write_schema(grown)
 
     reloaded = authored.schema_for_data_dir(DATA_DIR)
@@ -526,7 +844,7 @@ def main() -> int:
     authored.enable_component(creature_obj, marker)
     export_scene(bpy.context.scene)
     entities = exported_entities()
-    ids = [e["Id"] for e in entities["Creature"]["Components"] if e["Id"] in GAME_IDS]
+    ids = [e["Id"] for e in entities["Creature"] if e["Id"] in GAME_IDS]
     check(
         ids == [CREATURE_ID],
         "a component the schema no longer declares is not exported",

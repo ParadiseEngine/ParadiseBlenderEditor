@@ -24,7 +24,6 @@ No ``bpy`` import: this module is pure data and is unit-tested standalone.
 
 from __future__ import annotations
 
-import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -36,40 +35,40 @@ __all__ = [
     "AgentComponentData",
     "AudioEmitterComponentData",
     "AuthoredComponentData",
-    "CameraData",
     "ColliderComponentData",
     "ColliderShapeData",
     "EntityComponentsData",
     "EntityInteractableComponentData",
-    "EntityParentData",
     "EnvironmentData",
     "LevelData",
-    "LevelEntityData",
     "LevelMaterialData",
-    "LightingData",
-    "LightingStateData",
-    "NavMeshAgentData",
+    "MaterialsComponentData",
+    "NameComponentData",
     "ParticleEmitterComponentData",
     "ParticleRenderKind",
     "PhysicsBodyType",
     "PhysicsShapeType",
-    "PrefabOverrideData",
-    "PrefabTemplateData",
     "RenderableComponentData",
     "RigidbodyComponentData",
     "SSceneLightData",
     "SceneLightData",
     "SpriteAnimationComponentData",
+    "TransformComponentData",
 ]
 
 # LevelData.CurrentSchemaVersion. Bump only in lockstep with the engine.
 #
-# v4 moved an entity's material slots onto its Renderable component. v3 replaced an entity's nine
-# named component slots with one list of {Id, Type, Data}. Neither is additive, and the engine
-# refuses both -- v3 for a reason worth knowing here, since this module is what writes the
-# documents: a v3 file parses fine under a v4 reader and simply loses every material override,
-# because the key it uses matches no property any more.
-SCHEMA_VERSION = 4
+# v5 reduced an entity to its authored components: an entry under "Entities" is now a bare ARRAY
+# of {Id, Type, Data}, not an object with eighteen fields and a Components key. The object's name
+# and its world matrix travel as ordinary components (Name, Transform); an object the author
+# switched off is one this exporter does not write; the parent link, the prefab provenance and the
+# override table are gone outright. So are the document's own blocks -- Camera, Lighting,
+# NavMeshAgent, Interactables, Materials -- with the scene's environment becoming a component on
+# an object of its own and each lamp becoming an object carrying a Light.
+#
+# v4 moved an entity's material slots onto its Renderable component; v3 replaced nine named
+# component slots with one list. Both are below the engine's floor now.
+SCHEMA_VERSION = 5
 
 Vec3 = tuple[float, float, float]
 Quat = tuple[float, float, float, float]
@@ -115,29 +114,28 @@ def _matrix_json(m) -> list[float] | None:  # axes.Mat4 | None
 
 @dataclass
 class RenderableComponentData:
-    """Mesh reference and the material slots that index against it.
+    """A mesh reference, and nothing else.
 
     ``mesh`` is a GLB path relative to ``data/``. Textures inside the GLB must be KTX2 -- the
     engine reader rejects PNG/JPEG.
 
-    Contract rule the exporter must uphold: the GLB's primitive order equals ``materials`` slot
-    order, and a null slot means the GLB's own embedded material wins. ``materials`` lived on the
-    ENTITY until v4, which made that rule a statement about two fields nothing held together --
-    an entity could carry slots with no mesh to index them against.
+    The material slots are NOT here. They were, from v4, and they moved to
+    :class:`MaterialsComponentData` in v5: they are not geometry, and two objects sharing a GLB and
+    differing only in their slots are two drawable VARIANTS and one mesh. Two records asserting one
+    wire fact is an ambiguity a future exporter has no way to resolve.
+
+    This host no longer writes this component at all -- what an object draws is authored, not
+    derived from it having mesh data -- but the mirror is kept because the record still exists in
+    the contract and another host writes it.
     """
 
     mesh: str | None = None
     mesh_node: str | None = None
-    materials: list[str | None] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
-        return {
-            "Mesh": self.mesh,
-            "MeshNode": self.mesh_node,
-            # Declaration order matches the C# record: System.Text.Json writes properties in that
-            # order, and a Blender export has to stay diffable against a Godot one.
-            "Materials": list(self.materials),
-        }
+        # Declaration order matches the C# record: System.Text.Json writes properties in that
+        # order, and a Blender export has to stay diffable against a Godot one.
+        return {"Mesh": self.mesh, "MeshNode": self.mesh_node}
 
 
 @dataclass
@@ -471,133 +469,70 @@ class EntityComponentsData:
 # --------------------------------------------------------------------------------------
 
 
+# --------------------------------------------------------------------------------------
+# Objects
+# --------------------------------------------------------------------------------------
+#
+# There is no entity dataclass. An object in the document IS its component list -- see
+# LevelData.entities -- so what would have been LevelEntityData is an EntityComponentsData and
+# nothing else. The two facts every host states about every object it writes are components like
+# any other: NameComponentData and TransformComponentData, below.
+
+
 @dataclass
-class EntityParentData:
-    id: str = ""
-    bone_path: str | None = None
-    bone_index: int = -1
+class NameComponentData:
+    """What an object is called.
 
-    def to_json(self) -> dict[str, Any]:
-        return {"Id": self.id, "BonePath": self.bone_path, "BoneIndex": self.bone_index}
-
-
-@dataclass
-class PrefabOverrideData:
-    """Per-instance override tracking.
-
-    Neither the Godot nor the Blender host populates this: Godot has no API equivalent to
-    Unity's ``PrefabUtility.GetPropertyModifications``, and Blender's collection instances
-    cannot override interior properties at all (an override there means a full library
-    override, i.e. a different datablock). Emitted empty to keep the key set stable.
+    For DIAGNOSTICS. A scene is two hundred objects and a runtime refusal that cannot name one
+    sends someone counting rows in a JSON file. It is not an identity: nothing resolves anything
+    by it, and two objects may share a name.
     """
 
-    transform: bool = False
-    material_slots: list[int] = field(default_factory=list)
-    colliders: list[str] = field(default_factory=list)
-    metadata: list[str] = field(default_factory=list)
+    value: str = ""
 
     def to_json(self) -> dict[str, Any]:
-        return {
-            "Transform": self.transform,
-            "MaterialSlots": list(self.material_slots),
-            "Colliders": list(self.colliders),
-            "Metadata": list(self.metadata),
-        }
+        return {"Value": self.value}
 
 
 @dataclass
-class LevelEntityData:
-    id: str = ""
-    entity_guid: uuid.UUID = field(default_factory=lambda: uuid.UUID(int=0))
-    stable_id: str | None = None
-    display_name: str | None = None
-    kind: str | None = None
-    spawn_phase: str | None = None
-    is_active: bool = True
-    prefab: str | None = None
-    prefab_asset_path: str | None = None
-    nearest_instance_root: str | None = None
-    prefab_guid: str | None = None
-    prefab_asset_type: str | None = None
-    initial_animation: str | None = None
-    parent: EntityParentData | None = None
-    local_position: Vec3 = ZERO3
-    local_rotation: Quat = IDENTITY_QUAT
-    local_scale: Vec3 = ONE3
-    local_matrix: Any = None
-    world_matrix: Any = None
-    overrides: PrefabOverrideData = field(default_factory=PrefabOverrideData)
-    components: EntityComponentsData = field(default_factory=EntityComponentsData)
+class MaterialsComponentData:
+    """The materials that override a mesh's own, one per GLB primitive.
+
+    An ENGINE component, and it has to be: a material assignment is Blender's material slots, so it
+    is derived by every exporter from the object it is exporting, exactly as the name and the
+    transform are. A game cannot own it for the same reason a game cannot own the transform — the
+    host that fills it in cannot be made to know a particular game's type.
+
+    A null entry keeps the GLB's own material for that primitive, and dropping one would shift
+    every override after it onto the wrong primitive.
+    """
+
+    slots: list[str | None] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
-        return {
-            "Id": self.id,
-            # System.Text.Json's default Guid form: lowercase, hyphenated ("D" format).
-            "EntityGuid": str(self.entity_guid),
-            "StableId": self.stable_id,
-            "DisplayName": self.display_name,
-            "Kind": self.kind,
-            "SpawnPhase": self.spawn_phase,
-            "IsActive": self.is_active,
-            "Prefab": self.prefab,
-            "PrefabAssetPath": self.prefab_asset_path,
-            "NearestInstanceRoot": self.nearest_instance_root,
-            "PrefabGuid": self.prefab_guid,
-            "PrefabAssetType": self.prefab_asset_type,
-            "InitialAnimation": self.initial_animation,
-            "Parent": _opt(self.parent),
-            "LocalPosition": vec3_to_json(self.local_position),
-            "LocalRotation": quat_to_json(self.local_rotation),
-            "LocalScale": vec3_to_json(self.local_scale),
-            "LocalMatrix": _matrix_json(self.local_matrix),
-            "WorldMatrix": _matrix_json(self.world_matrix),
-            "Overrides": self.overrides.to_json(),
-            "Components": self.components.to_json(),
-        }
+        return {"Slots": list(self.slots)}
 
 
 @dataclass
-class PrefabTemplateData:
-    display_name: str | None = None
-    prefab: str | None = None
-    prefab_asset_path: str | None = None
-    prefab_guid: str | None = None
-    prefab_asset_type: str | None = None
-    materials: list[str | None] = field(default_factory=list)
-    entities: list[LevelEntityData] = field(default_factory=list)
+class TransformComponentData:
+    """Where an object stands: its world placement, column-major, translation at 12/13/14.
+
+    The one component an exporter writes for every object it emits -- anything that exists is
+    somewhere. It replaces the four transform fields the entity record used to carry (local
+    position/rotation/scale plus two matrices), which stated the same placement four times and
+    let them disagree: a non-uniformly scaled parent made the decomposed three a lossy version of
+    the matrix nobody could tell from the exact one.
+    """
+
+    world: Any = None
 
     def to_json(self) -> dict[str, Any]:
-        return {
-            "DisplayName": self.display_name,
-            "Prefab": self.prefab,
-            "PrefabAssetPath": self.prefab_asset_path,
-            "PrefabGuid": self.prefab_guid,
-            "PrefabAssetType": self.prefab_asset_type,
-            "Materials": list(self.materials),
-            "Entities": [e.to_json() for e in self.entities],
-        }
+        return {"World": _matrix_json(self.world)}
 
 
 # --------------------------------------------------------------------------------------
 # Scene-level
 # --------------------------------------------------------------------------------------
-
-
-@dataclass
-class CameraData:
-    position: Vec3 = ZERO3
-    rotation: Vec3 = ZERO3
-    orthographic_size: float = 10.0
-    background_color: Color32 = field(default_factory=lambda: Color32.from_rgba(0.72, 0.69, 0.67))
-
-    def to_json(self) -> dict[str, Any]:
-        return {
-            "Position": vec3_to_json(self.position),
-            # Euler DEGREES, in the contract basis (see axes.convert_euler_zyx_degrees).
-            "Rotation": vec3_to_json(self.rotation),
-            "OrthographicSize": self.orthographic_size,
-            "BackgroundColor": self.background_color.to_json(),
-        }
 
 
 @dataclass
@@ -659,6 +594,21 @@ SSceneLightData = SceneLightData
 
 @dataclass
 class EnvironmentData:
+    """How the scene is lit as a whole -- a COMPONENT on an object of its own since v5.
+
+    It used to be reachable only through a named "active state" in a document-level Lighting
+    block: a second addressing scheme for a thing exactly one of which was ever used. The two
+    shadow settings moved here with it, because they were on that block for want of anywhere
+    else and they are as much part of "how this scene is lit" as the ambient is.
+    """
+
+    #: Per-layer shadow map resolution the scene asks its renderer for, in texels. None leaves
+    #: the renderer's default in place. Always serialized (null included) to mirror the C#
+    #: contract's serialization exactly.
+    shadow_map_size: int | None = None
+    #: Soft-shadow blur: the PCF disk radius in shadow texels -- the penumbra width of every
+    #: shadow edge. None leaves the renderer's default.
+    shadow_blur: float | None = None
     ambient_mode: str = "Color"
     ambient_color: Color32 = field(default_factory=lambda: Color32.from_rgba(0.5, 0.52, 0.56))
     ambient_equator_color: Color32 = field(default_factory=lambda: Color32.from_rgba(0.5, 0.52, 0.56))
@@ -697,6 +647,8 @@ class EnvironmentData:
 
     def to_json(self) -> dict[str, Any]:
         return {
+            "ShadowMapSize": self.shadow_map_size,
+            "ShadowBlur": self.shadow_blur,
             "AmbientMode": self.ambient_mode,
             "AmbientColor": self.ambient_color.to_json(),
             "AmbientEquatorColor": self.ambient_equator_color.to_json(),
@@ -730,55 +682,6 @@ class EnvironmentData:
             "GlowEnabled": self.glow_enabled,
             "GlowIntensity": self.glow_intensity,
             "GlowThreshold": self.glow_threshold,
-        }
-
-
-@dataclass
-class LightingStateData:
-    name: str = "Default"
-    environment: EnvironmentData = field(default_factory=EnvironmentData)
-    lights: list[SceneLightData] = field(default_factory=list)
-
-    def to_json(self) -> dict[str, Any]:
-        return {
-            "Name": self.name,
-            "Environment": self.environment.to_json(),
-            "Lights": [light.to_json() for light in self.lights],
-        }
-
-
-@dataclass
-class LightingData:
-    active_state: str = "Default"
-    #: Per-layer shadow map resolution the scene asks its renderer for, in texels. None leaves
-    #: the renderer's default in place. Always serialized (null included) to mirror the C#
-    #: contract's serialization exactly.
-    shadow_map_size: int | None = None
-    #: Soft-shadow blur: the PCF disk radius in shadow texels — the penumbra width of every
-    #: shadow edge. None leaves the renderer's default.
-    shadow_blur: float | None = None
-    states: list[LightingStateData] = field(default_factory=list)
-
-    def to_json(self) -> dict[str, Any]:
-        return {
-            "ActiveState": self.active_state,
-            "ShadowMapSize": self.shadow_map_size,
-            "ShadowBlur": self.shadow_blur,
-            "States": [state.to_json() for state in self.states],
-        }
-
-
-@dataclass
-class NavMeshAgentData:
-    speed: float = 2.0
-    angular_speed: float = 720.0
-    acceleration: float = 40.0
-
-    def to_json(self) -> dict[str, Any]:
-        return {
-            "Speed": self.speed,
-            "AngularSpeed": self.angular_speed,
-            "Acceleration": self.acceleration,
         }
 
 
@@ -836,47 +739,24 @@ class LevelMaterialData:
 
 @dataclass
 class LevelData:
-    """Root document written to ``data/scenes/<Scene>.json``."""
+    """Root document written to ``data/scenes/<Scene>.json``.
+
+    Since v5 it is a version and a list of objects, and an object is a list of components. Every
+    other key this used to carry -- Camera, Lighting, NavMeshAgent, Interactables, NavMeshFile,
+    Materials -- is gone: three were written by this host and read by nobody, and the two that
+    WERE read (the lighting states and the viewport camera) are now components, which is the
+    whole point. One rule for the document: a host writes components, a runtime reads components.
+    """
 
     schema_version: int = SCHEMA_VERSION
-    camera: CameraData | None = None
-    lighting: LightingData | None = None
-    nav_mesh_agent: NavMeshAgentData | None = None
-    interactables: list[Any] = field(default_factory=list)
-    entities: list[LevelEntityData] = field(default_factory=list)
-    nav_mesh_file: str | None = None
-    # Materials are written as separate documents under data/materials/; this in-document list
-    # stays empty in both hosts (the Godot exporter never populates it either), but the key
-    # must exist or the engine reader sees a shape change.
-    materials: list[Any] = field(default_factory=list)
+    #: One entry per object, and an object IS its authored components.
+    entities: list[EntityComponentsData] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
         return {
             "SchemaVersion": self.schema_version,
-            "Camera": _opt(self.camera),
-            "Lighting": _opt(self.lighting),
-            "NavMeshAgent": _opt(self.nav_mesh_agent),
-            "Interactables": [i.to_json() for i in self.interactables],
             "Entities": [e.to_json() for e in self.entities],
-            "NavMeshFile": self.nav_mesh_file,
-            "Materials": [m.to_json() for m in self.materials],
         }
-
-    def ensure_lighting_state(self) -> LightingStateData:
-        """Get (creating if needed) the first lighting state.
-
-        Mirrors ``SceneDataExporter.EnsureLightingState``: the contract supports several named
-        lighting states, but both authoring hosts emit exactly one, called "Default".
-        """
-        if self.lighting is None:
-            self.lighting = LightingData(active_state="Default")
-        if not self.lighting.states:
-            self.lighting.states.append(LightingStateData(name="Default"))
-        return self.lighting.states[0]
-
-
-def _opt(value: Any) -> Any:
-    return None if value is None else value.to_json()
 
 
 def _finite(value: float) -> bool:

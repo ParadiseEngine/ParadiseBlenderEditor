@@ -28,13 +28,22 @@ The wire format, stated once (reference: ``AuthoredEntityCore.ValueOf``):
   A numeric segment re-nests into a JSON array rather than an object, which is the only place
   the two halves of this module need to agree about a spelling.
 * Fields (or whole components) with ``authoredBy`` are host-object *references*: authored by
-  pointing at one of the host's own objects, exported as the numbers baked out of it. This host
-  implements ONE kind, :data:`HOST_TRANSFORM` -- an object slot whose world pose is baked into
-  the reference's own leaves at export (see ``authored_components.bake_transform_refs``). Every
-  other kind is still reported and skipped, which the reader treats as unauthored;
-  :func:`flatten` surfaces them so the UI can say so instead of drawing a control that exports
-  nothing. An ``authoredBy`` LIST stays a reference regardless: a row editor over a collider's
-  shapes would be a second, lying copy of the pointer list the entity already holds.
+  pointing at one of the host's own objects, exported as the value baked out of it. This host
+  implements FIVE kinds, in two families that differ in the SHAPE of what comes back:
+
+  - RECORD references fill the leaves a record declares under them.
+    :data:`HOST_TRANSFORM` bakes where the object stands (``bake_transform_refs``);
+    :data:`HOST_SHAPE` bakes the collider drawn on it (``bake_shape_refs``).
+  - LEAF references ARE the value, written at the reference's own path (``bake_leaf_refs``).
+    :data:`HOST_MESH` bakes the object's geometry as an exported GLB, :data:`HOST_ENTITY` bakes
+    the object's NAME, and :data:`HOST_ASSET` is a file browser rather than an object slot.
+
+  Four of the five are the same picker; only what the exporter takes off what you point at
+  differs. Every other kind (``sprite``, ``light``, ``node``) is still reported and skipped, which
+  the reader treats as unauthored; :func:`flatten` surfaces them so the UI can say so instead of
+  drawing a control that exports nothing. An ``authoredBy`` LIST stays a reference regardless of
+  kind: a row editor over a collider's shapes would be a second, lying copy of the pointer list
+  the entity already holds.
 
 No ``bpy`` import: this module is pure data and is unit-tested standalone.
 """
@@ -116,6 +125,34 @@ TYPE_COLOR = "color"
 #: ``authoredBy`` kinds. The engine's closed set is shape/mesh/sprite/light/asset/transform
 #: (``Paradise.Authoring``'s ``AuthoredBySources``); this host implements exactly one of them.
 HOST_TRANSFORM = "transform"
+
+#: A reference to a COLLISION SHAPE -- the engine's ``AuthoredBySources.Shape``. Authored as an
+#: object slot exactly as a transform is; what differs is that the exporter bakes the collider
+#: drawn on the object rather than where the object stands.
+HOST_SHAPE = "shape"
+
+#: A reference to a RENDERABLE MESH. An object slot again, and the exporter writes the referenced
+#: object's mesh out as a GLB and bakes the data-relative field naming it.
+#:
+#: Pointing at ITSELF is the normal case here, unlike every other kind: an object usually draws its
+#: own mesh, and the slot exists so that "this draws" is a thing an author says rather than a thing
+#: an exporter infers from the object having mesh data.
+HOST_MESH = "mesh"
+
+#: A reference to ANOTHER OBJECT in the scene, baked as its NAME -- the one thing every exported
+#: object carries. The odd kind: what travels is the reference itself rather than a value read off
+#: what it points at.
+HOST_ENTITY = "entity"
+
+#: A reference to a FILE under ``data/``. Not an object slot: a file browser, filtered by the
+#: field's declared extensions, storing the data-relative field the runtime resolves.
+HOST_ASSET = "asset"
+
+#: The kinds whose reference IS the value -- one scalar field, filled in place, rather than a
+#: record whose declared leaves an exporter fills. What separates them is not the picker but the
+#: SHAPE of what comes back: a pose is four numbers a record takes some of, a mesh path is a
+#: string.
+HOST_LEAF_KINDS = (HOST_MESH, HOST_ENTITY, HOST_ASSET)
 
 #: Pose leaves a ``transform`` reference can bake into, by NAME. A record declares whichever
 #: parts of the pose it means and an exporter fills those, ignoring the rest -- which is what
@@ -455,6 +492,14 @@ class HostRef:
     is_list: bool = False
     leaves: tuple[AuthoredFieldSchema, ...] = ()
 
+    #: For a LEAF reference (:data:`HOST_LEAF_KINDS`), the field's own type -- the reference is the
+    #: value, so there are no leaves to fill and the bake writes at ``path`` itself. None for a
+    #: record reference, which is told apart from a leaf one by exactly this.
+    leaf_type: str | None = None
+
+    #: The extensions an :data:`HOST_ASSET` reference accepts, straight off the field.
+    asset_kinds: tuple[str, ...] = ()
+
     @property
     def bakes(self) -> tuple[str, ...]:
         """The leaf NAMES, for a caller that only needs to know which parts of the pose to fill."""
@@ -462,8 +507,27 @@ class HostRef:
 
     @property
     def is_authorable(self) -> bool:
-        """Whether this host can actually author the reference, rather than only report it."""
-        return self.kind == HOST_TRANSFORM and not self.is_list and bool(self.leaves)
+        """Whether this host can actually author the reference, rather than only report it.
+
+        FIVE KINDS, in two families. Four are an object slot and differ only in what the exporter
+        bakes out of what you point at: :data:`HOST_TRANSFORM` takes where the object STANDS,
+        :data:`HOST_SHAPE` the collider drawn ON it, :data:`HOST_MESH` the geometry exported FROM
+        it, and :data:`HOST_ENTITY` its NAME. The fifth, :data:`HOST_ASSET`, is a file browser.
+
+        The picker being identical across four of them is the point -- a kind is a statement about
+        what the object IS, and a host implements as many of them as it can rather than one.
+
+        What separates the families is not the picker but the shape of the answer: a record
+        reference has LEAVES to fill, a leaf reference IS the value. ``leaf_type`` is set for
+        exactly the second, and is what this checks.
+        """
+        if self.is_list:
+            # A list of references is a row editor over a pointer list, which this host does not
+            # draw on an entity -- see the arrays note in build_payload.
+            return False
+        if self.kind in HOST_LEAF_KINDS:
+            return self.leaf_type is not None
+        return self.kind in (HOST_TRANSFORM, HOST_SHAPE) and bool(self.leaves)
 
 
 @dataclass
@@ -593,13 +657,31 @@ def _walk_field(
 
     if field.authored_by is not None:
         # The leaves are what an exporter fills, so they travel with the reference — captured HERE,
-        # where the parent field is in hand and the path is already correct at any depth. Only the
-        # names the engine knows how to bake are kept: a record is free to carry others, and a host
-        # that tried to fill those would be inventing meaning for them.
-        leaves = tuple(
-            child for child in (field.fields or []) if child.name in TRANSFORM_FIELDS
+        # where the parent field is in hand and the path is already correct at any depth.
+        #
+        # WHICH leaves depends on the KIND, because the two bakes know different amounts about what
+        # they are filling. A pose has a closed vocabulary this contract defines (TRANSFORM_FIELDS),
+        # and a record is free to carry others a host would only be inventing meaning for. A SHAPE
+        # is the other way round: the exporter bakes a whole ColliderShapeData and writes back
+        # whatever names the record declared, so the record itself says which parts of a shape it
+        # means -- take them all and let the bake fill the ones it has.
+        children = tuple(field.fields or ())
+        leaves = (
+            tuple(child for child in children if child.name in TRANSFORM_FIELDS)
+            if field.authored_by == HOST_TRANSFORM
+            else children if field.authored_by == HOST_SHAPE
+            else ()
         )
-        plan.hosts.append(HostRef(path=path, kind=field.authored_by, leaves=leaves))
+        plan.hosts.append(HostRef(
+            path=path,
+            kind=field.authored_by,
+            leaves=leaves,
+            # A LEAF reference has no leaves to fill because it IS one: the mesh path, the target's
+            # name, the asset field. Carrying its type is what lets build_payload write the baked
+            # value at the reference's own path instead of under it.
+            leaf_type=field.type if field.authored_by in HOST_LEAF_KINDS else None,
+            asset_kinds=tuple(field.asset_kinds or ()),
+        ))
         return
 
     if field.fields:
@@ -868,6 +950,15 @@ def build_payload(
     for host in plan.hosts:
         if not host.is_authorable:
             continue
+        if host.leaf_type is not None:
+            # THE REFERENCE IS THE VALUE. Written at the host's own path, and written even when the
+            # caller baked nothing — an unassigned slot then exports the field's own empty value,
+            # which the runtime is free to refuse and can only refuse if the export is honest
+            # rather than omitting the key and calling it unauthored.
+            _write_path(payload, host.path, _wire_value(
+                FlatField(path=host.path, type=host.leaf_type, asset_kinds=host.asset_kinds),
+                values.get(host.path)))
+            continue
         for leaf in host.leaves:
             path = f"{host.path}/{leaf.name}"
             _write_path(payload, path, _wire_value(
@@ -947,6 +1038,14 @@ def _wire_value(field: FlatField, value: Any) -> Any:
         if len(floats) != 4:
             floats = [0.0, 0.0, 0.0, 1.0]
         return {"r": floats[0], "g": floats[1], "b": floats[2], "a": floats[3]}
+    if field.type in (TYPE_OBJECT, TYPE_ARRAY):
+        # NULL, not a number. A composed leaf reaches here only as the unbaked part of a host
+        # reference — a shape's NavObstacle, say — and the fall-through below would coerce it to
+        # a float, which is what it used to do: `"NavObstacle": 0`. That payload is not readable
+        # as the record it claims to be, so the runtime's registry drops the WHOLE component and
+        # the volume it described silently stops existing. Null is what the record's own field
+        # holds when nobody authored it, and it round-trips.
+        return None
     return float(value)
 
 

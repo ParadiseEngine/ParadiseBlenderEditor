@@ -1,19 +1,23 @@
 """Scene walk -> ``data/scenes/<Scene>.json``.
 
 Port of ``SceneDataExporter.ExportRoot``. Walks the scene once, dispatching each object to the
-right exporter, then writes the level document plus its side artifacts (materials, prefab
-templates, project settings, navmesh).
+right exporter, then writes the level document plus its side artifacts (materials, project
+settings, navmesh).
 
-Two structural differences from the Godot host:
+Since schema v5 the document is a version and a list of objects, and an object is a list of
+components — so this walk emits three kinds of object and nothing else:
 
-* **Order.** Godot walks the scene tree depth-first, so entity order follows the tree. Blender
-  gives no stable iteration order for ``scene.objects``, so entities are emitted sorted by
-  name (see :func:`..authoring.entity.entity_objects`). Without that, two exports of an
-  unchanged scene could differ, which would make every diff and every live-preview patch
-  noisy.
+* every authored entity that says something (:func:`..export.entity.export_entity`);
+* every lamp, carrying a Light — a lamp used to be an entry in a document-level lighting state
+  unless it happened to be marked as an entity, in which case it travelled as that entity's
+  component instead, with a rule saying it must not do both or the runtime would light it twice.
+  A lamp is a thing that is placed, and a thing that is placed is an object;
+* one object carrying the scene's Environment.
 
-* **Identity sweep.** GUID minting runs before the walk rather than on save alone, so an
-  unsaved .blend still exports unique identities.
+**Order.** Godot walks the scene tree depth-first, so entity order follows the tree. Blender gives
+no stable iteration order for ``scene.objects``, so objects are emitted sorted by name (see
+:func:`..authoring.entity.entity_objects`). Without that, two exports of an unchanged scene could
+differ, which would make every diff and every live-preview patch noisy.
 """
 
 from __future__ import annotations
@@ -24,22 +28,19 @@ import bpy
 
 from .. import log
 from ..authoring import entity as authoring
-from ..authoring.guid import ensure_unique_guids
 from ..contract import component_ids
-from ..contract.schema import LevelData
+from ..contract.schema import EntityComponentsData, LevelData
 from ..contract.writer import write_json_document
 from ..paths import ExportPaths
 from ..pipeline import prune
 from ..prefs import export_paths
 from . import navmesh as navmesh_export
 from . import project_settings
-from .camera import export_camera, find_camera
-from .entity import export_entity
+from .entity import export_entity, placement_components
 from .light import export_light
 from .material import MaterialExporter
 from .mesh import MeshExporter
-from .prefab import PrefabExporter
-from .world import export_environment, resolve_background_color
+from .world import export_environment
 
 __all__ = ["build_level_data", "export_scene", "resolve_scene_name"]
 
@@ -73,28 +74,18 @@ def build_level_data(
 
     materials = MaterialExporter()
     meshes = MeshExporter(force)
-    prefabs = PrefabExporter(materials, meshes)
 
-    camera = find_camera(scene)
-    if camera is not None:
-        document.camera = export_camera(camera, resolve_background_color(scene.world))
+    document.entities.append(_environment_object(scene, paths))
 
-    state = document.ensure_lighting_state()
-    settings = getattr(scene, "paradise_project", None)
-    if settings is not None:
-        if settings.shadow_map_size != "DEFAULT":
-            document.lighting.shadow_map_size = int(settings.shadow_map_size)
-        document.lighting.shadow_blur = round(settings.shadow_blur, 3)
-    state.environment = export_environment(scene)
-    for obj in sorted(
-        (o for o in scene.objects if o.type == "LIGHT"), key=lambda o: o.name
-    ):
+    for obj in sorted((o for o in scene.objects if o.type == "LIGHT"), key=lambda o: o.name):
         if authoring.is_entity(obj):
-            continue  # travels as that entity's Components.Light instead (export/entity.py)
-        state.lights.append(export_light(obj))
+            continue  # travels as that object's own Light component (export/entity.py)
+        document.entities.append(_light_object(obj, paths))
 
     for obj in authoring.entity_objects(scene):
-        document.entities.append(export_entity(obj, paths, materials, meshes, prefabs))
+        components = export_entity(obj, paths, materials, meshes)
+        if components is not None:
+            document.entities.append(components)
 
     if export_assets:
         written = materials.write_exported_materials(paths)
@@ -104,8 +95,42 @@ def build_level_data(
     return document
 
 
+def _environment_object(scene: bpy.types.Scene, paths: ExportPaths) -> EntityComponentsData:
+    """The scene's lighting and environment, as an object of its own.
+
+    An object with no Blender object behind it, which is why it has no name and no transform: it
+    is not placed, and there is nothing in the .blend to point at. The alternative — requiring an
+    author to keep a "scene settings" empty around and never delete it — trades a synthetic row in
+    the document for a load-bearing object in the scene, which is the worse of the two.
+    """
+    components = EntityComponentsData(data_dir=paths.data_dir)
+    environment = export_environment(scene)
+
+    settings = getattr(scene, "paradise_project", None)
+    if settings is not None:
+        if settings.shadow_map_size != "DEFAULT":
+            environment.shadow_map_size = int(settings.shadow_map_size)
+        environment.shadow_blur = round(settings.shadow_blur, 3)
+
+    components.add_engine(component_ids.ENVIRONMENT, environment)
+    return components
+
+
+def _light_object(obj: bpy.types.Object, paths: ExportPaths) -> EntityComponentsData:
+    """A lamp that is not an authored entity, as an object carrying its Light.
+
+    Named and placed like everything else. Its light also carries a world-space position and
+    direction of its own — the contract has always had both, and the duplication is the light
+    record's business rather than something this walk should resolve.
+    """
+    components = EntityComponentsData(data_dir=paths.data_dir)
+    placement_components(obj, components)
+    components.add_engine(component_ids.LIGHT, export_light(obj))
+    return components
+
+
 def export_scene(scene: bpy.types.Scene, operator=None, force: bool = False) -> str | None:
-    """Full export: level document, materials, prefabs, project settings, navmesh.
+    """Full export: level document, materials, project settings, navmesh.
 
     Returns the written scene JSON path, or ``None`` if the export could not run.
 
@@ -115,10 +140,6 @@ def export_scene(scene: bpy.types.Scene, operator=None, force: bool = False) -> 
     """
     paths = export_paths(scene)
     paths.ensure_output_directory()
-
-    repaired = ensure_unique_guids(scene)
-    if repaired:
-        log.info(f"Minted or repaired {repaired} entity GUID(s) before export.", operator)
 
     # The id drift guard, run once per export rather than per entity. The engine component ids in
     # contract/component_ids.py are transcribed from [Guid] attributes by hand and nothing keeps
@@ -133,7 +154,7 @@ def export_scene(scene: bpy.types.Scene, operator=None, force: bool = False) -> 
     document = build_level_data(scene, paths, force=force)
 
     project_settings.export_project_settings(paths)
-    navmesh_export.export_navmesh(scene, scene_name, paths, document, force)
+    navmesh_export.export_navmesh(scene, scene_name, paths, force)
 
     output_path = paths.level_data_output_path(scene_name)
     write_json_document(output_path, document.to_json())
@@ -143,13 +164,12 @@ def export_scene(scene: bpy.types.Scene, operator=None, force: bool = False) -> 
     _prune_data_directory(scene, paths, operator)
 
     log.info(
-        f"Exported scene data: {output_path} "
-        f"({len(document.entities)} entities, "
-        f"{len(document.lighting.states[0].lights) if document.lighting else 0} lights)",
-        operator,
-    )
+        f"Exported scene data: {output_path} ({len(document.entities)} objects)", operator)
 
-    if not document.entities:
+    # ONE, not zero: the environment object is always written, so an export that found nothing
+    # in the .blend still produces a document with a row in it. Counting against 1 rather than
+    # against emptiness is what keeps this warning firing at the case it is for.
+    if len(document.entities) <= 1:
         log.warn(
             "No Paradise entities were found, so the exported scene will render empty. Select "
             "objects and use Make Paradise Entity in the Paradise panel.",

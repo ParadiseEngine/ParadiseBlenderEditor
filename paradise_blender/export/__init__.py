@@ -4,13 +4,12 @@ Mirrors ``ParadiseGodotEditor/addons/paradise/Export/``. :mod:`.scene` is the en
 everything else is a piece it dispatches to.
 
 * :mod:`.scene`            -- the walk, and the document assembly
-* :mod:`.entity`           -- one object -> ``LevelEntityData``
+* :mod:`.entity`           -- one object -> its authored components
 * :mod:`.transform`        -- convert-then-decompose (read this before touching transforms)
 * :mod:`.collider`         -- collider objects -> shapes, with scale folding
 * :mod:`.material`         -- Principled BSDF -> ``LevelMaterialData``
 * :mod:`.mesh`             -- entity geometry -> GLB under ``data/Models/``
-* :mod:`.camera` :mod:`.light` :mod:`.world` -- scene-level data
-* :mod:`.prefab`           -- collection instances -> prefab identity and templates
+* :mod:`.light` :mod:`.world` -- the lamps and the environment, each its own object
 * :mod:`.navmesh`          -- walkable geometry -> the .NET bridge -> DotRecast binary
 * :mod:`.project_settings` -- ``data/ProjectSettings.json``
 * :mod:`.ops`              -- operators and the save hook
@@ -19,7 +18,6 @@ everything else is a piece it dispatches to.
 from __future__ import annotations
 
 from . import (
-    camera,
     collider,
     entity,
     light,
@@ -27,7 +25,6 @@ from . import (
     mesh,
     navmesh,
     ops,
-    prefab,
     project_settings,
     scene,
     transform,
@@ -35,7 +32,6 @@ from . import (
 )
 
 __all__ = [
-    "camera",
     "collider",
     "entity",
     "light",
@@ -43,7 +39,6 @@ __all__ = [
     "mesh",
     "navmesh",
     "ops",
-    "prefab",
     "project_settings",
     "scene",
     "transform",

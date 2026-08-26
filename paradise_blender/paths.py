@@ -55,11 +55,6 @@ class ExportPaths:
     def nav_mesh_output_path(self, scene_name: str) -> str:
         return os.path.join(self._scenes_dir, f"{scene_name}.navmesh.bin")
 
-    def nav_mesh_file_field(self, scene_name: str) -> str:
-        """The value stored in ``LevelData.NavMeshFile``: a bare filename, resolved by the
-        runtime as a sibling of the scene JSON."""
-        return os.path.basename(self.nav_mesh_output_path(scene_name))
-
     def project_settings_output_path(self) -> str:
         return os.path.join(self._data_dir, "ProjectSettings.json")
 

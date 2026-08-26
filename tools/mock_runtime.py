@@ -27,6 +27,25 @@ import sys
 PROTOCOL_VERSION = 1
 
 
+#: The two engine components this mock reads. An OBJECT is a bare list of component entries since
+#: schema v5, so there is no Id and no EntityGuid to key on — what identifies one in the patch
+#: stream is its name, which is a component like everything else.
+NAME_ID = "f83f51f4-093a-42c9-aa7a-f50f48c3b5f9"
+TRANSFORM_ID = "5b1a2ea9-a4bb-4ba2-be15-b645ccf50004"
+
+
+def _payload_of(entity: list, component_id: str) -> dict:
+    """One component's Data on an object, or an empty dict."""
+    for component in entity or []:
+        if component.get("Id") == component_id:
+            return component.get("Data") or {}
+    return {}
+
+
+def _name_of(entity: list) -> str:
+    return _payload_of(entity, NAME_ID).get("Value", "")
+
+
 class MockRuntime:
     """Maintains the scene state a real runtime would render."""
 
@@ -88,16 +107,16 @@ class MockRuntime:
     def _on_full(self, message: dict) -> None:
         scene = message.get("scene") or {}
         entities = scene.get("Entities") or []
-        self.entities = {e.get("EntityGuid", e.get("Id", "")): e for e in entities}
+        self.entities = {_name_of(e): e for e in entities}
         self.full_syncs += 1
         self._log(f"scene/full: {len(self.entities)} entities")
         return None
 
     def _on_patch(self, message: dict) -> None:
         for entity in (message.get("added") or []) + (message.get("updated") or []):
-            self.entities[entity.get("EntityGuid", entity.get("Id", ""))] = entity
-        for guid in message.get("removed") or []:
-            self.entities.pop(guid, None)
+            self.entities[_name_of(entity)] = entity
+        for name in message.get("removed") or []:
+            self.entities.pop(name, None)
 
         self.patches += 1
         changed = len(message.get("updated") or []) + len(message.get("added") or [])
@@ -106,9 +125,9 @@ class MockRuntime:
 
         if self.verbose:
             for entity in message.get("updated") or []:
-                world = entity.get("WorldMatrix") or []
+                world = _payload_of(entity, TRANSFORM_ID).get("World") or []
                 position = world[12:15] if len(world) >= 15 else "?"
-                self._log(f"    {entity.get('Id')} -> {position}")
+                self._log(f"    {_name_of(entity)} -> {position}")
         return None
 
     def _log(self, text: str) -> None:

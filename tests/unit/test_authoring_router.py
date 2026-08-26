@@ -1,8 +1,13 @@
 """Tests for the engine-component router.
 
-Pinned against ``Paradise.Export.Data.AuthoredComponentRouter``: an authored engine payload
-must land in the same typed slot (or on the entity itself, for identity) that the C# router
-would put it in, or the same scene authored in the two hosts stops meaning the same thing.
+What is left of it. Routing was a dispatch that decided WHERE a payload landed — nine typed slots
+once, then one exception for identity, which was spread onto the entity record because it was what
+the entity WAS. Schema v5 deleted the record, and with it the exception; every payload rides
+verbatim into the object's component list.
+
+So the subject here is the half that survived: the normalization the contract declares and NOTHING
+on the reading side calls. ``ValidateAndNormalize`` exists in C# and no runtime path invokes it,
+which makes clamping the editor's job — and this the module that does it.
 """
 
 from __future__ import annotations
@@ -11,12 +16,7 @@ from paradise_blender.contract import (
     authoring,
     authoring_router,
     component_ids,
-    schema,
 )
-
-
-def entity() -> schema.LevelEntityData:
-    return schema.LevelEntityData(id="Thing", kind="Prop", spawn_phase="LevelStart")
 
 
 def _field(name: str, type_: str, default=None, has_default: bool = True):
@@ -33,18 +33,6 @@ def _field(name: str, type_: str, default=None, has_default: bool = True):
 # tests actually exercise are declared — the subject is the ROUTER, which decides where a payload
 # lands and what normalization clamps, and neither answer depends on the fields it does not read.
 _SHAPES: dict[str, authoring.AuthoredComponentSchema] = {
-    component_ids.IDENTITY: authoring.AuthoredComponentSchema(
-        id=component_ids.IDENTITY,
-        type="Paradise.Export.Data.IdentityComponentData",
-        display_name="Identity",
-        fields=[
-            _field("Kind", authoring.TYPE_STRING, ""),
-            _field("DisplayName", authoring.TYPE_STRING, ""),
-            _field("SpawnPhase", authoring.TYPE_STRING, ""),
-            _field("Prefab", authoring.TYPE_STRING, ""),
-            _field("IsActive", authoring.TYPE_BOOL, True),
-        ],
-    ),
     component_ids.AUDIO_EMITTER: authoring.AuthoredComponentSchema(
         id=component_ids.AUDIO_EMITTER,
         type="Paradise.Export.Data.AudioEmitterComponentData",
@@ -101,36 +89,7 @@ def payload(component_id: str, values: dict) -> dict:
     return authoring.build_payload(engine_component(component_id), values)
 
 
-class TestIdentity:
-    def test_spreads_across_the_entity_itself(self):
-        target = entity()
-        applied = authoring_router.apply(
-            target, component_ids.IDENTITY,
-            payload(component_ids.IDENTITY, {"Kind": "Car", "IsActive": False}))
-        assert applied
-        assert target.kind == "Car"
-        assert target.is_active is False
-
-    def test_blank_overridables_leave_the_exporter_values_alone(self):
-        target = entity()
-        target.prefab = "Models/Car.glb"
-        target.display_name = None
-        authoring_router.apply(
-            target, component_ids.IDENTITY, payload(component_ids.IDENTITY, {}))
-        assert target.prefab == "Models/Car.glb"
-        assert target.spawn_phase == "LevelStart"
-        assert target.kind == "Prop"
-
-
 class TestNormalization:
-    """What survived the typed slots.
-
-    These used to assert that four components landed in four named slots, unpacked field by
-    field. Nothing is unpacked on the way out any more — a payload rides verbatim — so what is
-    left to pin is the clamping the contract does and NOTHING on the reading side calls: the
-    ValidateAndNormalize methods exist in C# but no runtime path invokes them, which makes this
-    the editor's job and this module the place it happens.
-    """
 
     def test_audio_emitter_is_normalized_like_the_contract(self):
         emitted = authoring_router.normalize(
@@ -162,11 +121,17 @@ class TestNormalization:
 
 
 class TestRefusals:
-    def test_host_owned_and_unknown_engine_ids_are_not_routed(self):
-        target = entity()
+    def test_a_component_with_no_normalization_is_returned_unchanged(self):
+        """Every id but the two clamped ones, including host-owned and unknown engine components
+        and a game's own. There is no longer any id the router treats SPECIALLY beyond clamping,
+        which is what makes this a one-liner rather than a table of destinations."""
         for component_id in (component_ids.RENDERABLE, component_ids.COLLIDER, component_ids.LIGHT,
-                             component_ids.SPRITE_ANIMATION, "7b1e0d4a-2c95-4f88-b3e6-05a9d1c7e264"):
-            assert authoring_router.apply(target, component_id, {}) is False
+                             component_ids.SPRITE_ANIMATION, component_ids.NAME,
+                             component_ids.TRANSFORM, component_ids.ENVIRONMENT,
+                             "7b1e0d4a-2c95-4f88-b3e6-05a9d1c7e264"):
+            original = {"anything": [1, 2, 3]}
+            assert authoring_router.normalize(component_id, original) is original
 
-    def test_game_ids_are_not_routed(self):
-        assert authoring_router.apply(entity(), "c4e8a1b2-9f60-4d33-8a17-6b2e50d9fc84", {}) is False
+    def test_only_the_two_clamped_ids_are_routed(self):
+        assert set(authoring_router.ROUTED_IDS) == {
+            component_ids.AUDIO_EMITTER, component_ids.PARTICLE_EMITTER}

@@ -5,19 +5,18 @@ components this host authors through the schema. An editor knows only ids and JS
 idea that the rigidbody component belongs in ``Components.Rigidbody`` — so the mapping lives on
 the contract, where both halves can see it.
 
-Components are named in words below and spelled as GUIDs in the code: identity is
-``0c068bf4-…``, and the ids come from :mod:`.component_ids` so there is one place they are
-written down. A component's id says nothing about what it is any more, which is exactly why the
-prose has to.
+Components are named in words below and spelled as GUIDs in the code, and the ids come from
+:mod:`.component_ids` so there is one place they are written down. A component's id says nothing
+about what it is, which is exactly why the prose has to.
 
 The subset is deliberate, and the split is this host's, not the schema's:
 
-* **Routed here** (plain fields, authored in the Components panel): identity, agent, rigidbody,
+* **Routed here** (plain fields, authored in the Components panel): agent, rigidbody,
   audio-emitter, particle-emitter.
-* **Host-owned** (this host derives them from real Blender data, so authoring them as a form
-  would fight the pipeline): renderable (the mesh datablock), collider / interactable (the
-  collider empties), light (the lamp datablock). The schema marks light and sprite-animation as
-  host-baked anyway (component-level ``authoredBy``).
+* **Host-derived** (this host reads them off real Blender data, so authoring them as a form would
+  fight the pipeline): the object's name, its transform, its material slots, and the lamp
+  datablock's light. Interactable is NOT among them — it declares no array and no ``authoredBy``,
+  so it is an ordinary form component like any other.
 
 Payloads arrive as the WIRE dicts :func:`.authoring.build_payload` produces — schema defaults
 already filled, enums as member names, colors as ``{r,g,b,a}`` — so this module only maps
@@ -34,35 +33,24 @@ from . import component_ids
 from .color import Color32
 from .schema import (
     AudioEmitterComponentData,
-    LevelEntityData,
     ParticleEmitterComponentData,
 )
 
-__all__ = ["ROUTED_IDS", "apply"]
+__all__ = ["ROUTED_IDS", "normalize"]
 
-IDENTITY = component_ids.IDENTITY
 AGENT = component_ids.AGENT
 RIGIDBODY = component_ids.RIGIDBODY
 AUDIO_EMITTER = component_ids.AUDIO_EMITTER
 PARTICLE_EMITTER = component_ids.PARTICLE_EMITTER
 
-#: The ids this module still has something to say about: identity, which :func:`apply` spreads
-#: onto the entity, and the two :func:`normalize` clamps on the way out. Everything else rides
-#: verbatim, which is the whole point of the change that shrank this list.
-ROUTED_IDS = frozenset({IDENTITY, AUDIO_EMITTER, PARTICLE_EMITTER})
-
-
-def apply(entity: LevelEntityData, component_id: str, payload: dict[str, Any]) -> bool:
-    """Spread identity onto the entity's own fields. False for everything else.
-
-    All that is left of what used to be a nine-way dispatch into typed slots. Identity is the one
-    component that is not a component on the wire — it is what the entity IS — so it is the one
-    that still needs somewhere else to go.
-    """
-    if component_id == IDENTITY:
-        _apply_identity(entity, payload)
-        return True
-    return False
+#: The ids this module still has something to say about: the two :func:`normalize` clamps on the
+#: way out. Everything else rides verbatim.
+#:
+#: Identity was the third, and the only one that was not a component on the wire — it was spread
+#: onto the entity record's own fields, because it was what the entity WAS rather than something
+#: it had. Schema v5 deleted the record; the component went with it, and with it the last reason
+#: this module needed a dispatch rather than a pair of clamps.
+ROUTED_IDS = frozenset({AUDIO_EMITTER, PARTICLE_EMITTER})
 
 
 def normalize(component_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -90,22 +78,6 @@ def normalize(component_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     if component_id == PARTICLE_EMITTER:
         return _normalized_particles(payload)
     return payload
-
-
-def _apply_identity(entity: LevelEntityData, payload: dict[str, Any]) -> None:
-    """Spread across the entity's own fields — identity is what an entity IS, not something it
-    has, matching the C# router. Blank overridables (DisplayName, SpawnPhase, Prefab) leave the
-    exporter's own values alone; here Prefab joins that list because ``model_path`` is
-    host-level data the exporter already resolved, and the C# router never faces that."""
-    entity.kind = _null_if_blank(payload.get("Kind")) or "Prop"
-    entity.is_active = bool(payload["IsActive"])
-    entity.initial_animation = _null_if_blank(payload.get("InitialAnimation"))
-    if _null_if_blank(payload.get("Prefab")) is not None:
-        entity.prefab = payload["Prefab"]
-    if _null_if_blank(payload.get("DisplayName")) is not None:
-        entity.display_name = payload["DisplayName"]
-    if _null_if_blank(payload.get("SpawnPhase")) is not None:
-        entity.spawn_phase = payload["SpawnPhase"]
 
 
 def _normalized_particles(payload: dict[str, Any]) -> dict[str, Any]:

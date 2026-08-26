@@ -30,7 +30,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Paradise.Export" Version="0.21.0" />
+    <PackageReference Include="Paradise.Export" Version="0.25.0" />
     <!-- The Recast bake itself: Paradise.Export's NavMeshBinaryWriter consumes an already
          triangulated navmesh (Godot bakes before handing it over), so the bake that Godot's
          NavigationServer3D performs has to happen here instead. -->

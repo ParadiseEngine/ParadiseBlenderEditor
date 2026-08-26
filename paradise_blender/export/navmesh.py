@@ -107,17 +107,16 @@ def bake_settings(scene: bpy.types.Scene) -> dict[str, float]:
 
 
 def export_navmesh(
-    scene: bpy.types.Scene,
-    scene_name: str,
-    paths: ExportPaths,
-    document: LevelData,
-    force: bool = False,
+    scene: bpy.types.Scene, scene_name: str, paths: ExportPaths, force: bool = False
 ) -> None:
-    """Bake and record the navmesh, or leave ``NavMeshFile`` null."""
-    if bake_navmesh(scene, scene_name, paths, force=force) is None:
-        return
+    """Bake the navmesh beside the scene document.
 
-    document.nav_mesh_file = paths.nav_mesh_file_field(scene_name)
+    Nothing records the result in the document any more: the ``NavMeshFile`` key went with the
+    rest of the document shell in schema v5, and it was a field stating what the filename already
+    says — the bake writes ``<scene>.navmesh.bin`` next to ``<scene>.json``, so a consumer that
+    can open one can find the other.
+    """
+    bake_navmesh(scene, scene_name, paths, force=force)
 
 
 def bake_navmesh(

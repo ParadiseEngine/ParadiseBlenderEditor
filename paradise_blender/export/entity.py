@@ -1,14 +1,24 @@
-"""One Blender object -> ``LevelEntityData``.
+"""One Blender object -> its authored components.
 
-Port of ``SceneDataExporter.ExportEntity`` / ``BuildComponents``.
+Port of ``SceneDataExporter.ExportEntity`` / ``BuildComponents``, against schema v5 — where an
+object in the document IS a list of components and there is no entity record at all.
 
-One deliberate deviation from the Godot host: the local transform is computed relative to the
-**nearest entity ancestor**, not the immediate parent object. Godot writes the node's own
-``Position`` while reporting the nearest ``EntityExport`` ancestor as ``Parent`` -- so when a
-plain ``Node3D`` sits between two entities, its local transform and its declared parent
-disagree. Blender scenes routinely have such intermediate objects (empties used for rigging or
-grouping), so the local transform is made consistent with the declared parent instead. For the
-common case where the parent entity *is* the immediate parent, the two agree exactly.
+What that removed, and it is most of what this module used to do: the object's id, stable id,
+display name, kind, spawn phase, active flag, prefab provenance (five fields), initial animation,
+parent link, three decomposed local transform fields and two matrices, and an override table. Two
+of those survive as ordinary components — the NAME, because a runtime refusal has to be able to
+say which object it is about, and the world TRANSFORM, because anything that exists is somewhere.
+The rest were written by this host and read by nobody.
+
+The deliberate consequence: an object that authors nothing is not exported. It used to be, as a
+positioned empty with an empty component list — a row in the document that meant "an author
+marked this and then said nothing about it", which no runtime can act on.
+
+One deviation from the Godot host is gone with the parent link. This module used to compute the
+local transform relative to the nearest ENTITY ancestor rather than the immediate parent, because
+Godot writes the node's own position while declaring the nearest entity ancestor as the parent,
+and the two disagree whenever a plain Node3D sits between them. There is no local transform and no
+parent now: an object's placement is stated in world space, once.
 """
 
 from __future__ import annotations
@@ -16,36 +26,41 @@ from __future__ import annotations
 import bpy
 
 from ..authoring import authored_components
-from ..authoring import entity as authoring
-from ..authoring.guid import ensure_entity_guid
 from ..contract import authoring_router, component_ids
 from ..contract.schema import (
     AuthoredComponentData,
     ColliderComponentData,
     EntityComponentsData,
-    EntityInteractableComponentData,
-    EntityParentData,
-    LevelEntityData,
+    MaterialsComponentData,
+    NameComponentData,
     PhysicsBodyType,
-    RenderableComponentData,
     RigidbodyComponentData,
+    TransformComponentData,
 )
 from ..paths import ExportPaths
 from .collider import build_colliders
 from .light import export_light
-from .transform import decompose_contract
+from .transform import to_contract_matrix
 
-__all__ = ["export_entity", "find_parent_entity"]
+__all__ = ["export_entity", "placement_components"]
 
 
-def find_parent_entity(obj: bpy.types.Object) -> bpy.types.Object | None:
-    """Nearest ancestor that is itself an exported entity."""
-    parent = obj.parent
-    while parent is not None:
-        if authoring.is_entity(parent):
-            return parent
-        parent = parent.parent
-    return None
+def placement_components(obj: bpy.types.Object, components: EntityComponentsData) -> None:
+    """The two things this host says about every object it writes: what it is called, and where
+    it stands.
+
+    Separate and public because the scene walk uses it for objects that are not authored entities
+    at all — a lamp, the scene's environment — and those need naming and placing by exactly the
+    same rule. A second spelling of "write a Name and a Transform" is a second thing that can
+    disagree about the matrix convention.
+    """
+    components.add_engine(component_ids.NAME, NameComponentData(value=obj.name))
+    # The CONVERTED matrix, not one rebuilt from a decomposition. The entity record used to carry
+    # both a decomposed pose and a matrix, and kept them consistent by writing the matrix as
+    # trs(decompose(...)) -- lossy for a sheared transform, and the only reason to do it was that
+    # the two had to agree. With one value there is nothing to agree with, so it is exact.
+    components.add_engine(
+        component_ids.TRANSFORM, TransformComponentData(world=to_contract_matrix(obj.matrix_world)))
 
 
 def export_entity(
@@ -53,76 +68,52 @@ def export_entity(
     paths: ExportPaths,
     materials,  # MaterialExporter
     meshes,  # MeshExporter
-    prefabs,  # PrefabExporter
-) -> LevelEntityData:
-    props = obj.paradise
-    parent_entity = find_parent_entity(obj)
+) -> EntityComponentsData | None:
+    """This object's components, or None when it authors nothing worth a row in the document.
 
-    # Local transform relative to the declared parent entity (see the module docstring).
-    if parent_entity is not None:
-        local_matrix = parent_entity.matrix_world.inverted_safe() @ obj.matrix_world
-    else:
-        local_matrix = obj.matrix_world.copy()
+    "Nothing" means nothing BEYOND the name and the transform this host writes unconditionally.
+    An empty an author marked as an entity and never gave a mesh, a collider or a component is
+    not a statement about the world; the runtime would build an entity with no shape for it and
+    then have nothing to do with it.
+    """
+    components = EntityComponentsData(data_dir=paths.data_dir)
+    placement_components(obj, components)
+    placed = len(components.components)
 
-    local_position, local_rotation, local_scale, local_contract = decompose_contract(local_matrix)
-    _, _, _, world_contract = decompose_contract(obj.matrix_world)
+    _build_derived(obj, paths, materials, meshes, components)
+    _apply_authored_components(obj, components, paths, meshes)
 
-    identity = prefabs.resolve_and_export(obj, paths)
-
-    entity = LevelEntityData(
-        id=obj.name,
-        # Mint if the object has never been saved, so a fresh entity never exports the all-zero
-        # GUID -- which would collide across every such entity at runtime.
-        entity_guid=ensure_entity_guid(obj),
-        stable_id=obj.name,
-        # Identity defaults; an authored paradise.identity component overrides them below.
-        kind="Prop",
-        spawn_phase="LevelStart",
-        is_active=True,
-        prefab=props.model_path.strip() or None,
-        prefab_asset_path=identity.prefab_asset_path,
-        prefab_guid=identity.prefab_guid,
-        prefab_asset_type=identity.prefab_asset_type,
-        nearest_instance_root=identity.nearest_instance_root,
-        initial_animation=None,
-        parent=EntityParentData(id=parent_entity.name) if parent_entity is not None else None,
-        local_position=local_position,
-        local_rotation=local_rotation,
-        local_scale=local_scale,
-        local_matrix=local_contract,
-        world_matrix=world_contract,
-        components=_build_components(obj, paths, materials, meshes),
-    )
-    _apply_authored_components(obj, entity, paths)
-    return entity
+    return components if len(components.components) > placed else None
 
 
-def _build_components(
+def _build_derived(
     obj: bpy.types.Object,
     paths: ExportPaths,
     materials,  # MaterialExporter
     meshes,  # MeshExporter
-) -> EntityComponentsData:
-    props = obj.paradise
-    components = EntityComponentsData(data_dir=paths.data_dir)
+    components: EntityComponentsData,
+) -> None:
+    """The components this host reads off the Blender object rather than off a form.
 
-    mesh_field = meshes.resolve_mesh_field(obj, paths)
-    if mesh_field is not None or props.model_path.strip():
-        # The slots are read here rather than on the entity because that is where they live as of
-        # contract v4 -- they index the GLB's primitives, so they belong to the component naming
-        # the GLB. Both branches carry them: the second is an authored model path that did not
-        # resolve, which still marks the entity renderable so the runtime reports a missing mesh
-        # rather than silently treating it as invisible -- and its slots are just as authored.
-        #
-        # Reading them is not free of consequence: export_material_slots REGISTERS each material
-        # for writing, so an object that produces no Renderable at all no longer emits its
-        # material documents. That is the correct output -- nothing in the level referenced them
-        # once the entity had no renderable to index them by -- but it is a real change from v3,
-        # where every object's slots were read whether or not anything could use them.
-        components.add_engine(component_ids.RENDERABLE, RenderableComponentData(
-            mesh=mesh_field,
-            materials=materials.export_material_slots(obj),
-        ))
+    These are as authored as anything in the Components panel — an author draws a mesh and a
+    collider with Blender's own tools, which is exactly what "authored" means for geometry. They
+    are derived here because the alternative is an object slot pointing at the object's own data.
+    """
+    props = obj.paradise
+
+    # NO RENDERABLE. It used to be derived here — "this object has mesh data, so it draws" — which
+    # made drawing something an exporter inferred rather than something an author said, and left a
+    # game with no way to distinguish a prop's mesh from a skinned actor's. Both are components an
+    # author attaches now, pointing at the object whose geometry to export (`authoredBy: mesh`),
+    # and _apply_authored_components bakes them.
+    #
+    # The SLOTS are still derived, and that asymmetry is the point: which GLB an object draws is a
+    # decision, and which materials override its primitives is Blender's material stack. There is
+    # nothing for a picker to add, so the exporter reads it — the same standing the name and the
+    # transform have.
+    slots = materials.export_material_slots(obj)
+    if slots:
+        components.add_engine(component_ids.MATERIALS, MaterialsComponentData(slots=slots))
 
     # The collider component's own references, resolved off the SCHEMA rather than a collection
     # named in Python. This is the last dedicated collider path, and it is not here for storage: a
@@ -132,7 +123,7 @@ def _build_components(
         components.add_engine(component_ids.COLLIDER, ColliderComponentData(colliders=physics))
         # A derived body: a wall, a shelf, a parked car — static, no mass. An authored
         # rigidbody REPLACES this entry, and _apply_authored_components upgrades it to
-        # Kinematic when the entity also authors an agent — the rule the old fixed flags
+        # Kinematic when the object also authors an agent — the rule the old fixed flags
         # (is_dynamic_body / is_agent) used to encode.
         components.add_engine(component_ids.RIGIDBODY, RigidbodyComponentData(
             body_type=PhysicsBodyType.STATIC,
@@ -142,32 +133,28 @@ def _build_components(
         ))
 
     if obj.type == "LIGHT":
-        # A lamp marked as an entity OWNS its light: it travels as Components.Light (the same
-        # entity-owned entry the Godot host authors by pointing at a light) and is left out of
-        # the scene-level Lighting state (see scene.py), or the runtime would light it twice.
-        # Position and direction are world-space, exactly as the scene-level list carries them.
+        # A lamp marked as an entity owns its light here rather than being emitted again by the
+        # scene walk, which skips it for exactly that reason (see scene.py). Position and
+        # direction are world-space, as the contract carries them.
         components.add_engine(component_ids.LIGHT, export_light(obj))
-
-    return components
 
 
 def _apply_authored_components(
-    obj: bpy.types.Object, entity: LevelEntityData, paths: ExportPaths
+    obj: bpy.types.Object,
+    components: EntityComponentsData,
+    paths: ExportPaths,
+    meshes,  # MeshExporter
 ) -> None:
-    """Put every authored component on the entity.
+    """Put every authored component on the object.
 
-    One destination now, and identity is the only exception: it is spread onto the entity's own
-    fields because it is what the entity IS, not something it has. Everything else — the engine's
-    components and a game's alike — is appended to the same list.
+    ONE destination now, and no exceptions. Identity used to be spread onto the entity's own
+    fields because it was what the entity WAS rather than something it had; there are no fields
+    left to spread onto, and the record went with them.
     """
-    components = entity.components
     authored_ids: set[str] = set()
 
     for component_id, component_type, payload in authored_components.build_component_payloads(
-            obj, paths.data_dir):
-        if authoring_router.apply(entity, component_id, payload):
-            continue  # identity, spread onto the entity and leaving no entry
-
+            obj, paths.data_dir, paths, meshes):
         authored_ids.add(component_id)
 
         entry = AuthoredComponentData(
@@ -178,8 +165,8 @@ def _apply_authored_components(
         # An authored component REPLACES the entry this host derived for the same id rather than
         # adding a second one — two entries for one component is a document nothing can read
         # sensibly. In practice only the rigidbody gets here: everything else this host derives
-        # (renderable, light) is not authorable, and the collider lists are exported from their
-        # pointer collections, never from a payload.
+        # (name, transform, renderable, light) is not authorable, and the collider lists are
+        # exported from their pointer collections, never from a payload.
         existing = components.find(component_id)
         if existing is not None:
             components.components[components.components.index(existing)] = entry
@@ -196,4 +183,3 @@ def _apply_authored_components(
         derived_body = components.find(component_ids.RIGIDBODY)
         if derived_body is not None:
             derived_body.data["BodyType"] = PhysicsBodyType.KINEMATIC
-

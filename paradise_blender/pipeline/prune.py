@@ -59,16 +59,9 @@ __all__ = ["OWNED", "prune_orphans"]
 OWNED: dict[str, tuple[str, ...]] = {
     "Models": (".glb", ".ktx2"),
     "materials": (".json",),
-    "prefabs": (".json",),
     "sprites": (".ktx2",),
     "scenes": (".bin",),
 }
-
-
-#: Keys under which a prefab document states its own identity. A scene entity references a prefab
-#: by asset path and guid rather than by document path, so this is the one place a filename-based
-#: rule cannot work and identity has to be matched instead.
-PREFAB_IDENTITY_KEYS = ("PrefabAssetPath", "PrefabGuid", "DisplayName")
 
 
 def prune_orphans(paths: ExportPaths, dry_run: bool = False) -> list[str]:
@@ -97,7 +90,6 @@ def prune_orphans(paths: ExportPaths, dry_run: bool = False) -> list[str]:
     # spelling (or the same folding breaks every read on a case-sensitive filesystem, and a GLB
     # that cannot be read is a GLB whose textures look unreferenced).
     live: dict[str, str] = {}
-    strings: set[str] = set()
 
     seeds = list(scene_documents)
     settings = paths.project_settings_output_path()
@@ -106,7 +98,7 @@ def prune_orphans(paths: ExportPaths, dry_run: bool = False) -> list[str]:
         seeds.append((settings, settings_document))
 
     owned = _owned_files(paths)
-    _walk_documents(paths, seeds, live, strings)
+    _walk_documents(paths, seeds, live)
     _collect_sidecars(paths, live)
     _collect_transcode_targets(paths, owned, live)
 
@@ -163,7 +155,6 @@ def _walk_documents(
     paths: ExportPaths,
     seeds: list[tuple[str, dict]],
     live: dict[str, str],
-    strings: set[str],
 ) -> None:
     """Mark everything reachable from the root documents, following documents transitively.
 
@@ -172,14 +163,13 @@ def _walk_documents(
     those textures -- caught by a test, not by review, which is the argument for the fixpoint over
     a hand-enumerated two-level walk.
 
-    Prefab templates join the frontier by IDENTITY rather than by path. They are the one artifact
-    a scene does not address by filename: an entity carries the prefab's asset path and guid,
-    while the document is named after the collection. A template whose identity appears in no
-    scene is genuinely orphaned -- a prefab collection that was renamed or deleted.
+    Every artifact joins the frontier by PATH. Prefab templates used to be the exception, matched
+    by identity because a scene addressed one by asset path and guid while the document was named
+    after the collection — and both the templates and the fields that referenced them went with
+    the entity record in schema v5.
     """
     queue = list(seeds)
     walked: set[str] = set()
-    matched_against = 0
 
     while queue:
         path, document = queue.pop()
@@ -188,15 +178,7 @@ def _walk_documents(
             continue
         walked.add(key)
 
-        _collect(document, os.path.dirname(path), paths, live, strings)
-
-        # Prefabs are matched by identity against every string seen so far, so a rescan can only
-        # find something new if `strings` grew since the last one. Without this guard the walk is
-        # O(documents x prefabs) -- unnoticeable at ShiningPie's scale, but the two counts both
-        # grow with the project, so it is the product that gets away from you.
-        if len(strings) != matched_against:
-            matched_against = len(strings)
-            _mark_matching_prefabs(paths, live, strings)
+        _collect(document, os.path.dirname(path), paths, live)
 
         for field in sorted(live.values()):
             if not field.lower().endswith(".json"):
@@ -212,30 +194,8 @@ def _walk_documents(
             queue.append((document_path, found))
 
 
-def _mark_matching_prefabs(paths: ExportPaths, live: dict[str, str], strings: set[str]) -> None:
-    """Mark prefab templates whose declared identity some document names."""
-    directory = os.path.join(paths.data_dir, "prefabs")
-    if not os.path.isdir(directory):
-        return
-
-    for name in sorted(os.listdir(directory)):
-        field = f"prefabs/{name}"
-        if not name.lower().endswith(".json") or _normalized(field) in live:
-            continue
-
-        document = _read_json(os.path.join(directory, name))
-        if document is None:
-            # Unreadable is not evidence of being unreferenced. Keep it.
-            live[_normalized(field)] = field
-            continue
-
-        identities = {document.get(key) for key in PREFAB_IDENTITY_KEYS} - {None}
-        if identities & strings:
-            live[_normalized(field)] = field
-
-
 def _collect(
-    node: object, directory: str, paths: ExportPaths, live: dict[str, str], strings: set[str]
+    node: object, directory: str, paths: ExportPaths, live: dict[str, str]
 ) -> None:
     """Walk a document, marking every string that names a real file under ``data/``.
 
@@ -246,12 +206,11 @@ def _collect(
     """
     if isinstance(node, dict):
         for value in node.values():
-            _collect(value, directory, paths, live, strings)
+            _collect(value, directory, paths, live)
     elif isinstance(node, list):
         for item in node:
-            _collect(item, directory, paths, live, strings)
+            _collect(item, directory, paths, live)
     elif isinstance(node, str) and node:
-        strings.add(node)
         for candidate in (node, os.path.join(directory, node)):
             field = _as_existing_field(candidate, paths)
             if field is not None:

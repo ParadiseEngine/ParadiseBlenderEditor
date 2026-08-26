@@ -607,10 +607,20 @@ class PARADISE_PT_entity_components(_ParadisePanel, Panel):
         for host in hosts:
             key = authored.value_key(component.id, host.path)
             if host.is_authorable and key in obj:
-                # An OBJECT SLOT, not a text field. You point at the empty and move it with
-                # Blender's own gizmo; the exporter bakes where it ended up. Nothing is mirrored
-                # into this panel, because the reference IS the authoring surface — a second copy
-                # of the numbers here would be a copy that can disagree with the object.
+                if host.kind == contract_authoring.HOST_ASSET:
+                    # A FILE, not an object: there is nothing in the scene to point at. Drawn as
+                    # the plain field it is — the extensions the schema declares are enforced at
+                    # export, where the path can be checked against what is actually on disk.
+                    label = host.path
+                    if host.asset_kinds:
+                        label = f"{host.path} ({', '.join(host.asset_kinds)})"
+                    box.prop(obj, f'["{key}"]', text=label)
+                    continue
+                # An OBJECT SLOT, not a text field. You point at the object and move it with
+                # Blender's own gizmo; the exporter bakes what the KIND says to take from it —
+                # where it stands, the collider drawn on it, its geometry, or its name. Nothing is
+                # mirrored into this panel, because the reference IS the authoring surface, and a
+                # second copy of the numbers here would be one that can disagree with the object.
                 box.prop_search(obj, f'["{key}"]', bpy.data, "objects", text=host.path)
                 continue
             row = box.row()

@@ -153,7 +153,15 @@ def stored_value(obj: bpy.types.Object, component_id: str, path: str, default=No
 #: Light and sprite-animation are deliberately NOT here. The schema marks both ``authoredBy`` on
 #: the component itself, so :func:`is_authorable` already excludes them — listing them again would
 #: be a second copy of a fact the document states. Anything the schema can say, let it say.
-HOST_DERIVED_IDS = frozenset({component_ids.RENDERABLE})
+HOST_DERIVED_IDS = frozenset({
+    component_ids.RENDERABLE,
+    # What an object IS CALLED, WHERE IT STANDS, and WHICH MATERIALS override its mesh. All three
+    # are read off the Blender object by the export walk, so there is nothing for a form to add —
+    # and a panel offering them would let an author type a second, disagreeing answer.
+    component_ids.NAME,
+    component_ids.TRANSFORM,
+    component_ids.MATERIALS,
+})
 
 def host_list_field(component: authoring.AuthoredComponentSchema):
     """The schema field that MAKES this component a host list — an array whose items are authored
@@ -344,6 +352,77 @@ def values_for(obj: bpy.types.Object, component: authoring.AuthoredComponentSche
         # IDProperty arrays are not lists; the contract module expects plain Python.
         is_array = hasattr(stored, "__len__") and not isinstance(stored, str)
         values[field.path] = list(stored) if is_array else stored
+    return values
+
+
+def bake_leaf_refs(
+    obj: bpy.types.Object,
+    component: authoring.AuthoredComponentSchema,
+    values: dict,
+    paths=None,  # ExportPaths
+    meshes=None,  # MeshExporter
+) -> dict:
+    """Fill each reference whose value IS the reference: a mesh, another object, a file.
+
+    The third bake, and the one whose kinds differ in what they RESOLVE rather than in what they
+    read off a pose:
+
+    * ``mesh``   -- the referenced object's geometry, written out as a GLB, baked as the
+                    data-relative field naming it. Pointing at ITSELF is the normal case, which is
+                    why this one does not warn about self-reference the way the pose bake does: an
+                    object usually draws its own mesh, and the slot exists so that "this draws" is
+                    something an author SAYS rather than something an exporter infers from the
+                    object happening to have mesh data.
+    * ``entity`` -- the referenced object's NAME, verbatim. Nothing is read off it at all: the name
+                    is the reference, reduced to the one thing every exported object carries.
+    * ``asset``  -- a path the author picked, normalized to a data-relative field.
+
+    An unassigned or dangling reference leaves the value alone and the payload writes the field's
+    own empty value. The runtime is then free to refuse it, and can only refuse it if the export is
+    honest rather than inventing a mesh.
+
+    ``meshes`` is the export's OWN :class:`.mesh.MeshExporter`, not one made here: it deduplicates
+    by mesh datablock, so a throwaway would re-export the same GLB once per object pointing at it.
+    A caller with none — the panel, a test asking what a component would carry — bakes no mesh
+    reference, which is the truthful answer for a call that is not an export.
+    """
+    for host in authoring.flatten(component)[1]:
+        if not host.is_authorable or host.leaf_type is None:
+            continue
+        stored = obj.get(value_key(component.id, host.path), "")
+        if not isinstance(stored, str) or not stored:
+            continue
+
+        if host.kind == authoring.HOST_ASSET:
+            values[host.path] = stored
+            continue
+
+        target = bpy.data.objects.get(stored)
+        if target is None:
+            log.warn(
+                f"'{obj.name}' points '{component.display_name}.{host.path}' at an object named "
+                f"'{stored}', which is not in this file. It is NOT exported, so the runtime sees "
+                "the field unauthored — re-pick the object."
+            )
+            continue
+
+        if host.kind == authoring.HOST_ENTITY:
+            # The NAME, and only the name. Whether the target is exported at all is not knowable
+            # here — it depends on what IT authors — so a reference to an object that produces no
+            # entity is the runtime's refusal to make, by name, where it can say so.
+            values[host.path] = target.name
+            continue
+
+        if meshes is None or paths is None:
+            continue
+        field = meshes.resolve_mesh_field(target, paths)
+        if field is None:
+            log.warn(
+                f"'{obj.name}' points '{component.display_name}.{host.path}' at '{target.name}', "
+                "which has no geometry to export. It is NOT exported — point at a mesh object."
+            )
+            continue
+        values[host.path] = field
     return values
 
 
@@ -563,7 +642,7 @@ def is_field_visible(obj: bpy.types.ID, component_id: str, field: authoring.Flat
 # --------------------------------------------------------------------------------------
 
 
-def build_component_payloads(obj: bpy.types.Object, data_dir: str) -> list:
+def build_component_payloads(obj: bpy.types.Object, data_dir: str, paths=None, meshes=None) -> list:
     """Every enabled component as ``(id, type, payload)`` triples, in schema order so two exports
     of an unchanged scene are identical. The exporter routes each: engine ids into their typed
     slots (``contract.authoring_router``), game ids into ``Components.Custom``.
@@ -606,6 +685,7 @@ def build_component_payloads(obj: bpy.types.Object, data_dir: str) -> list:
             continue
         values = bake_transform_refs(obj, component, values_for(obj, component))
         values = bake_shape_refs(obj, component, values)
+        values = bake_leaf_refs(obj, component, values, paths, meshes)
         payload = authoring.build_payload(component, values)
         pairs.append((component.id, component.type, payload))
 

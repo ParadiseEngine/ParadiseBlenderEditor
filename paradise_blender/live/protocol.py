@@ -111,10 +111,16 @@ def scene_patch(
 ) -> Message:
     """Incremental entity changes.
 
-    ``updated`` and ``added`` carry whole ``LevelEntityData`` objects rather than field diffs:
-    an entity document is small, and a field-level diff would need the runtime to implement
-    merge semantics for every contract field -- far more surface for the two sides to disagree
-    on. ``removed`` carries entity GUIDs, which are stable where names are not.
+    ``updated`` and ``added`` carry whole objects -- component arrays -- rather than field diffs:
+    an object's document is small, and a field-level diff would need the runtime to implement
+    merge semantics for every contract field, which is far more surface for the two sides to
+    disagree on.
+
+    ``removed`` carries object NAMES, read from each object's Name component. It used to carry
+    entity GUIDs, on the grounds that a GUID is stable where a name is not -- true, and it went
+    with the entity record in schema v5. Nothing else identified an object, and inventing a second
+    identity for the live link alone would mean a value that exists in the patch stream and in no
+    exported document.
     """
     return {
         "type": "scene/patch",

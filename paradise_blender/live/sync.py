@@ -30,7 +30,6 @@ from ..authoring import entity as authoring
 from ..export.entity import export_entity
 from ..export.material import MaterialExporter
 from ..export.mesh import MeshExporter
-from ..export.prefab import PrefabExporter
 from ..prefs import export_paths, get_preferences
 from . import protocol
 
@@ -164,14 +163,15 @@ def _send_patch(scene: bpy.types.Scene) -> None:
     # here only resolve references, since re-exporting a GLB mid-drag would stall Blender.
     materials = MaterialExporter()
     meshes = MeshExporter()
-    prefabs = PrefabExporter(materials, meshes)
 
     updated = []
     for name in sorted(_dirty_objects):
         obj = scene.objects.get(name)
         if obj is None or not authoring.is_entity(obj):
             continue
-        updated.append(export_entity(obj, paths, materials, meshes, prefabs).to_json())
+        components = export_entity(obj, paths, materials, meshes)
+        if components is not None:
+            updated.append(components.to_json())
 
     _dirty_objects.clear()
 

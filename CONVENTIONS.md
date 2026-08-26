@@ -88,7 +88,8 @@ value — so `contract-check` compares semantically and treats byte parity as a 
 
 ## 4. Entity identity — Blender duplicates carry the GUID
 
-`LevelEntityData.EntityGuid` must be stable per placement and unique per scene.
+`object.paradise.entity_guid` must be stable per placement and unique per scene. It is HOST
+bookkeeping only: schema v5 dropped `EntityGuid` from the document, so nothing exports it.
 
 Godot stores it in node metadata and sweeps for collisions on editor save. Blender makes the
 uniqueness half harder: duplicating an object (`Shift+D`, `Alt+D`, copy/paste) deep-copies its

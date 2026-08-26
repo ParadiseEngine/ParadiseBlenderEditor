@@ -35,20 +35,33 @@ __all__ = [
     "AGENT",
     "AUDIO_EMITTER",
     "COLLIDER",
-    "IDENTITY",
+    "ENVIRONMENT",
     "INTERACTABLE",
     "LIGHT",
+    "MATERIALS",
+    "NAME",
     "PARTICLE_EMITTER",
     "RENDERABLE",
     "RIGIDBODY",
     "SPRITE_ANIMATION",
+    "TRANSFORM",
     "check_engine_ids",
     "engine_type_name",
 ]
 
-#: Entity-level identity. Routed onto the entity itself rather than into its components -- it is
-#: what the entity IS, not something it has.
-IDENTITY = "0c068bf4-495f-495b-be8d-9b02042a41c2"
+#: What an object is called, and where it stands. This host writes both for every object it
+#: emits: they are what the entity RECORD used to state as fields, and since v5 there is no
+#: record, only components.
+NAME = "f83f51f4-093a-42c9-aa7a-f50f48c3b5f9"
+TRANSFORM = "5b1a2ea9-a4bb-4ba2-be15-b645ccf50004"
+
+#: The scene's lighting and environment, written on an object of its own.
+ENVIRONMENT = "f5f4a867-fe27-426a-82f2-1a2de5aceb2f"
+
+#: The material slots overriding a mesh's own. Host-DERIVED like the name and the transform: a
+#: material assignment is Blender's material slots, not something an author types, so no picker
+#: could author it and no game can own it.
+MATERIALS = "bdc4fc87-d7b4-41f1-bc90-fc827005adfc"
 
 RENDERABLE = "f2c0357e-94dd-4a5a-9803-518066cb54b2"
 COLLIDER = "e1cd1bc8-86f2-4225-adc9-4a324c70ebf9"

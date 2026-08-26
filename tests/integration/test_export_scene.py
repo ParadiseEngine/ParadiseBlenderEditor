@@ -31,13 +31,25 @@ from paradise_blender.contract import component_ids  # noqa: E402
 from paradise_blender.export.scene import export_scene  # noqa: E402
 
 
-def payload_for(entity, component_id):
-    """One component's Data on an exported entity, or None. Components are a LIST now, so a test
-    asks by id rather than by a key whose absence used to mean "no such component"."""
-    for component in entity["Components"]:
+def payload_for(obj, component_id):
+    """One component's Data on an exported object, or None.
+
+    An object IS its component list since schema v5, so this takes the list itself — there is no
+    entity record to reach through, and no key whose absence means "no such component"."""
+    for component in obj:
         if component["Id"] == component_id:
             return component["Data"]
     return None
+
+
+def name_of(obj) -> str | None:
+    """What an object is called, read the only way there is to read it: off its Name component."""
+    payload = payload_for(obj, component_ids.NAME)
+    return None if payload is None else payload["Value"]
+
+
+def by_name(document) -> dict:
+    return {name_of(o): o for o in document["Entities"] if name_of(o) is not None}
 
 
 DATA_DIR = os.path.join(tempfile.gettempdir(), "paradise_export_test")
@@ -89,18 +101,41 @@ def write_authoring_schema() -> None:
     contract_authoring._cache.clear()
 
 
-def _attach(obj, component_id: str, **fields) -> None:
-    """Attach one authored engine component, as the Components panel would."""
-    from paradise_blender.authoring import authored_components
+def _component(component_id: str):
+    """One component's schema, as the panel resolves it."""
     from paradise_blender.contract import authoring as contract_authoring
-
-    matched = False
 
     for component in contract_authoring.schema_for_data_dir(DATA_DIR).components:
         if component.id == component_id:
-            authored_components.enable_component(obj, component)
-            matched = True
-            break
+            return component
+    return None
+
+
+def _point_at(obj, component_id: str, target) -> None:
+    """Fill one of a component's host-object references, as the Components panel would.
+
+    ONE store keyed by ``<component-id>/<field>``, which is what replaced the two hand-declared
+    collections (``physics_colliders``, ``interactable_colliders``) that made host references an
+    engine-component privilege. A test that still reached for those was pointing at properties the
+    addon no longer registers.
+    """
+    from paradise_blender.authoring import authored_components
+
+    component = _component(component_id)
+    assert component is not None, f"{component_id} is not in the authoring schema at {DATA_DIR}"
+    reference = obj.paradise.host_refs.add()
+    reference.key = authored_components.host_ref_key(component)
+    reference.target = target
+
+
+def _attach(obj, component_id: str, **fields) -> None:
+    """Attach one authored engine component, as the Components panel would."""
+    from paradise_blender.authoring import authored_components
+
+    component = _component(component_id)
+    matched = component is not None
+    if matched:
+        authored_components.enable_component(obj, component)
     # Louder than the silent no-op this used to be: an id the schema does not declare means the
     # transcribed constants and the engine disagree, and every assertion below would then fail
     # for a reason that has nothing to do with what it tests.
@@ -142,7 +177,7 @@ def build_scene() -> None:
     collider.paradise_collider.shape = "Box"
     collider.paradise_collider.layer = 1
     collider.parent = ground
-    ground.paradise.physics_colliders.add().target = collider
+    _point_at(ground, component_ids.COLLIDER, collider)
 
     # A dynamic prop, placed off-axis so the conversion is observable.
     bpy.ops.mesh.primitive_uv_sphere_add(radius=0.5, location=(1.0, 2.0, 3.0))
@@ -157,7 +192,7 @@ def build_scene() -> None:
     ball_collider.paradise_collider.is_collider = True
     ball_collider.paradise_collider.shape = "Sphere"
     ball_collider.parent = ball
-    ball.paradise.physics_colliders.add().target = ball_collider
+    _point_at(ball, component_ids.COLLIDER, ball_collider)
 
     # An agent, which must be excluded from the navmesh bake.
     bpy.ops.mesh.primitive_cylinder_add(radius=0.4, depth=1.8, location=(-3.0, 0.0, 1.0))
@@ -200,32 +235,37 @@ def main() -> int:
         document = json.load(handle)
 
     print()
-    check(document["SchemaVersion"] == 4, "schema version is 4")
+    check(document["SchemaVersion"] == 5, "schema version is 5")
+    check(all(isinstance(o, list) for o in document["Entities"]),
+          "every object is a bare component array, with no record around it")
 
-    entities = {e["Id"]: e for e in document["Entities"]}
-    check(set(entities) == {"Ball", "Ground", "Hero"}, "all three entities exported",
-          str(sorted(entities)))
+    objects = by_name(document)
+    # The environment is an object too, and it is the one object with no name: nothing in the
+    # .blend corresponds to it, so there is nothing to name it after.
+    check(set(objects) == {"Ball", "Ground", "Hero", "Sun", "Spot"},
+          "the three entities and the two lamps are objects", str(sorted(objects)))
+    unnamed = [o for o in document["Entities"] if name_of(o) is None]
+    check(len(unnamed) == 1 and payload_for(unnamed[0], component_ids.ENVIRONMENT) is not None,
+          "the scene's environment is one unnamed object carrying the Environment component")
 
     # -- axis conversion --------------------------------------------------------------
-    ball = entities["Ball"]
-    check(approx(ball["LocalPosition"], [1.0, 3.0, -2.0]),
-          "Blender (1, 2, 3) converts to contract (1, 3, -2)", str(ball["LocalPosition"]))
-    check(approx(ball["WorldMatrix"][12:15], [1.0, 3.0, -2.0]),
-          "world matrix translation lands at flat indices 12/13/14", str(ball["WorldMatrix"][12:15]))
+    ball = objects["Ball"]
+    world = payload_for(ball, component_ids.TRANSFORM)["World"]
+    check(approx(world[12:15], [1.0, 3.0, -2.0]),
+          "Blender (1, 2, 3) converts to contract (1, 3, -2), at flat indices 12/13/14",
+          str(world[12:15]))
 
-    ground = entities["Ground"]
-    check(approx(ground["LocalScale"], [20.0, 0.5, 20.0]),
-          "Blender scale (20, 20, 0.5) converts to contract (20, 0.5, 20)", str(ground["LocalScale"]))
-
-    camera = document["Camera"]
-    check(approx(camera["Position"], [0.0, 1.0, 10.0]),
-          "camera at Blender (0, -10, 1) exports as contract (0, 1, 10)", str(camera["Position"]))
-
-    # -- entity identity --------------------------------------------------------------
-    guids = {e["EntityGuid"] for e in document["Entities"]}
-    check(len(guids) == 3, "every entity has a distinct GUID")
-    check(all(g != "00000000-0000-0000-0000-000000000000" for g in guids),
-          "no entity exported the all-zero GUID")
+    ground = objects["Ground"]
+    # The scale is read back OUT of the matrix rather than off a decomposed field, because the
+    # decomposed fields are gone: one placement, stated once. Column-major, so the first column's
+    # length is the X scale and the second's is Y.
+    ground_world = payload_for(ground, component_ids.TRANSFORM)["World"]
+    scales = [
+        math.sqrt(sum(ground_world[column * 4 + row] ** 2 for row in range(3)))
+        for column in range(3)
+    ]
+    check(approx(scales, [20.0, 0.5, 20.0]),
+          "Blender scale (20, 20, 0.5) converts to contract (20, 0.5, 20)", str(scales))
 
     # -- components -------------------------------------------------------------------
     check(payload_for(ball, component_ids.RIGIDBODY)["BodyType"] == "Dynamic",
@@ -237,7 +277,7 @@ def main() -> int:
     check(approx(payload_for(ground, component_ids.RIGIDBODY)["Mass"], 0.0),
           "a static body exports zero mass")
 
-    hero = entities["Hero"]
+    hero = objects["Hero"]
     check(payload_for(hero, component_ids.AGENT) is not None, "the agent exports an Agent component")
     check(approx(payload_for(hero, component_ids.AGENT)["MoveSpeed"], 3.0),
           "agent move speed carries through")
@@ -254,18 +294,27 @@ def main() -> int:
     check(sphere_shape["ShapeType"] == "Sphere" and sphere_shape["Radius"] > 0,
           "the sphere collider exported with a radius")
 
-    renderable = payload_for(ground, component_ids.RENDERABLE)
-    check(renderable["Mesh"] is not None, "the ground references a mesh GLB")
-    # On the RENDERABLE as of contract v4, not on the entity: the slots index the primitives of
-    # the GLB named right above, so they travel with it.
-    check(renderable["Materials"] == ["materials/mat_ground.json"],
-          "the material slot references its contract field", str(renderable["Materials"]))
-    check("Materials" not in ground,
-          "the entity no longer carries a slot list of its own", str(sorted(ground)))
+    # NO RENDERABLE, and that is the assertion. "This object draws" used to be inferred from the
+    # object having mesh data; it is a component an author attaches now, pointing at the object
+    # whose geometry to export. A scene that authors none exports none.
+    check(payload_for(ground, component_ids.RENDERABLE) is None,
+          "the exporter no longer derives a Renderable from an object having geometry")
+
+    # The SLOTS are still derived, and the asymmetry is deliberate: which GLB an object draws is a
+    # decision, and which materials override its primitives is Blender's material stack.
+    materials = payload_for(ground, component_ids.MATERIALS)
+    check(materials is not None and materials["Slots"] == ["materials/mat_ground.json"],
+          "the material slot is derived and references its contract field", str(materials))
 
     # -- lighting and environment -----------------------------------------------------
-    lights = {light["Id"]: light for light in document["Lighting"]["States"][0]["Lights"]}
-    check(set(lights) == {"Spot", "Sun"}, "both lights exported", str(sorted(lights)))
+    # A lamp is an OBJECT carrying a Light, not an entry in a document-level lighting state. It
+    # used to be both, depending on whether the author had marked it as an entity, with a rule
+    # saying it must not be both at once or the runtime would light it twice.
+    lights = {
+        name: payload_for(objects[name], component_ids.LIGHT) for name in ("Sun", "Spot")
+    }
+    check(all(light is not None for light in lights.values()),
+          "both lamps exported as objects carrying a Light", str(sorted(objects)))
     check(lights["Sun"]["Type"] == "Directional", "a sun lamp exports as Directional")
     check(approx(lights["Sun"]["Direction"], [0.0, -1.0, 0.0]),
           "an unrotated sun points down in contract axes", str(lights["Sun"]["Direction"]))
@@ -280,8 +329,12 @@ def main() -> int:
           "200 W maps to intensity 2 via the documented calibration",
           str(lights["Spot"]["Intensity"]))
 
-    environment = document["Lighting"]["States"][0]["Environment"]
+    environment = payload_for(unnamed[0], component_ids.ENVIRONMENT)
     check(environment["TonemapMode"] == "Agx", "the AgX view transform maps to the Agx operator")
+    # The two shadow settings moved onto the environment with it; they sat on the lighting block
+    # for want of anywhere else, and they are as much "how this scene is lit" as the ambient is.
+    check("ShadowMapSize" in environment and "ShadowBlur" in environment,
+          "the shadow settings travel on the environment component", str(sorted(environment))[:80])
 
     # -- navmesh ----------------------------------------------------------------------
     # The walkable-geometry filter must exclude DYNAMIC bodies: the ball is collidable but
@@ -290,7 +343,7 @@ def main() -> int:
     # to contract axes is (1, 3, -2); nothing in the collected geometry may be near it.
     from paradise_blender.export.navmesh import collect_walkable_geometry
 
-    nav_vertices, nav_triangles = collect_walkable_geometry(bpy.context.scene)
+    nav_vertices, nav_triangles = collect_walkable_geometry(bpy.context.scene, DATA_DIR)
     check(len(nav_triangles) > 0, "static collidable geometry reaches the navmesh bake")
     ball_near = any(
         abs(nav_vertices[i] - 1.0) < 0.6
@@ -300,9 +353,12 @@ def main() -> int:
     )
     check(not ball_near, "the dynamic ball is excluded from the walkable geometry")
 
-    if document["NavMeshFile"]:
-        navmesh = os.path.join(DATA_DIR, "scenes", document["NavMeshFile"])
-        check(os.path.exists(navmesh) and os.path.getsize(navmesh) > 0,
+    # The document no longer names the navmesh: the NavMeshFile key went with the rest of the
+    # document shell, and it stated what the filename already says — the bake writes
+    # <scene>.navmesh.bin beside <scene>.json.
+    navmesh = os.path.join(DATA_DIR, "scenes", "export_test.navmesh.bin")
+    if os.path.exists(navmesh):
+        check(os.path.getsize(navmesh) > 0,
               "the navmesh binary was baked and is non-empty")
 
         # -- bake button + viewport preview -------------------------------------------

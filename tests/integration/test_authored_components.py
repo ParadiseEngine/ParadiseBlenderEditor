@@ -38,7 +38,7 @@ from paradise_blender.export.scene import export_scene  # noqa: E402
 def payload_for(entity, component_id):
     """One component's Data on an exported entity, or None. Components are a LIST now, so a test
     asks by id rather than by a key whose absence used to mean "no such component"."""
-    for component in entity["Components"]:
+    for component in entity:
         if component["Id"] == component_id:
             return component["Data"]
     return None
@@ -81,6 +81,27 @@ GAME_IDS = {CREATURE_ID, MARKER_ID, DOORWAY_ID, BODY_ID, VOLUME_ID}
 SCHEMA = {
     "version": 3,
     "components": [
+        # The three every export writes for every object it emits. They are host-derived rather
+        # than authored in the panel, but they still have to be NAMEABLE: the exporter reads each
+        # engine component's CLR type name out of this document.
+        {
+            "id": component_ids.NAME,
+            "type": "Paradise.Export.Data.NameComponentData",
+            "displayName": "Name",
+            "fields": [{"name": "Value", "type": "string", "default": ""}],
+        },
+        {
+            "id": component_ids.TRANSFORM,
+            "type": "Paradise.Export.Data.TransformComponentData",
+            "displayName": "Transform",
+            "fields": [{"name": "World", "type": "matrix4x4"}],
+        },
+        {
+            "id": component_ids.ENVIRONMENT,
+            "type": "Paradise.Export.Data.EnvironmentData",
+            "displayName": "Environment",
+            "fields": [{"name": "TonemapMode", "type": "string", "default": "Linear"}],
+        },
         {
             "id": component_ids.RIGIDBODY,
             "type": "Paradise.Export.Data.RigidbodyComponentData",
@@ -281,11 +302,21 @@ def build_scene() -> None:
     target.scale = (2.0, 3.0, 4.0)
 
 
-def exported_entities() -> dict[str, dict]:
+def exported_entities() -> dict[str, list]:
+    """The exported objects by name, and an object IS its component list since schema v5.
+
+    The name comes off the object's own Name component, because there is nowhere else for it to
+    come from — which is exactly the property being relied on here."""
     path = os.path.join(DATA_DIR, "scenes", "authored_test.json")
     with open(path, encoding="utf-8") as file:
         document = json.load(file)
-    return {entity["Id"]: entity for entity in document["Entities"]}
+
+    objects = {}
+    for entity in document["Entities"]:
+        payload = payload_for(entity, component_ids.NAME)
+        if payload is not None:
+            objects[payload["Value"]] = entity
+    return objects
 
 
 def main() -> int:
@@ -337,7 +368,7 @@ def main() -> int:
     export_scene(bpy.context.scene)
     entities = exported_entities()
 
-    game_entries = [e for e in entities["Creature"]["Components"] if e["Id"] in GAME_IDS]
+    game_entries = [e for e in entities["Creature"] if e["Id"] in GAME_IDS]
     check(len(game_entries) == 1, "the authored component is exported")
     payload = game_entries[0]["Data"]
     check(game_entries[0]["Id"] == CREATURE_ID, "under its schema id")
@@ -350,11 +381,19 @@ def main() -> int:
     check(payload["Home"] == [1.0, 2.0, 3.0], "a vector exports as a flat float array")
     check(payload["Tint"] == {"r": 1.0, "g": 0.5, "b": 0.0, "a": 1.0}, "a color exports as rgba")
     check(payload["Box"] == {"SizeX": 4.0, "SizeY": 2.0}, "a composed group re-nests from its paths")
-    check("Shape" not in payload, "a host-baked field is absent, not guessed at")
+    # An UNASSIGNED object slot exports its leaves at the record's own defaults, and does not
+    # vanish from the payload. That is build_payload's stated rule and the one the runtime depends
+    # on: a field that is simply absent reads as "this host does not implement the kind", while a
+    # field present and empty reads as "nobody picked an object" — and only the second is something
+    # a loader can refuse by name. The trigger volumes rely on exactly this.
+    check(payload["Shape"] == {"SizeX": 0.0},
+          "an unassigned object slot exports its declared leaves at their defaults",
+          str(payload.get("Shape")))
 
     check(
-        not [e for e in entities["Plain"]["Components"] if e["Id"] in GAME_IDS],
-        "an entity with nothing authored contributes no game components",
+        "Plain" not in entities,
+        "an entity with nothing authored is not exported at all",
+        str(sorted(entities)),
     )
 
     # -- pose references: the one authoredBy kind this host authors ----------------------
@@ -477,15 +516,19 @@ def main() -> int:
     check(owned is not None and owned["Type"] == "Directional", "a lamp entity owns its light")
     check(payload_for(entities["Creature"], component_ids.LIGHT) is None,
           "non-lamp entities author no light")
-    path = os.path.join(DATA_DIR, "scenes", "authored_test.json")
-    with open(path, encoding="utf-8") as file:
-        whole = json.load(file)
-    state_lights = [light["Id"] for light in whole["Lighting"]["States"][0]["Lights"]]
-    check(
-        state_lights == ["SceneFill"],
-        "an entity-owned lamp leaves the scene-level light list; an unowned one stays",
-        f"state lights: {state_lights}",
-    )
+    # The routing rule this used to check is GONE, and that is the point of checking it here.
+    # A lamp used to be either an entry in a document-level lighting state or a component on an
+    # entity that owned it, with a rule saying it must not be both or the runtime would light it
+    # twice. Since schema v5 every lamp is an OBJECT carrying a Light — an owned one because the
+    # entity walk writes it, an unowned one because the scene walk gives it an object of its own —
+    # so the two cannot disagree and there is no list to leave.
+    fill = payload_for(entities["SceneFill"], component_ids.LIGHT)
+    check(fill is not None, "an unowned lamp is an object carrying a Light too",
+          str(sorted(entities)))
+    lit = [name for name, obj in entities.items()
+           if payload_for(obj, component_ids.LIGHT) is not None]
+    check(sorted(lit) == ["OwnedSun", "SceneFill"],
+          "each lamp is described exactly once, by exactly one object", str(sorted(lit)))
 
     # -- duplicate carries the values (same mechanism as the GUID gotcha) ----------------
     bpy.ops.object.select_all(action="DESELECT")
@@ -678,7 +721,7 @@ def main() -> int:
         "the derived static body still rides along",
     )
     check(
-        len([e for e in creature["Components"] if e["Id"] == component_ids.RIGIDBODY]) == 1,
+        len([e for e in creature if e["Id"] == component_ids.RIGIDBODY]) == 1,
         "and exactly once — a list does not enforce at-most-one the way a slot did",
     )
 
@@ -712,9 +755,15 @@ def main() -> int:
     bpy.data.objects.remove(derived_obj, do_unlink=True)
 
     # -- hot reload ---------------------------------------------------------------------
+    # BY ID, never by position. This grew a field onto components[0] and deleted components[1]
+    # back when those happened to be the game's two; every engine entry added to the fixture since
+    # has shifted them, so the mutation landed on whatever was there — which is how it came to add
+    # "Grumpy" to the rigidbody and assert it on the creature.
     grown = json.loads(json.dumps(SCHEMA))
-    grown["components"][0]["fields"].append({"name": "Grumpy", "type": "bool", "default": False})
-    del grown["components"][1]  # game.marker is gone: the game renamed or removed it
+    by_id = {component["id"]: component for component in grown["components"]}
+    by_id[CREATURE_ID]["fields"].append({"name": "Grumpy", "type": "bool", "default": False})
+    # game.marker is gone: the game renamed or removed it.
+    grown["components"] = [c for c in grown["components"] if c["id"] != MARKER_ID]
     write_schema(grown)
 
     reloaded = authored.schema_for_data_dir(DATA_DIR)
@@ -734,7 +783,7 @@ def main() -> int:
     authored.enable_component(creature_obj, marker)
     export_scene(bpy.context.scene)
     entities = exported_entities()
-    ids = [e["Id"] for e in entities["Creature"]["Components"] if e["Id"] in GAME_IDS]
+    ids = [e["Id"] for e in entities["Creature"] if e["Id"] in GAME_IDS]
     check(
         ids == [CREATURE_ID],
         "a component the schema no longer declares is not exported",

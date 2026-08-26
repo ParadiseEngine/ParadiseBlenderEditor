@@ -30,16 +30,27 @@ Godot export of the same scene):
 
 ```jsonc
 {
-  "SchemaVersion": 2,
-  "Camera": { "Position": [...], "Rotation": [...], "OrthographicSize": 5, "BackgroundColor": {...} },
-  "Lighting": { "ActiveState": "Default", "States": [ { "Name": "Default", "Environment": {...}, "Lights": [...] } ] },
-  "NavMeshAgent": null,
-  "Interactables": [],
-  "Entities": [ /* LevelEntityData */ ],
-  "NavMeshFile": "<Scene>.navmesh.bin",
-  "Materials": []
+  "SchemaVersion": 5,
+  "Entities": [
+    [ { "Id": "<component guid>", "Type": "<CLR name>", "Data": { /* … */ } }, /* … */ ],
+    /* one array per object */
+  ]
 }
 ```
+
+**An object IS its authored components, and the document is nothing but a list of them.** Schema v5
+deleted the entity record and every document-level block. What an entity used to state as fields is
+either a component now or gone:
+
+| was | is |
+|---|---|
+| `Id` | `NameComponentData` — for diagnostics only; not an identity |
+| `WorldMatrix` | `TransformComponentData` — one placement, stated once |
+| `IsActive: false` | the object is not written at all |
+| `Camera` (document) | gone — it was the editor's viewport, and it framed any scene authoring no rig |
+| `Lighting.States[n].Environment` | `EnvironmentData`, on an object of its own (the shadow settings moved with it) |
+| `Lighting.States[n].Lights[i]` | `SceneLightData` on the lamp's OWN object — every lamp is an object |
+| `StableId`, `DisplayName`, `Kind`, `SpawnPhase`, `Prefab*`, `InitialAnimation`, `Parent`, `Local*`, `Overrides`, `NavMeshAgent`, `Interactables`, `NavMeshFile`, `Materials` | gone — written by a host, read by nobody |
 
 Encoding rules, all enforced by `contract/writer.py`:
 
@@ -58,26 +69,33 @@ Encoding rules, all enforced by `contract/writer.py`:
 
 ## Entity model
 
-An entity is any object with `object.paradise.is_entity` set. Each exports:
+An entity is any object with `object.paradise.is_entity` set — and it is exported **only if it
+authors something beyond its name and its placement.** An empty an author marked and never gave a
+mesh, a collider or a component to is not a statement about the world.
 
-- **identity** — a minted GUID, stable per placement (`CONVENTIONS.md` §4)
-- **transforms** — local (relative to the parent entity) and world, both rebased into contract axes
-- **material slots** — contract fields in slot order, matching the referenced GLB's primitive order
-- **components**, each present or `null`:
+Each exported object carries:
+
+- **`Name`** — the Blender object's name, so a runtime refusal can say which object it is about
+- **`Transform`** — its world matrix, rebased into contract axes
+- plus whatever it authors:
 
 | component | source |
 |---|---|
-| `Renderable` | the object's mesh, exported to a GLB, or an authored model path — derived, never a form |
+| `Materials` | the object's Blender material slots — derived, never a form: a material assignment has nothing a picker could add |
 | `Collider` | objects marked as colliders and assigned to this entity (the host's `authoredBy: shape` bake, drawn as a component in the Components panel) |
+| a mesh | **authored**, not derived — a component with an `authoredBy: mesh` field, pointing at the object whose geometry to export. `Renderable` is no longer derived from an object merely having mesh data: what an object draws is something an author says |
 | `Rigidbody` | authored `paradise.rigidbody` component; else derived alongside colliders (static, or kinematic when the entity authors an agent) |
 | `Interactable` | presence of interaction colliders |
 | `Agent` | authored `paradise.agent` component |
 | `SpriteAnimation` | not authorable in this host yet — the schema marks it host-baked (`authoredBy: sprite`), and Blender has no sprite host object |
 | `ParticleEmitter` | authored `paradise.particle-emitter` component (its `Sheet` is a host-baked asset reference, not baked here yet) |
 | `AudioEmitter` | authored `paradise.audio-emitter` component |
-| `Custom` | schema-driven authored components (below); **absent** — not `null` — when nothing is authored |
+| the game's own | schema-driven authored components (below) |
 
-### Authored components (`Components.Custom`)
+Two more objects come from the scene rather than from an entity: every **lamp** becomes an object
+carrying `SceneLightData`, and one unnamed object carries the scene's `EnvironmentData`.
+
+### Authored components
 
 The game's own components, declared once as C# records marked `[Authored]`. Building the game
 dumps their description to `<data>/authoring-schema.json`; the addon reads it
@@ -86,9 +104,10 @@ dumps their description to `<data>/authoring-schema.json`; the addon reads it
 `{ "Id": "<schema id>", "Data": { … } }`. The engine never learns the type — the payload rides
 along verbatim and the game deserializes it through its generated readers.
 
-Entity identity (`Kind`, `IsActive`, `InitialAnimation`, `DisplayName`, `SpawnPhase`) is the
-authored `paradise.identity` component, spread onto the entity itself at export; an entity
-without one exports the defaults (`Prop`, active, `LevelStart`). The engine's own components
+Entity identity used to be an authored `Identity` component spread onto the entity's own fields at
+export — `Kind`, `IsActive`, `InitialAnimation`, `DisplayName`, `SpawnPhase`. There are no fields to
+spread onto since v5 and no consumer for four of the five, so the component is gone; `IsActive` is
+now expressed by simply not exporting the object. The engine's own components
 arrive in the SAME document: a launcher built with `ParadiseAuthoringScanReferences` merges every
 assembly it references into its dump, so `<data>/authoring-schema.json` describes the engine's
 components and the game's alike. Nothing is vendored here any more — a checked-in copy could
@@ -96,12 +115,29 @@ disagree with the engine the game builds against, and being merged first it woul
 bridge's `engine-schema` verb still prints the engine's half on its own, as a diagnostic for when
 a component is missing and you need to know which side dropped it.
 
+### Host references (`authoredBy`)
+
+Five kinds, four of them an object slot differing only in what the exporter bakes out of what you
+point at:
+
+| kind | picker | baked |
+|---|---|---|
+| `transform` | object slot | where it STANDS — `Position`/`Rotation`/`Scale`/`Yaw`, whichever the record declares |
+| `shape` | object slot | the collider drawn ON it, as a whole `ColliderShapeData` |
+| `mesh` | object slot | its geometry, written out as a GLB, baked as the data-relative field. **Pointing at itself is the normal case** — an object usually draws its own mesh |
+| `entity` | object slot | its NAME, verbatim. The odd one: the reference itself travels, reduced to the one thing every exported object carries |
+| `asset` | file field | a path under `data/`, filtered by the field's declared extensions |
+
+The first two fill the LEAVES a record declares under the reference; the last three ARE the value
+and are written at the reference's own path. An unassigned or dangling reference exports the
+field's own empty value rather than vanishing — a field that is absent reads as "this host does not
+implement the kind", while one present and empty reads as "nobody picked an object", and only the
+second is something a loader can refuse by name.
+
 The wire format is pinned by the Godot host (`AuthoredEntityCore.ValueOf`) and by
 `tests/unit/test_authoring.py`: every schema field written at its schema type, defaults filling
 unset ones; enums by member name; vectors as float arrays; colours as `{r,g,b,a}`; an empty
-string with no declared default as `null`. Fields the schema marks `authoredBy` (host-object
-bakes: shapes, node references, assets) are not authored in this host yet and export absent,
-which the reader treats as unauthored.
+string with no declared default as `null`.
 
 The schema hot-reloads whenever the file's (mtime, size) stamp moves, so a game rebuild shows
 up in the panel without restarting Blender.

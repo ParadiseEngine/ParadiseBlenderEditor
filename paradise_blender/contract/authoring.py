@@ -124,6 +124,33 @@ HOST_TRANSFORM = "transform"
 #: drawn on the object rather than where the object stands.
 HOST_SHAPE = "shape"
 
+#: A reference to a RENDERABLE MESH. An object slot again, and the exporter writes the referenced
+#: object's mesh out as a GLB and bakes the data-relative field naming it.
+#:
+#: Pointing at ITSELF is the normal case here, unlike every other kind: an object usually draws its
+#: own mesh, and the slot exists so that "this draws" is a thing an author says rather than a thing
+#: an exporter infers from the object having mesh data.
+HOST_MESH = "mesh"
+
+#: A reference to ANOTHER OBJECT in the scene, baked as its NAME -- the one thing every exported
+#: object carries. The odd kind: what travels is the reference itself rather than a value read off
+#: what it points at.
+HOST_ENTITY = "entity"
+
+#: A reference to a FILE under ``data/``. Not an object slot: a file browser, filtered by the
+#: field's declared extensions, storing the data-relative field the runtime resolves.
+HOST_ASSET = "asset"
+
+#: The kinds THIS host implements. A kind outside this set is still reported, so the panel can say
+#: what is missing and why rather than silently exporting a component with holes.
+HOST_KINDS = (HOST_TRANSFORM, HOST_SHAPE, HOST_MESH, HOST_ENTITY, HOST_ASSET)
+
+#: The kinds whose reference IS the value -- one scalar field, filled in place, rather than a
+#: record whose declared leaves an exporter fills. What separates them is not the picker but the
+#: SHAPE of what comes back: a pose is four numbers a record takes some of, a mesh path is a
+#: string.
+HOST_LEAF_KINDS = (HOST_MESH, HOST_ENTITY, HOST_ASSET)
+
 #: Pose leaves a ``transform`` reference can bake into, by NAME. A record declares whichever
 #: parts of the pose it means and an exporter fills those, ignoring the rest -- which is what
 #: keeps the host general: it never learns what a particular record means by a pose.
@@ -462,6 +489,14 @@ class HostRef:
     is_list: bool = False
     leaves: tuple[AuthoredFieldSchema, ...] = ()
 
+    #: For a LEAF reference (:data:`HOST_LEAF_KINDS`), the field's own type -- the reference is the
+    #: value, so there are no leaves to fill and the bake writes at ``path`` itself. None for a
+    #: record reference, which is told apart from a leaf one by exactly this.
+    leaf_type: str | None = None
+
+    #: The extensions an :data:`HOST_ASSET` reference accepts, straight off the field.
+    asset_kinds: tuple[str, ...] = ()
+
     @property
     def bakes(self) -> tuple[str, ...]:
         """The leaf NAMES, for a caller that only needs to know which parts of the pose to fill."""
@@ -477,11 +512,13 @@ class HostRef:
         point -- a kind is a statement about what the object IS, and a host implements as many of
         them as it can rather than one.
         """
-        return (
-            self.kind in (HOST_TRANSFORM, HOST_SHAPE)
-            and not self.is_list
-            and bool(self.leaves)
-        )
+        if self.is_list:
+            # A list of references is a row editor over a pointer list, which this host does not
+            # draw on an entity -- see the arrays note in build_payload.
+            return False
+        if self.kind in HOST_LEAF_KINDS:
+            return self.leaf_type is not None
+        return self.kind in (HOST_TRANSFORM, HOST_SHAPE) and bool(self.leaves)
 
 
 @dataclass
@@ -626,7 +663,16 @@ def _walk_field(
             else children if field.authored_by == HOST_SHAPE
             else ()
         )
-        plan.hosts.append(HostRef(path=path, kind=field.authored_by, leaves=leaves))
+        plan.hosts.append(HostRef(
+            path=path,
+            kind=field.authored_by,
+            leaves=leaves,
+            # A LEAF reference has no leaves to fill because it IS one: the mesh path, the target's
+            # name, the asset field. Carrying its type is what lets build_payload write the baked
+            # value at the reference's own path instead of under it.
+            leaf_type=field.type if field.authored_by in HOST_LEAF_KINDS else None,
+            asset_kinds=tuple(field.asset_kinds or ()),
+        ))
         return
 
     if field.fields:
@@ -895,6 +941,15 @@ def build_payload(
     for host in plan.hosts:
         if not host.is_authorable:
             continue
+        if host.leaf_type is not None:
+            # THE REFERENCE IS THE VALUE. Written at the host's own path, and written even when the
+            # caller baked nothing — an unassigned slot then exports the field's own empty value,
+            # which the runtime is free to refuse and can only refuse if the export is honest
+            # rather than omitting the key and calling it unauthored.
+            _write_path(payload, host.path, _wire_value(
+                FlatField(path=host.path, type=host.leaf_type, asset_kinds=host.asset_kinds),
+                values.get(host.path)))
+            continue
         for leaf in host.leaves:
             path = f"{host.path}/{leaf.name}"
             _write_path(payload, path, _wire_value(
@@ -974,6 +1029,14 @@ def _wire_value(field: FlatField, value: Any) -> Any:
         if len(floats) != 4:
             floats = [0.0, 0.0, 0.0, 1.0]
         return {"r": floats[0], "g": floats[1], "b": floats[2], "a": floats[3]}
+    if field.type in (TYPE_OBJECT, TYPE_ARRAY):
+        # NULL, not a number. A composed leaf reaches here only as the unbaked part of a host
+        # reference — a shape's NavObstacle, say — and the fall-through below would coerce it to
+        # a float, which is what it used to do: `"NavObstacle": 0`. That payload is not readable
+        # as the record it claims to be, so the runtime's registry drops the WHOLE component and
+        # the volume it described silently stops existing. Null is what the record's own field
+        # holds when nobody authored it, and it round-trips.
+        return None
     return float(value)
 
 

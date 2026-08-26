@@ -8,43 +8,25 @@ scene-authoring question.
 from __future__ import annotations
 
 import json
-import uuid
 
-from paradise_blender.contract import schema, writer
+from paradise_blender.contract import component_ids, matrix, schema, writer
 
 
 class TestLevelData:
     def test_key_order_matches_the_csharp_declaration_order(self):
         assert list(schema.LevelData().to_json()) == [
             "SchemaVersion",
-            "Camera",
-            "Lighting",
-            "NavMeshAgent",
-            "Interactables",
             "Entities",
-            "NavMeshFile",
-            "Materials",
         ]
 
-    def test_empty_document_matches_the_engine_golden_tail(self):
-        """The engine's SampleScene fixture ends with these exact lines."""
-        text = writer.dumps(schema.LevelData(schema_version=2).to_json())
-        assert '"Interactables": [],' in text
-        assert '"Entities": [],' in text
-        assert '"NavMeshFile": null,' in text
-        assert text.endswith('"Materials": []\n}')
-
     def test_schema_version_defaults_to_the_pinned_version(self):
-        assert schema.LevelData().schema_version == schema.SCHEMA_VERSION == 4
+        assert schema.LevelData().schema_version == schema.SCHEMA_VERSION == 5
 
-    def test_ensure_lighting_state_creates_one_default_state(self):
-        document = schema.LevelData()
-        state = document.ensure_lighting_state()
-        assert document.lighting.active_state == "Default"
-        assert state.name == "Default"
-        # Idempotent: a second call must reuse the same state, not append another.
-        assert document.ensure_lighting_state() is state
-        assert len(document.lighting.states) == 1
+    def test_an_object_is_a_bare_component_array(self):
+        """The whole of schema v5, in one assertion. An object has no keys of its own, so there is
+        no key order for it to get wrong and no field a host can forget to write."""
+        document = schema.LevelData(entities=[schema.EntityComponentsData()])
+        assert document.to_json()["Entities"] == [[]]
 
 
 class TestRenderableComponentData:
@@ -75,55 +57,28 @@ class TestRenderableComponentData:
         assert renderable.to_json()["Materials"] == ["materials/a.json", None, "materials/c.json"]
 
 
-class TestLevelEntityData:
-    def test_key_order(self):
-        assert list(schema.LevelEntityData().to_json()) == [
-            "Id",
-            "EntityGuid",
-            "StableId",
-            "DisplayName",
-            "Kind",
-            "SpawnPhase",
-            "IsActive",
-            "Prefab",
-            "PrefabAssetPath",
-            "NearestInstanceRoot",
-            "PrefabGuid",
-            "PrefabAssetType",
-            "InitialAnimation",
-            "Parent",
-            "LocalPosition",
-            "LocalRotation",
-            "LocalScale",
-            "LocalMatrix",
-            "WorldMatrix",
-            # "Materials" was here until contract v4 moved it onto the Renderable component --
-            # see TestRenderableComponentData below, which is where the key lives now.
-            "Overrides",
-            "Components",
-        ]
+class TestPlacementComponents:
+    """The two components every host writes for every object it emits.
 
-    def test_guid_uses_the_hyphenated_lowercase_form(self):
-        """System.Text.Json's default Guid format ("D"). The engine parses this on read."""
-        value = uuid.UUID("e63c73bc-a31b-48a7-b741-1a9eb265ff98")
-        assert schema.LevelEntityData(entity_guid=value).to_json()["EntityGuid"] == (
-            "e63c73bc-a31b-48a7-b741-1a9eb265ff98"
-        )
+    They are what the entity record used to state as fields — a name and a world matrix — and the
+    reason they are components is that the record is gone. Their key order is pinned for the same
+    reason every other component's is: System.Text.Json writes properties in declaration order, so
+    this list IS the wire shape, and a Blender export has to stay diffable against a Godot one.
+    """
 
-    def test_overrides_are_present_but_empty(self):
-        """Neither authoring host can populate per-property overrides, but the key set must
-        stay stable or the reader sees a shape change."""
-        assert schema.LevelEntityData().to_json()["Overrides"] == {
-            "Transform": False,
-            "MaterialSlots": [],
-            "Colliders": [],
-            "Metadata": [],
-        }
+    def test_name_key_order(self):
+        assert list(schema.NameComponentData().to_json()) == ["Value"]
 
-    def test_an_entity_authoring_nothing_has_an_empty_component_list(self):
-        """This used to assert eight named keys all holding null. There is one list now, and
-        absence is an entry that is not there rather than a key that is."""
-        assert schema.LevelEntityData().to_json()["Components"] == []
+    def test_transform_key_order(self):
+        assert list(schema.TransformComponentData().to_json()) == ["World"]
+
+    def test_transform_writes_sixteen_floats_column_major(self):
+        """Translation at 12/13/14, which is what "column-major, column-vector" means on the wire.
+        An object written with the translation at 3/7/11 loads at the origin, silently."""
+        world = matrix.trs((1.0, 2.0, 3.0), (0.0, 0.0, 0.0, 1.0), (1.0, 1.0, 1.0))
+        flat = schema.TransformComponentData(world=world).to_json()["World"]
+        assert len(flat) == 16
+        assert flat[12:15] == [1.0, 2.0, 3.0]
 
 
 class TestEnumsSerializeByName:
@@ -242,11 +197,20 @@ class TestEnvironment:
 
 
 def test_full_document_is_valid_json():
-    document = schema.LevelData(
-        camera=schema.CameraData(),
-        entities=[schema.LevelEntityData(id="Ground")],
-    )
-    document.ensure_lighting_state().lights.append(schema.SceneLightData(id="Sun", type="Directional"))
+    ground = schema.EntityComponentsData()
+    ground.add(schema.AuthoredComponentData(
+        id=component_ids.NAME,
+        type="Paradise.Export.Data.NameComponentData",
+        data=schema.NameComponentData(value="Ground").to_json()))
+
+    sun = schema.EntityComponentsData()
+    sun.add(schema.AuthoredComponentData(
+        id=component_ids.LIGHT,
+        type="Paradise.Export.Data.SceneLightData",
+        data=schema.SceneLightData(id="Sun", type="Directional").to_json()))
+
+    document = schema.LevelData(entities=[ground, sun])
     parsed = json.loads(writer.dumps(document.to_json()))
-    assert parsed["Entities"][0]["Id"] == "Ground"
-    assert parsed["Lighting"]["States"][0]["Lights"][0]["Type"] == "Directional"
+
+    assert parsed["Entities"][0][0]["Data"]["Value"] == "Ground"
+    assert parsed["Entities"][1][0]["Data"]["Type"] == "Directional"

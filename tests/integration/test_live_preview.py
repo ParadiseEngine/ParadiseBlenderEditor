@@ -28,6 +28,8 @@ sys.path.insert(0, REPO)
 import bpy  # noqa: E402
 
 import paradise_blender  # noqa: E402
+from paradise_blender.authoring import authored_components  # noqa: E402
+from paradise_blender.contract import component_ids  # noqa: E402
 from paradise_blender.live import protocol, sync  # noqa: E402
 from paradise_blender.live.transport import LiveConnection  # noqa: E402
 
@@ -159,6 +161,20 @@ def main() -> int:
         sync._drain()
         print("ok   drained a patch after moving the object")
 
+        # AN OBJECT THAT STOPS AUTHORING ANYTHING must not just vanish from the patch stream.
+        # A patch says nothing about what it omits, so if this only dropped the object from
+        # `updated` the runtime would keep drawing something the scene no longer describes —
+        # silently, until an unrelated structural change or a restart. It has to force a full
+        # scene instead, which is the one message that CAN say "this is all there is".
+        authored_components.disable_component(obj, component_ids.AGENT)
+        sync._dirty_objects.add(obj.name)
+        sync._drain()
+        if not sync._needs_full_resync:
+            failures.append("removing an object's last component did not force a full resync")
+        else:
+            print("ok   an object that stopped authoring forced a full resync")
+        sync._drain()
+
         # Let the sender thread flush before the socket closes.
         time.sleep(0.5)
         session.send(protocol.bye(session.next_seq()))
@@ -181,6 +197,8 @@ def main() -> int:
             # since the lighting block became a component.
             "scene/full: 2 entities",
             "scene/patch: 1 changed",
+            # The resync the removal forced. TWO full scenes: the handshake's, and this one.
+            "scene/full: 1 entities",
             "bye",
         ):
             if expected not in output:

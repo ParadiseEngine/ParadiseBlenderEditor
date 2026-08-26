@@ -70,7 +70,12 @@ BODY_ID = "7c4e0a19-3d55-4b8e-9a2c-6e8f1b4d0c23"
 #: A game component referencing ONE shape, not a list -- the scalar case.
 VOLUME_ID = "3f7f5b6c-0346-4de7-9bf6-0dd4e25ac74c"
 
-GAME_IDS = {CREATURE_ID, MARKER_ID, DOORWAY_ID, BODY_ID, VOLUME_ID}
+#: A game component whose references ARE their values -- a mesh to export, another object to name,
+#: a file on disk. The other family of host reference: where a pose or a shape fills the LEAVES a
+#: record declares under it, these three write at the reference's own path.
+LEAFY_ID = "07f29866-de34-49ef-a2a9-4e71b1d4e250"
+
+GAME_IDS = {CREATURE_ID, MARKER_ID, DOORWAY_ID, BODY_ID, VOLUME_ID, LEAFY_ID}
 
 # A LAUNCHER's dump, which is the only kind of authoring schema this host reads now: the game's
 # own components AND the engine's, in one document. It used to be a game-only fixture, with the
@@ -101,6 +106,15 @@ SCHEMA = {
             "type": "Paradise.Export.Data.EnvironmentData",
             "displayName": "Environment",
             "fields": [{"name": "TonemapMode", "type": "string", "default": "Linear"}],
+        },
+        {
+            "id": LEAFY_ID,
+            "type": "Game.Leafy",
+            "displayName": "Leafy",
+            "fields": [
+                {"name": "Mesh", "type": "string", "authoredBy": "mesh"},
+                {"name": "Target", "type": "string", "authoredBy": "entity"},
+            ],
         },
         {
             "id": component_ids.RIGIDBODY,
@@ -665,6 +679,53 @@ def main() -> int:
     check(
         dangling is not None and dangling["Volume"]["ShapeType"] != "Sphere",
         "a dangling shape reference exports unauthored (and warns) rather than a stale shape",
+    )
+
+    # -- leaf references: the reference IS the value -------------------------------------
+    #
+    # The other family. A pose or a shape fills the LEAVES a record declares under the reference;
+    # a mesh, an object name or an asset path is written at the reference's own path. Exercised
+    # here because bake_leaf_refs needs a real scene: one resolves geometry through the export's
+    # own MeshExporter, and one resolves an object by name.
+    bpy.ops.mesh.primitive_cube_add(size=1.0, location=(6, 0, 0))
+    leafy = bpy.context.active_object
+    leafy.name = "Leafy"
+    leafy.paradise.is_entity = True
+    authored.enable_component(leafy, authored.component_by_id(document, LEAFY_ID))
+
+    export_scene(bpy.context.scene)
+    unset = payload_for(exported_entities()["Leafy"], LEAFY_ID)
+    check(
+        unset is not None and unset["Mesh"] is None and unset["Target"] is None,
+        "an unassigned leaf reference exports empty rather than vanishing from the payload",
+        f"payload={unset}",
+    )
+
+    # POINTING AT ITSELF, which is the normal case for a mesh and the one the pose bake refuses:
+    # an object usually draws its own geometry, and the slot exists so that "this draws" is
+    # something the scene SAYS rather than something the exporter infers from it having a mesh.
+    leafy[authored.value_key(LEAFY_ID, "Mesh")] = "Leafy"
+    leafy[authored.value_key(LEAFY_ID, "Target")] = "Creature"
+    export_scene(bpy.context.scene)
+    baked = payload_for(exported_entities()["Leafy"], LEAFY_ID)
+    check(
+        baked is not None and (baked["Mesh"] or "").endswith(".glb"),
+        "a mesh reference bakes the data-relative GLB the referenced object exported to",
+        f"payload={baked}",
+    )
+    check(
+        baked is not None and baked["Target"] == "Creature",
+        "an entity reference bakes the target's NAME, which is what every object carries",
+        f"payload={baked}",
+    )
+
+    leafy[authored.value_key(LEAFY_ID, "Target")] = "NoSuchObject"
+    export_scene(bpy.context.scene)
+    dangling_target = payload_for(exported_entities()["Leafy"], LEAFY_ID)
+    check(
+        dangling_target is not None and dangling_target["Target"] is None,
+        "a dangling entity reference exports empty rather than the name nobody could resolve",
+        f"payload={dangling_target}",
     )
 
     # Back to the actor: an operator polls the ACTIVE object, and the scalar-shape block above

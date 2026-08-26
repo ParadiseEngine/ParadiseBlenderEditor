@@ -99,6 +99,37 @@ PINGU_LIKE = json.dumps(
 def creature() -> authoring.AuthoredComponentSchema:
     return authoring.read(PINGU_LIKE).components[0]
 
+def leafy() -> authoring.AuthoredComponentSchema:
+    """A component whose references ARE their values: a mesh, another object, a file.
+
+    Separate from :func:`creature` rather than another field on it, because the two families read
+    differently — one fills declared leaves, the other writes at its own path — and a fixture that
+    mixed them would let a test pass while proving the wrong half.
+    """
+    document = json.dumps(
+        {
+            "version": 3,
+            "components": [
+                {
+                    "id": "b0000000-0000-4000-8000-00000000000a",
+                    "type": "Game.Leafy",
+                    "displayName": "Leafy",
+                    "fields": [
+                        {"name": "Mesh", "type": "string", "authoredBy": "mesh"},
+                        {"name": "Target", "type": "string", "authoredBy": "entity"},
+                        {
+                            "name": "Sheet",
+                            "type": "string",
+                            "authoredBy": "asset",
+                            "assetKinds": [".ktx2", ".png"],
+                        },
+                    ],
+                }
+            ],
+        }
+    )
+    return authoring.read(document).components[0]
+
 
 class TestRead:
     def test_reads_ids_names_and_fields(self):
@@ -689,12 +720,52 @@ class TestTransformReferences:
         assert hosts["Shape"].is_authorable
         assert "SizeX" in hosts["Shape"].bakes
 
-    def test_the_kinds_this_host_cannot_author_stay_unauthorable(self):
-        # Meshes, sprites, lights and assets are still baked by dedicated paths (or not at all
-        # here), and must keep reporting themselves as such — the panel says so out loud.
+    def test_a_list_of_references_stays_unauthorable_whatever_its_kind(self):
+        # `Extras` is an authoredBy:"node" ARRAY, and BOTH halves of that matter. "node" is a kind
+        # this host does not implement at all — but the reason this is unauthorable is that it is a
+        # LIST, which is the is_list short-circuit and holds for every kind including the three
+        # this host now bakes. Said explicitly because the test previously claimed Extras was a
+        # mesh reference: it is not, and mesh is a kind this host DOES bake, so the old wording
+        # would have kept passing if the leaf kinds regressed.
         hosts = {h.path: h for h in authoring.flatten(creature())[1]}
 
+        assert hosts["Extras"].kind == "node"
+        assert hosts["Extras"].is_list
         assert not hosts["Extras"].is_authorable
+
+    def test_the_three_leaf_kinds_are_authorable_and_carry_their_type(self):
+        # mesh / entity / asset differ from a pose or a shape in SHAPE, not in picker: the
+        # reference IS the value, so there are no leaves to fill and the bake writes at the
+        # reference's own path. `leaf_type` is what tells the two families apart.
+        hosts = {h.path: h for h in authoring.flatten(leafy())[1]}
+
+        for path in ("Mesh", "Target", "Sheet"):
+            assert hosts[path].is_authorable, path
+            assert hosts[path].leaf_type == "string", path
+            assert hosts[path].bakes == (), path
+
+    def test_an_asset_reference_carries_the_extensions_it_accepts(self):
+        # The picker is a file browser, and what it filters on comes off the field rather than
+        # from anything the panel knows.
+        hosts = {h.path: h for h in authoring.flatten(leafy())[1]}
+
+        assert hosts["Sheet"].asset_kinds == (".ktx2", ".png")
+
+    def test_a_leaf_reference_is_written_at_its_own_path(self):
+        # Where a pose writes Destination/Position, a leaf writes Mesh. Asserted through
+        # build_payload because that is the seam the exporter actually uses.
+        payload = authoring.build_payload(leafy(), {"Mesh": "Models/crate.glb", "Target": "Player"})
+
+        assert payload["Mesh"] == "Models/crate.glb"
+        assert payload["Target"] == "Player"
+
+    def test_an_unassigned_leaf_reference_exports_empty_rather_than_absent(self):
+        # Absent would read as "this host does not implement the kind"; present-and-empty reads as
+        # "nobody picked one", and only the second is something a loader can refuse by name.
+        payload = authoring.build_payload(leafy(), {})
+
+        assert "Mesh" in payload
+        assert payload["Mesh"] is None
 
     def test_a_list_of_pose_references_is_not_authorable(self):
         # A row editor over a pointer list would be a second, lying copy of the list itself — the

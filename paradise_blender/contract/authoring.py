@@ -28,15 +28,22 @@ The wire format, stated once (reference: ``AuthoredEntityCore.ValueOf``):
   A numeric segment re-nests into a JSON array rather than an object, which is the only place
   the two halves of this module need to agree about a spelling.
 * Fields (or whole components) with ``authoredBy`` are host-object *references*: authored by
-  pointing at one of the host's own objects, exported as the numbers baked out of it. This host
-  implements TWO kinds -- :data:`HOST_TRANSFORM`, whose world pose is baked into the reference's
-  own leaves at export (``authored_components.bake_transform_refs``), and :data:`HOST_SHAPE`,
-  whose collider is (``bake_shape_refs``). Both are the same object slot; only what the exporter
-  takes off what you point at differs. Every other kind is still reported and skipped, which the
-  reader treats as unauthored;
-  :func:`flatten` surfaces them so the UI can say so instead of drawing a control that exports
-  nothing. An ``authoredBy`` LIST stays a reference regardless: a row editor over a collider's
-  shapes would be a second, lying copy of the pointer list the entity already holds.
+  pointing at one of the host's own objects, exported as the value baked out of it. This host
+  implements FIVE kinds, in two families that differ in the SHAPE of what comes back:
+
+  - RECORD references fill the leaves a record declares under them.
+    :data:`HOST_TRANSFORM` bakes where the object stands (``bake_transform_refs``);
+    :data:`HOST_SHAPE` bakes the collider drawn on it (``bake_shape_refs``).
+  - LEAF references ARE the value, written at the reference's own path (``bake_leaf_refs``).
+    :data:`HOST_MESH` bakes the object's geometry as an exported GLB, :data:`HOST_ENTITY` bakes
+    the object's NAME, and :data:`HOST_ASSET` is a file browser rather than an object slot.
+
+  Four of the five are the same picker; only what the exporter takes off what you point at
+  differs. Every other kind (``sprite``, ``light``, ``node``) is still reported and skipped, which
+  the reader treats as unauthored; :func:`flatten` surfaces them so the UI can say so instead of
+  drawing a control that exports nothing. An ``authoredBy`` LIST stays a reference regardless of
+  kind: a row editor over a collider's shapes would be a second, lying copy of the pointer list
+  the entity already holds.
 
 No ``bpy`` import: this module is pure data and is unit-tested standalone.
 """
@@ -140,10 +147,6 @@ HOST_ENTITY = "entity"
 #: A reference to a FILE under ``data/``. Not an object slot: a file browser, filtered by the
 #: field's declared extensions, storing the data-relative field the runtime resolves.
 HOST_ASSET = "asset"
-
-#: The kinds THIS host implements. A kind outside this set is still reported, so the panel can say
-#: what is missing and why rather than silently exporting a component with holes.
-HOST_KINDS = (HOST_TRANSFORM, HOST_SHAPE, HOST_MESH, HOST_ENTITY, HOST_ASSET)
 
 #: The kinds whose reference IS the value -- one scalar field, filled in place, rather than a
 #: record whose declared leaves an exporter fills. What separates them is not the picker but the
@@ -506,11 +509,17 @@ class HostRef:
     def is_authorable(self) -> bool:
         """Whether this host can actually author the reference, rather than only report it.
 
-        TWO KINDS now. Both are an object slot and differ only in what the exporter bakes out of
-        what you point at: a :data:`HOST_TRANSFORM` takes where the object STANDS, a
-        :data:`HOST_SHAPE` takes the collider drawn ON it. The picker is identical, which is the
-        point -- a kind is a statement about what the object IS, and a host implements as many of
-        them as it can rather than one.
+        FIVE KINDS, in two families. Four are an object slot and differ only in what the exporter
+        bakes out of what you point at: :data:`HOST_TRANSFORM` takes where the object STANDS,
+        :data:`HOST_SHAPE` the collider drawn ON it, :data:`HOST_MESH` the geometry exported FROM
+        it, and :data:`HOST_ENTITY` its NAME. The fifth, :data:`HOST_ASSET`, is a file browser.
+
+        The picker being identical across four of them is the point -- a kind is a statement about
+        what the object IS, and a host implements as many of them as it can rather than one.
+
+        What separates the families is not the picker but the shape of the answer: a record
+        reference has LEAVES to fill, a leaf reference IS the value. ``leaf_type`` is set for
+        exactly the second, and is what this checks.
         """
         if self.is_list:
             # A list of references is a row editor over a pointer list, which this host does not

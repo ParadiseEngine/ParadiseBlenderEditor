@@ -819,11 +819,6 @@ def _draw_host_list_component(layout, context, obj, component) -> None:
     remove = header.operator("paradise.remove_authored_component", text="", icon="X")
     remove.component = component.id
 
-    if component.id == component_ids.INTERACTABLE:
-        note = box.row()
-        note.enabled = False
-        note.label(text="DisplayName — the object's name", icon="DECORATE_LINKED")
-
     if not entries:
         box.label(text="Select collider objects and press +", icon="BLANK1")
         return

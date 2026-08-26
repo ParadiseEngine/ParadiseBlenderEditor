@@ -237,7 +237,11 @@ def collect_walkable_geometry(
         # An agent stands ON the navmesh; baking its capsule would punch a hole where it spawns.
         if authored_components.has_component(obj, authoring_router.AGENT):
             continue
-        if not authored_components.collider_entries(obj, data_dir):
+        # RESOLVED ONCE, and passed down. collider_entries reads the schema document to find the
+        # collider component before it can answer, so asking twice per object — the gate here and
+        # the walk in _append_colliders — did that lookup twice for every entity in the scene.
+        entries = authored_components.collider_entries(obj, data_dir)
+        if not entries:
             continue
         # Dynamic bodies move; baking one freezes it into the walkable surface at its SPAWN --
         # the car would leave a permanent hole in the navmesh where it started. The Godot host
@@ -245,7 +249,7 @@ def collect_walkable_geometry(
         if authored_components.stored_value(obj, authoring_router.RIGIDBODY, "BodyType") == "Dynamic":
             continue
 
-        if not _append_colliders(obj, data_dir, vertices, triangles) and obj.type == "MESH":
+        if not _append_colliders(entries, vertices, triangles) and obj.type == "MESH":
             # No box collider could be emitted (non-box shapes, or dangling references):
             # the render mesh is the best remaining approximation of what the runtime blocks.
             _append_object(obj, depsgraph, vertices, triangles)
@@ -271,9 +275,12 @@ _BOX_TRIANGLES = (
 
 
 def _append_colliders(
-    obj: bpy.types.Object, data_dir: str, vertices: list[float], triangles: list[int]
+    entries, vertices: list[float], triangles: list[int]
 ) -> bool:
     """Append world-space triangles for the entity's BOX colliders; True if any was emitted.
+
+    Takes the resolved references rather than the object: the caller has already asked which
+    colliders this entity has, and asking again would re-read the schema document per object.
 
     Triggers are not solid and are skipped, mirroring the runtime's obstacle collection. The
     collider object's own world matrix carries every inherited rotation and scale, so the
@@ -283,7 +290,7 @@ def _append_colliders(
     from ..contract.schema import PhysicsShapeType
 
     emitted = False
-    for reference in authored_components.collider_entries(obj, data_dir):
+    for reference in entries:
         target = reference.target
         if target is None or not is_collider(target):
             continue

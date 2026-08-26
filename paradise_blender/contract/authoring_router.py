@@ -13,10 +13,10 @@ The subset is deliberate, and the split is this host's, not the schema's:
 
 * **Routed here** (plain fields, authored in the Components panel): agent, rigidbody,
   audio-emitter, particle-emitter.
-* **Host-owned** (this host derives them from real Blender data, so authoring them as a form
-  would fight the pipeline): renderable (the mesh datablock), collider / interactable (the
-  collider empties), light (the lamp datablock). The schema marks light and sprite-animation as
-  host-baked anyway (component-level ``authoredBy``).
+* **Host-derived** (this host reads them off real Blender data, so authoring them as a form would
+  fight the pipeline): the object's name, its transform, its material slots, and the lamp
+  datablock's light. Interactable is NOT among them — it declares no array and no ``authoredBy``,
+  so it is an ordinary form component like any other.
 
 Payloads arrive as the WIRE dicts :func:`.authoring.build_payload` produces — schema defaults
 already filled, enums as member names, colors as ``{r,g,b,a}`` — so this module only maps

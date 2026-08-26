@@ -100,6 +100,14 @@ def launch_runtime(
     from Finder or the Dock it is ``/``, and the runtime dies looking for
     ``/data/<game>/config.json``. The bug is invisible to whoever wrote the launcher and
     reproduces only for whoever launched Blender the other way.
+
+    ONLY THE POSIX BRANCH REDIRECTS OUTPUT INTO :func:`log_path`, and that asymmetry is
+    long-standing rather than introduced here. The Windows branch passes ``creationflags`` and no
+    ``stdout``/``stderr``, so nothing writes the log -- which means :func:`first_error_line` has no
+    file to read and the operator falls through to reporting a path that does not exist. The
+    diagnosis this module performs is therefore POSIX-only in practice. Fixing it means opening
+    the log and handing the child its handles, which is a small change nobody here can test; it is
+    named rather than guessed at.
     """
     command = resolve_runtime_command()
     if command is None:
@@ -190,9 +198,18 @@ def _is_build_noise(line: str) -> bool:
 
     Deliberately narrow: it matches the word "warning", not "did this line come from MSBuild".
     A build that actually fails emits "error", which ``_FAILURE_MARKERS`` catches before this is
-    ever consulted.
+    ever consulted -- including under ``TreatWarningsAsErrors``, where MSBuild prints
+    ``error NU1900: Warning As Error: ...`` and the marker scan wins on the word "error".
+
+    STRUCTURED, not a bare word search, and the distinction is what keeps a RUNTIME's own output
+    safe. Every compiler and SDK warning is printed as ``<origin>: warning <CODE>: <text>`` --
+    ``…Sdk.targets(308,5): warning NETSDK1206:``, ``A.csproj : warning NU1701:`` -- so the colon is
+    part of the shape rather than incidental to it. Matching the bare word "warning" would also
+    swallow a launcher's own fatal line if it happened to contain it ("…ignoring warning file…"),
+    which is precisely the sort of line this function exists to surface. Same convention
+    ``schema_build.failure_summary`` uses for the error side (``": error "``), for the same reason.
     """
-    return "warning" in line.lower()
+    return ": warning " in line.lower()
 
 
 def _dotnet_run(project: str, warn: bool = True) -> list[str] | None:

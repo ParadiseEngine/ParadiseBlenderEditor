@@ -27,7 +27,13 @@ __all__ = ["classes"]
 # ~75 s in connection timeouts before failing (NU1900 is an error here -- both repos set
 # TreatWarningsAsErrors), and a cold build after a package bump is minutes. Waiting is free: the
 # timer polls a `poll()` and passes every other event straight through, so a long window costs
-# nothing and buys the error message.
+# nothing and buys the error message. Launch success is reported immediately by `launch_runtime`,
+# not at the end of the watch, so widening it costs the author no perceived latency either.
+#
+# IT BOUNDS THE FAILURE RATHER THAN REMOVING IT. The architecture is still "no death within the
+# window means success", so a build slower than three minutes reports success and then dies
+# unheard -- the same shape, further away. Removing it properly means watching until the process
+# either dies or is observed to have opened a window, and Blender cannot see the second half.
 WATCH_SECONDS = 180.0
 POLL_INTERVAL = 0.4
 

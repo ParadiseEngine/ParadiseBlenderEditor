@@ -27,6 +27,8 @@ __all__ = [
     "read_state",
     "stamp_of",
     "tag_object",
+    "tag_prefab",
+    "prefab_of",
     "write_state",
 ]
 
@@ -43,6 +45,14 @@ DERIVED_KEY = "paradise_derived"
 
 #: The object's components as a JSON string. Read-only display data; never written back.
 COMPONENTS_KEY = "paradise_components"
+
+#: The prefab an object instantiates, as ``{"guid": …, "path": …}``.
+#:
+#: Only NEW instances need this. An object that came from the document keeps its prefab reference
+#: in the file, and save carries that through untouched -- but an instance added here has no entry
+#: to carry anything from, and without the marker the save would write it as a plain object and
+#: lose the reference that makes it an instance.
+PREFAB_KEY = "paradise_prefab"
 
 #: Scene-level: the absolute path of the document this scene was materialized from.
 SCENE_PATH_KEY = "paradise_scene_path"
@@ -103,9 +113,27 @@ def tag_object(obj: bpy.types.Object, guid: str, components: list) -> None:
     obj[COMPONENTS_KEY] = json.dumps(components, ensure_ascii=False)
 
 
+def tag_prefab(obj: bpy.types.Object, guid: str, path: str) -> None:
+    """Record that ``obj`` instantiates the prefab at ``path``."""
+    obj[PREFAB_KEY] = json.dumps({"guid": guid, "path": path}, ensure_ascii=False)
+
+
+def prefab_of(obj: bpy.types.Object):
+    """The prefab reference recorded on ``obj``, or ``None``."""
+    raw = obj.get(PREFAB_KEY)
+    if not raw:
+        return None
+    try:
+        stored = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    guid, path = stored.get("guid"), stored.get("path")
+    return (guid, path) if guid and path else None
+
+
 def clear_object(obj: bpy.types.Object) -> None:
     """Detach an object from the document -- it becomes ordinary Blender content."""
-    for key in (GUID_KEY, COMPONENTS_KEY):
+    for key in (GUID_KEY, COMPONENTS_KEY, PREFAB_KEY):
         if key in obj:
             del obj[key]
 

@@ -31,6 +31,7 @@ import tempfile
 import bpy
 
 from ..document import axes, prefab as prefab_document, well_known
+from ..document.asset_reference import AssetReference
 from ..document.prefab import PrefabComponent, PrefabDocument, PrefabObject
 from . import store
 
@@ -75,6 +76,8 @@ def save_prefab(scene: bpy.types.Scene) -> SaveResult:
     with open(state.path, encoding="utf-8") as handle:
         base = prefab_document.loads(handle.read(), state.path)
 
+    _refuse_duplicate_identities(scene)
+
     result = SaveResult()
     merged = _merge(scene, base, result)
 
@@ -82,6 +85,46 @@ def save_prefab(scene: bpy.types.Scene) -> SaveResult:
     store.write_state(scene, state.path)
     result.written = len(merged.objects)
     return result
+
+
+def _refuse_duplicate_identities(scene: bpy.types.Scene) -> None:
+    """Refuse to save when two objects claim one identity.
+
+    **Duplicating a document object is the obvious thing to try, and it silently destroyed the
+    file.** Blender copies an object's custom properties, identity included, so Shift+D produces a
+    second object claiming the first one's guid. The merge then wrote both, the document declared
+    the same guid twice, and it would not load again -- while the save reported success.
+
+    Refusing here rather than repairing it: this addon does not know which of the two the author
+    meant to keep, and minting a fresh guid for one of them would quietly turn a copy of an
+    instance into a second instance the document never had. Naming the objects lets the author
+    decide in a second, which is the part that was missing.
+    """
+    seen: dict[str, str] = {}
+    clashes: dict[str, list[str]] = {}
+
+    for obj in _document_objects(scene):
+        guid = store.guid_of(obj)
+        if guid is None:
+            continue
+        if guid in seen:
+            clashes.setdefault(guid, [seen[guid]]).append(obj.name)
+        else:
+            seen[guid] = obj.name
+
+    if not clashes:
+        return
+
+    lines = [
+        f"  '{names[0]}' and {', '.join(repr(n) for n in names[1:])} all claim {guid}"
+        for guid, names in sorted(clashes.items())
+    ]
+    raise SaveError(
+        "two objects share one identity, so the document would not load again:\n"
+        + "\n".join(lines)
+        + "\n\nA duplicated object keeps the original's identity. Delete the copy, or use "
+        "Add Prefab Instance to place a genuinely new one."
+    )
 
 
 def _merge(scene: bpy.types.Scene, base: PrefabDocument, result: SaveResult) -> PrefabDocument:
@@ -130,6 +173,13 @@ def _object_entry(obj: bpy.types.Object, original: PrefabObject | None, result: 
     """
     guid = store.guid_of(obj)
     entry = PrefabObject() if original is None else original
+
+    # A NEW instance has no file entry to carry a prefab reference through, so it carries its own.
+    # Only when there is no original: an object already in the document keeps whatever reference
+    # the file gives it, which is what stops a stale marker from overriding an edited document.
+    if original is None and store.prefab_of(obj) is not None:
+        reference_guid, reference_path = store.prefab_of(obj)
+        entry.prefab = AssetReference(reference_guid, reference_path)
 
     parent_guid = store.guid_of(obj.parent) if obj.parent is not None else None
     if obj.parent is not None and parent_guid is None:

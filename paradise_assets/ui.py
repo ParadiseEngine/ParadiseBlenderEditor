@@ -50,6 +50,10 @@ class PARADISE_ASSETS_PT_document(_AssetsPanel, Panel):
             warning.label(text="Changed on disk since it was opened.", icon="ERROR")
             warning.label(text="Reload, or your save will be refused.")
 
+        # Above save/reload, and on its own: it is the one button here that ADDS something, and
+        # the drag-and-drop route is not discoverable from a panel.
+        layout.operator("paradise_assets.add_prefab_instance", text="Add Prefab…", icon="ADD")
+
         column = layout.column(align=True)
         column.operator("paradise_assets.save_prefab", icon="EXPORT")
         column.operator("paradise_assets.reload_prefab", icon="FILE_REFRESH")

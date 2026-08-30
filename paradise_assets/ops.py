@@ -16,7 +16,7 @@ from bpy.types import Operator
 
 from .document import project
 from .document.prefab import PrefabDocumentError, loads
-from .materialize import load, save, store
+from .materialize import instancing, load, save, store
 
 __all__ = ["classes"]
 
@@ -137,8 +137,89 @@ class PARADISE_ASSETS_OT_save_prefab(Operator):
         return {"FINISHED"}
 
 
+class PARADISE_ASSETS_OT_add_prefab_instance(Operator):
+    """Place an instance of a prefab in the open document"""
+
+    bl_idname = "paradise_assets.add_prefab_instance"
+    bl_label = "Add Prefab Instance"
+    bl_options = {"REGISTER", "UNDO"}
+
+    filepath: StringProperty(subtype="FILE_PATH")  # type: ignore[valid-type]
+    filter_glob: StringProperty(default="*.prefab", options={"HIDDEN"})  # type: ignore[valid-type]
+
+    @classmethod
+    def poll(cls, context):
+        return store.read_state(context.scene) is not None
+
+    def invoke(self, context, event):
+        # Dropped files arrive with filepath already set; a menu invocation has to ask.
+        if self.filepath:
+            return self.execute(context)
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        state = store.read_state(context.scene)
+        if state is None:
+            self.report({"ERROR"}, "No prefab document is open — open one before adding to it.")
+            return {"CANCELLED"}
+
+        path = os.path.abspath(bpy.path.abspath(self.filepath))
+        if not os.path.isfile(path):
+            self.report({"ERROR"}, f"No such file: {path}")
+            return {"CANCELLED"}
+
+        if os.path.normcase(path) == os.path.normcase(state.path):
+            # Not a rule of the format -- the resolver would catch the cycle -- but catching it
+            # here says what went wrong at the moment it went wrong.
+            self.report({"ERROR"}, "A document cannot instantiate itself.")
+            return {"CANCELLED"}
+
+        layout = project.locate(path)
+        if layout is None:
+            self.report({"ERROR"}, f"No asset project above {path}")
+            return {"CANCELLED"}
+
+        try:
+            added = instancing.add_instance(context.scene, path, layout, tuple(context.scene.cursor.location))
+        except instancing.InstanceError as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+
+        # Selected and active, because a dropped object you then have to hunt for is worse than
+        # no drop at all -- and because the next thing anyone does is move it.
+        for obj in context.selected_objects:
+            obj.select_set(False)
+        added.select_set(True)
+        context.view_layer.objects.active = added
+
+        self.report({"INFO"}, f"Added '{added.name}'. Save to write it to the document.")
+        return {"FINISHED"}
+
+
+class PARADISE_ASSETS_FH_prefab(bpy.types.FileHandler):
+    """Drag a ``.prefab`` from the file browser into the viewport to instance it."""
+
+    bl_idname = "PARADISE_ASSETS_FH_prefab"
+    bl_label = "Paradise Prefab"
+    bl_import_operator = "paradise_assets.add_prefab_instance"
+    bl_file_extensions = ".prefab"
+
+    @classmethod
+    def poll_drop(cls, context):
+        # Only into a 3D viewport, and only when there is a document for it to go into --
+        # otherwise the drop would look accepted and then report an error.
+        return (
+            context.area is not None
+            and context.area.type == "VIEW_3D"
+            and store.read_state(context.scene) is not None
+        )
+
+
 classes = (
     PARADISE_ASSETS_OT_open_prefab,
     PARADISE_ASSETS_OT_reload_prefab,
     PARADISE_ASSETS_OT_save_prefab,
+    PARADISE_ASSETS_OT_add_prefab_instance,
+    PARADISE_ASSETS_FH_prefab,
 )

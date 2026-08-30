@@ -100,7 +100,38 @@ class MeshLibrary:
                 parent.objects.unlink(obj)
             collection.objects.link(obj)
 
+        tint_by_object_colour(created)
         return collection
+
+
+def tint_by_object_colour(objects) -> None:
+    """Make an UNTEXTURED material take its base colour from the instancing object.
+
+    A prefab instance shares one mesh with every other instance, so per-instance colour cannot
+    live in the material -- it has to come from the object. Blender's Object Info node supplies
+    exactly that, and wiring it into Base Color is what lets one grey cube render as fifty
+    differently-coloured graybox volumes.
+
+    **Textured materials are left alone.** A material with an image feeding Base Color is real
+    art, and multiplying an author's texture by an object colour would be inventing a look the
+    game does not have. This only touches materials whose Base Color is a flat value -- which is
+    precisely the graybox case.
+    """
+    for material in {slot.material for obj in objects for slot in obj.material_slots if slot.material}:
+        if not material.use_nodes:
+            continue
+
+        principled = next((n for n in material.node_tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
+        if principled is None:
+            continue
+
+        base = principled.inputs.get("Base Color")
+        if base is None or base.is_linked:
+            continue   # textured, or already driven by something -- not ours to touch
+
+        info = material.node_tree.nodes.new("ShaderNodeObjectInfo")
+        info.location = (principled.location.x - 300, principled.location.y)
+        material.node_tree.links.new(info.outputs["Color"], base)
 
 
 def _library_root(scene: bpy.types.Scene) -> bpy.types.Collection:

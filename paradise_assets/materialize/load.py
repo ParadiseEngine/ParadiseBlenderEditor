@@ -14,6 +14,7 @@ scene is saved back, turning a one-object edit into a whole-file diff.
 from __future__ import annotations
 
 import os
+import tomllib
 
 import bpy
 from mathutils import Quaternion, Vector
@@ -122,7 +123,55 @@ def _create_object(
         else:
             result.warn(f"{entry.name}: mesh '{reference}' could not be displayed")
 
+    _apply_authored_colour(obj, entry, layout)
     return obj
+
+
+def _apply_authored_colour(obj: bpy.types.Object, entry: SceneObject, layout) -> None:
+    """Put the object's authored material colour on ``obj.color``.
+
+    A prefab instance shares ONE mesh with every other instance, so its colour cannot live in the
+    mesh's material -- which is where a per-mesh GLB used to keep it. The box meshes this replaced
+    each had their material baked in (``mat_platform``'s 0.30/0.28/0.26 and so on), and without
+    this every graybox in the scene renders the same generic grey, which is exactly the thing a
+    graybox workflow needs to distinguish.
+
+    Object colour rather than a material per instance: it is one float4 on the object, it costs no
+    datablock, and :func:`meshes.tint_by_object_colour` is what makes the shared material read it.
+    The engine is unaffected either way -- it takes colour from the Materials component.
+    """
+    for component in entry.components:
+        slots = component.data.get("Slots")
+        if not isinstance(slots, list) or not slots:
+            continue
+        first = slots[0]
+        if not isinstance(first, dict) or not first.get("path"):
+            continue
+
+        colour = _base_colour(layout.resolve(first["path"]))
+        if colour is not None:
+            obj.color = colour
+        return
+
+
+def _base_colour(path: str):
+    """``BaseColorFactor`` from a material document, or ``None``."""
+    try:
+        with open(path, "rb") as handle:
+            document = tomllib.load(handle)
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+
+    factor = document.get("BaseColorFactor")
+    if not isinstance(factor, dict):
+        return None
+
+    return (
+        float(factor.get("r", 1.0)),
+        float(factor.get("g", 1.0)),
+        float(factor.get("b", 1.0)),
+        float(factor.get("a", 1.0)),
+    )
 
 
 def _load_prefab(layout, reference, result):

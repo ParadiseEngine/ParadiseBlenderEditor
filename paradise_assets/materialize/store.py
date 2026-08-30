@@ -20,7 +20,7 @@ import os
 import bpy
 
 __all__ = [
-    "SceneState",
+    "DocumentState",
     "clear_object",
     "component_json",
     "guid_of",
@@ -51,7 +51,7 @@ SCENE_PATH_KEY = "paradise_scene_path"
 STAMP_KEY = "paradise_scene_stamp"
 
 
-class SceneState:
+class DocumentState:
     """The link between a Blender scene and the document it came from."""
 
     def __init__(self, path: str, stamp: str) -> None:
@@ -81,20 +81,20 @@ def stamp_of(path: str) -> str:
     return f"{info.st_mtime_ns}:{info.st_size}"
 
 
-def write_state(scene: bpy.types.Scene, path: str) -> SceneState:
+def write_state(scene: bpy.types.Scene, path: str) -> DocumentState:
     """Record that ``scene`` now reflects the document at ``path``."""
-    state = SceneState(os.path.abspath(path), stamp_of(path))
+    state = DocumentState(os.path.abspath(path), stamp_of(path))
     scene[SCENE_PATH_KEY] = state.path
     scene[STAMP_KEY] = state.stamp
     return state
 
 
-def read_state(scene: bpy.types.Scene) -> SceneState | None:
+def read_state(scene: bpy.types.Scene) -> DocumentState | None:
     """The document this scene was materialized from, or ``None`` if it was not."""
     path = scene.get(SCENE_PATH_KEY)
     if not isinstance(path, str) or not path:
         return None
-    return SceneState(path, scene.get(STAMP_KEY, ""))
+    return DocumentState(path, scene.get(STAMP_KEY, ""))
 
 
 def tag_object(obj: bpy.types.Object, guid: str, components: list) -> None:

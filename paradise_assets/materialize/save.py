@@ -30,11 +30,11 @@ import tempfile
 
 import bpy
 
-from ..document import axes, scene as scene_document, well_known
-from ..document.scene import SceneComponent, SceneDocument, SceneObject
+from ..document import axes, prefab as prefab_document, well_known
+from ..document.prefab import PrefabComponent, PrefabDocument, PrefabObject
 from . import store
 
-__all__ = ["SaveError", "SaveResult", "save_scene"]
+__all__ = ["SaveError", "SaveResult", "save_prefab"]
 
 #: How close a Blender TRS has to be to the document's to count as untouched, relative to the
 #: value's own magnitude. Round-tripping the rebase costs ~4e-8; float32 itself is ~1.2e-7. A
@@ -59,7 +59,7 @@ class SaveResult:
         self.warnings: list[str] = []
 
 
-def save_scene(scene: bpy.types.Scene) -> SaveResult:
+def save_prefab(scene: bpy.types.Scene) -> SaveResult:
     """Write ``scene`` back to the document it was materialized from."""
     state = store.read_state(scene)
     if state is None:
@@ -73,24 +73,24 @@ def save_scene(scene: bpy.types.Scene) -> SaveResult:
         )
 
     with open(state.path, encoding="utf-8") as handle:
-        base = scene_document.loads(handle.read(), state.path)
+        base = prefab_document.loads(handle.read(), state.path)
 
     result = SaveResult()
     merged = _merge(scene, base, result)
 
-    _write_atomic(state.path, scene_document.dumps(merged))
+    _write_atomic(state.path, prefab_document.dumps(merged))
     store.write_state(scene, state.path)
     result.written = len(merged.objects)
     return result
 
 
-def _merge(scene: bpy.types.Scene, base: SceneDocument, result: SaveResult) -> SceneDocument:
+def _merge(scene: bpy.types.Scene, base: PrefabDocument, result: SaveResult) -> PrefabDocument:
     """The document as Blender now has it, over the document as the file now has it."""
     by_guid = base.by_guid()
     objects = _document_objects(scene)
     present = {store.guid_of(obj) for obj in objects}
 
-    merged = SceneDocument()
+    merged = PrefabDocument()
     seen: set[str] = set()
 
     # Document order is preserved for objects that were already there -- Blender guarantees no
@@ -113,13 +113,13 @@ def _merge(scene: bpy.types.Scene, base: SceneDocument, result: SaveResult) -> S
     return merged
 
 
-def _document_order(base: SceneDocument):
+def _document_order(base: PrefabDocument):
     """Sort key keeping the file's existing order, with new objects appended in Blender order."""
     order = {entry.guid: index for index, entry in enumerate(base.objects)}
     return lambda entry: (order.get(entry.guid, len(order)), entry.name or "")
 
 
-def _object_entry(obj: bpy.types.Object, original: SceneObject | None, result: SaveResult) -> SceneObject:
+def _object_entry(obj: bpy.types.Object, original: PrefabObject | None, result: SaveResult) -> PrefabObject:
     """One Blender object as a document object.
 
     The FILE's version is the base and Blender overwrites only what Blender owns -- the name, the
@@ -129,7 +129,7 @@ def _object_entry(obj: bpy.types.Object, original: SceneObject | None, result: S
     instance instead of flattening it into the plain objects it displays as.
     """
     guid = store.guid_of(obj)
-    entry = SceneObject() if original is None else original
+    entry = PrefabObject() if original is None else original
 
     parent_guid = store.guid_of(obj.parent) if obj.parent is not None else None
     if obj.parent is not None and parent_guid is None:
@@ -145,11 +145,11 @@ def _object_entry(obj: bpy.types.Object, original: SceneObject | None, result: S
     return entry
 
 
-def _write_meta(entry: SceneObject, guid: str, name: str, parent: str | None) -> None:
+def _write_meta(entry: PrefabObject, guid: str, name: str, parent: str | None) -> None:
     """Update identity, name and parent in place, leaving any other meta field alone."""
     component = entry.component(well_known.META_ID)
     if component is None:
-        component = SceneComponent(well_known.META_ID, well_known.META_TYPE, {})
+        component = PrefabComponent(well_known.META_ID, well_known.META_TYPE, {})
         entry.components.insert(0, component)
 
     component.data[well_known.GUID] = guid
@@ -161,7 +161,7 @@ def _write_meta(entry: SceneObject, guid: str, name: str, parent: str | None) ->
 
 
 def _write_transform(
-    entry: SceneObject, obj: bpy.types.Object, original: SceneObject | None, result: SaveResult
+    entry: PrefabObject, obj: bpy.types.Object, original: PrefabObject | None, result: SaveResult
 ) -> None:
     position, rotation, scale = axes.from_blender_trs(*_blender_trs(obj))
 
@@ -180,7 +180,7 @@ def _write_transform(
 
     component = entry.component(well_known.TRANSFORM_ID)
     if component is None:
-        component = SceneComponent(well_known.TRANSFORM_ID, well_known.TRANSFORM_TYPE, {})
+        component = PrefabComponent(well_known.TRANSFORM_ID, well_known.TRANSFORM_TYPE, {})
         entry.components.append(component)
 
     component.data[well_known.POSITION] = [float(v) for v in position]

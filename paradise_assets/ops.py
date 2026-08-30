@@ -1,4 +1,4 @@
-"""The operators: open a scene document, save it back, reload it.
+"""The operators: open a prefab document, save it back, reload it.
 
 Saving is an EXPLICIT operator rather than a ``save_post`` handler. Sync-on-save is where §2.7 of
 the asset-management plan ends up, and it should land once the round trip has been proven on real
@@ -15,21 +15,21 @@ from bpy.props import StringProperty
 from bpy.types import Operator
 
 from .document import project
-from .document.scene import SceneDocumentError, loads
+from .document.prefab import PrefabDocumentError, loads
 from .materialize import load, save, store
 
 __all__ = ["classes"]
 
 
-class PARADISE_ASSETS_OT_open_scene(Operator):
-    """Open a Paradise scene document and materialize it as Blender objects"""
+class PARADISE_ASSETS_OT_open_prefab(Operator):
+    """Open a Paradise prefab document and materialize it as Blender objects"""
 
-    bl_idname = "paradise_assets.open_scene"
-    bl_label = "Open Scene Document"
+    bl_idname = "paradise_assets.open_prefab"
+    bl_label = "Open Prefab Document"
     bl_options = {"REGISTER", "UNDO"}
 
     filepath: StringProperty(subtype="FILE_PATH")  # type: ignore[valid-type]
-    filter_glob: StringProperty(default="*.scene", options={"HIDDEN"})  # type: ignore[valid-type]
+    filter_glob: StringProperty(default="*.prefab", options={"HIDDEN"})  # type: ignore[valid-type]
 
     def invoke(self, context, event):
         context.window_manager.fileselect_add(self)
@@ -53,7 +53,7 @@ class PARADISE_ASSETS_OT_open_scene(Operator):
         try:
             with open(path, encoding="utf-8") as handle:
                 document = loads(handle.read(), path)
-        except SceneDocumentError as error:
+        except PrefabDocumentError as error:
             self.report({"ERROR"}, str(error))
             return {"CANCELLED"}
         except OSError as error:
@@ -73,11 +73,11 @@ class PARADISE_ASSETS_OT_open_scene(Operator):
         return {"FINISHED"}
 
 
-class PARADISE_ASSETS_OT_reload_scene(Operator):
-    """Re-read the scene document, discarding changes made here"""
+class PARADISE_ASSETS_OT_reload_prefab(Operator):
+    """Re-read the prefab document, discarding changes made here"""
 
-    bl_idname = "paradise_assets.reload_scene"
-    bl_label = "Reload Scene Document"
+    bl_idname = "paradise_assets.reload_prefab"
+    bl_label = "Reload Prefab Document"
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod
@@ -89,7 +89,7 @@ class PARADISE_ASSETS_OT_reload_scene(Operator):
         try:
             with open(state.path, encoding="utf-8") as handle:
                 document = loads(handle.read(), state.path)
-        except (SceneDocumentError, OSError) as error:
+        except (PrefabDocumentError, OSError) as error:
             self.report({"ERROR"}, str(error))
             return {"CANCELLED"}
 
@@ -99,11 +99,11 @@ class PARADISE_ASSETS_OT_reload_scene(Operator):
         return {"FINISHED"}
 
 
-class PARADISE_ASSETS_OT_save_scene(Operator):
-    """Write placement changes back to the scene document"""
+class PARADISE_ASSETS_OT_save_prefab(Operator):
+    """Write placement changes back to the prefab document"""
 
-    bl_idname = "paradise_assets.save_scene"
-    bl_label = "Save to Scene Document"
+    bl_idname = "paradise_assets.save_prefab"
+    bl_label = "Save to Prefab Document"
 
     @classmethod
     def poll(cls, context):
@@ -111,7 +111,7 @@ class PARADISE_ASSETS_OT_save_scene(Operator):
 
     def execute(self, context):
         try:
-            result = save.save_scene(context.scene)
+            result = save.save_prefab(context.scene)
         except save.SaveError as error:
             self.report({"ERROR"}, str(error))
             return {"CANCELLED"}
@@ -138,7 +138,7 @@ class PARADISE_ASSETS_OT_save_scene(Operator):
 
 
 classes = (
-    PARADISE_ASSETS_OT_open_scene,
-    PARADISE_ASSETS_OT_reload_scene,
-    PARADISE_ASSETS_OT_save_scene,
+    PARADISE_ASSETS_OT_open_prefab,
+    PARADISE_ASSETS_OT_reload_prefab,
+    PARADISE_ASSETS_OT_save_prefab,
 )

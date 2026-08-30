@@ -24,17 +24,17 @@ class _AssetsPanel:
     bl_category = "Paradise Assets"
 
 
-class PARADISE_ASSETS_PT_scene(_AssetsPanel, Panel):
-    bl_label = "Scene Document"
-    bl_idname = "PARADISE_ASSETS_PT_scene"
+class PARADISE_ASSETS_PT_document(_AssetsPanel, Panel):
+    bl_label = "Prefab Document"
+    bl_idname = "PARADISE_ASSETS_PT_document"
 
     def draw(self, context):
         layout = self.layout
         state = store.read_state(context.scene)
 
         if state is None:
-            layout.label(text="No scene document loaded.", icon="INFO")
-            layout.operator("paradise_assets.open_scene", icon="FILE_FOLDER")
+            layout.label(text="No prefab document loaded.", icon="INFO")
+            layout.operator("paradise_assets.open_prefab", icon="FILE_FOLDER")
             return
 
         box = layout.box()
@@ -51,15 +51,15 @@ class PARADISE_ASSETS_PT_scene(_AssetsPanel, Panel):
             warning.label(text="Reload, or your save will be refused.")
 
         column = layout.column(align=True)
-        column.operator("paradise_assets.save_scene", icon="EXPORT")
-        column.operator("paradise_assets.reload_scene", icon="FILE_REFRESH")
-        layout.operator("paradise_assets.open_scene", text="Open Another…", icon="FILE_FOLDER")
+        column.operator("paradise_assets.save_prefab", icon="EXPORT")
+        column.operator("paradise_assets.reload_prefab", icon="FILE_REFRESH")
+        layout.operator("paradise_assets.open_prefab", text="Open Another…", icon="FILE_FOLDER")
 
 
 class PARADISE_ASSETS_PT_object(_AssetsPanel, Panel):
     bl_label = "Components"
     bl_idname = "PARADISE_ASSETS_PT_object"
-    bl_parent_id = "PARADISE_ASSETS_PT_scene"
+    bl_parent_id = "PARADISE_ASSETS_PT_document"
 
     @classmethod
     def poll(cls, context):
@@ -126,6 +126,6 @@ def _payload_lines(data, prefix: str = "", depth: int = 0) -> list[str]:
 
 
 classes = (
-    PARADISE_ASSETS_PT_scene,
+    PARADISE_ASSETS_PT_document,
     PARADISE_ASSETS_PT_object,
 )

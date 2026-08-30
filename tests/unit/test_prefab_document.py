@@ -1,13 +1,13 @@
-"""Reading and writing ``*.scene`` documents, on the all-components model.
+"""Reading and writing ``*.prefab`` documents, on the all-components model.
 
-Mirrors ``Paradise.Assets.Documents.Test/SceneDocumentTests.cs``. Reading is strict on purpose:
+Mirrors ``Paradise.Assets.Documents.Test/PrefabDocumentTests.cs``. Reading is strict on purpose:
 the document is committed source of truth, and a reader that guessed would turn an authoring typo
-into a scene that loads and is quietly wrong.
+into a document that loads and is quietly wrong.
 """
 
 from __future__ import annotations
 
-from paradise_assets.document import scene, well_known
+from paradise_assets.document import prefab, well_known
 
 CRATE = "3f2a1b4c-5d6e-4f70-8192-a3b4c5d6e7f8"
 LID = "9a8b7c6d-5e4f-4031-8213-4c5d6e7f8091"
@@ -54,8 +54,8 @@ def obj(guid: str, name: str = "x", extra: str = "") -> str:
 
 def rejects(text: str) -> str:
     try:
-        scene.loads(text, "x.scene")
-    except scene.SceneDocumentError as error:
+        prefab.loads(text, "x.scene")
+    except prefab.PrefabDocumentError as error:
         return str(error)
     raise AssertionError("expected the document to be rejected")
 
@@ -64,10 +64,10 @@ class TestRoundTrip:
     def test_a_canonical_document_round_trips_byte_for_byte(self):
         # THE property: read -> write is the identity on canonical input, or every tool touching
         # a scene would litter diffs with reformatting.
-        assert scene.dumps(scene.loads(CANONICAL, "x.scene")) == CANONICAL
+        assert prefab.dumps(prefab.loads(CANONICAL, "x.scene")) == CANONICAL
 
     def test_identity_name_and_parent_come_from_the_meta_component(self):
-        document = scene.loads(CANONICAL, "x.scene")
+        document = prefab.loads(CANONICAL, "x.scene")
 
         assert len(document.objects) == 2
         assert document.objects[0].guid == CRATE
@@ -76,32 +76,32 @@ class TestRoundTrip:
         assert document.objects[1].parent == CRATE
 
     def test_a_payload_sits_flat_beside_id_and_type(self):
-        renderable = scene.loads(CANONICAL, "x.scene").objects[0].component(RENDERABLE)
+        renderable = prefab.loads(CANONICAL, "x.scene").objects[0].component(RENDERABLE)
 
         assert renderable.type == "Paradise.Export.Data.RenderableComponentData"
         assert "Mesh" in renderable.data
         assert "id" not in renderable.data and "type" not in renderable.data
 
     def test_an_asset_reference_survives_the_round_trip(self):
-        mesh = scene.loads(CANONICAL, "x.scene").objects[0].component(RENDERABLE).data["Mesh"]
+        mesh = prefab.loads(CANONICAL, "x.scene").objects[0].component(RENDERABLE).data["Mesh"]
 
         assert mesh["path"] == "Models/crate.glb"
 
     def test_an_empty_scene_is_just_its_version(self):
-        assert scene.dumps(scene.SceneDocument()) == "schema_version = 1\n"
+        assert prefab.dumps(prefab.PrefabDocument()) == "schema_version = 1\n"
 
     def test_component_order_survives(self):
-        ids = [c.id for c in scene.loads(CANONICAL, "x.scene").objects[0].components]
+        ids = [c.id for c in prefab.loads(CANONICAL, "x.scene").objects[0].components]
 
         assert ids == [META, TRANSFORM, RENDERABLE]
 
     def test_a_removed_marker_round_trips(self):
         text = f'schema_version = 1\n{obj(CRATE)}\n[[objects.components]]\nid = "{RENDERABLE}"\nremoved = true\n'
 
-        document = scene.loads(text, "x.scene")
+        document = prefab.loads(text, "x.scene")
 
         assert document.objects[0].component(RENDERABLE).removed is True
-        assert scene.dumps(document) == text
+        assert prefab.dumps(document) == text
 
     def test_a_prefab_reference_round_trips(self):
         text = (
@@ -110,10 +110,10 @@ class TestRoundTrip:
             f'\n[[objects.components]]\nid = "{META}"\ntype = "meta"\nGuid = "{CRATE}"\n'
         )
 
-        document = scene.loads(text, "x.scene")
+        document = prefab.loads(text, "x.scene")
 
         assert document.objects[0].prefab.path == "prefabs/rail.prefab"
-        assert scene.dumps(document) == text
+        assert prefab.dumps(document) == text
 
 
 class TestStrictness:
@@ -175,7 +175,7 @@ class TestCarriers:
             f'id = "{META}"\ntype = "meta"\nParent = "{CRATE}"\nTarget = "{LID}"\n' + obj(CRATE)
         )
 
-        document = scene.loads(text, "x.scene")
+        document = prefab.loads(text, "x.scene")
 
         assert document.objects[0].target == LID
         assert document.objects[0].guid is None
@@ -183,11 +183,26 @@ class TestCarriers:
 
 class TestRoots:
     def test_the_single_root_is_inferred_from_the_absence_of_a_parent(self):
-        assert scene.loads(CANONICAL, "x.scene").single_root().guid == CRATE
+        assert prefab.loads(CANONICAL, "x.scene").single_root().guid == CRATE
 
-    def test_a_document_with_two_roots_has_no_single_root(self):
-        # Not an error here -- a scene has many roots. It is the prefab that requires exactly one.
-        assert scene.loads(f"schema_version = 1\n{obj(CRATE)}{obj(LID)}", "x").single_root() is None
+    def test_a_document_with_two_roots_is_refused(self):
+        # There is one kind of document now and every one is instantiable, so "exactly one root" is
+        # checked on EVERY read rather than only when something is used as a prefab.
+        try:
+            prefab.loads(f"schema_version = 1\n{obj(CRATE)}{obj(LID)}", "x.prefab")
+        except prefab.PrefabDocumentError as error:
+            assert "has 2 root objects" in str(error)
+            assert "parent the others beneath it" in str(error)
+        else:
+            raise AssertionError("expected the document to be refused")
+
+    def test_a_document_with_no_objects_is_refused(self):
+        try:
+            prefab.loads("schema_version = 1\n", "empty.prefab")
+        except prefab.PrefabDocumentError as error:
+            assert "has no objects" in str(error)
+        else:
+            raise AssertionError("expected the document to be refused")
 
 
 class TestOpaquePayloads:
@@ -200,4 +215,4 @@ class TestOpaquePayloads:
             '\n[objects.components.Nested]\nInner = "deep"\n'
         )
 
-        assert scene.dumps(scene.loads(text, "x.scene")) == text
+        assert prefab.dumps(prefab.loads(text, "x.scene")) == text

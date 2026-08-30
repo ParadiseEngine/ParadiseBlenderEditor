@@ -19,8 +19,8 @@ import tomllib
 import bpy
 from mathutils import Quaternion, Vector
 
-from ..document import axes, prefab, project, schema, well_known
-from ..document.scene import SceneDocument, SceneObject, loads as load_scene
+from ..document import axes, project, resolve, schema, well_known
+from ..document.prefab import PrefabDocument, PrefabObject, loads as parse_document
 from . import store
 from .meshes import MeshLibrary
 
@@ -43,7 +43,7 @@ class LoadResult:
 
 def load_document(
     scene: bpy.types.Scene,
-    document: SceneDocument,
+    document: PrefabDocument,
     scene_path: str,
     layout: project.ProjectLayout,
 ) -> LoadResult:
@@ -62,7 +62,7 @@ def load_document(
     # objects, and showing the unresolved instance would show an empty at the origin. The
     # unresolved document is what save writes back to, which is why the resolved children are
     # marked derived below rather than treated as ordinary objects.
-    expansion = prefab.resolve(document, lambda reference: _load_prefab(layout, reference, result))
+    expansion = resolve.resolve(document, lambda reference: _load_prefab(layout, reference, result))
     for error in expansion.errors:
         result.warn(error)
 
@@ -100,7 +100,7 @@ def load_document(
 
 
 def _create_object(
-    entry: SceneObject,
+    entry: PrefabObject,
     scene: bpy.types.Scene,
     layout: project.ProjectLayout,
     library: MeshLibrary,
@@ -127,7 +127,7 @@ def _create_object(
     return obj
 
 
-def _apply_authored_colour(obj: bpy.types.Object, entry: SceneObject, layout) -> None:
+def _apply_authored_colour(obj: bpy.types.Object, entry: PrefabObject, layout) -> None:
     """Put the object's authored material colour on ``obj.color``.
 
     A prefab instance shares ONE mesh with every other instance, so its colour cannot live in the
@@ -179,16 +179,16 @@ def _load_prefab(layout, reference, result):
     path = layout.resolve(reference.path)
     try:
         with open(path, encoding="utf-8") as handle:
-            return prefab.validate(load_scene(handle.read(), path), path)
+            return parse_document(handle.read(), path)
     except OSError:
         result.warn(f"prefab '{reference.path}' could not be read")
         return None
-    except Exception as error:   # SceneDocumentError, reported not raised
+    except Exception as error:   # PrefabDocumentError, reported not raised
         result.warn(str(error))
         return None
 
 
-def _transform_of(entry: SceneObject):
+def _transform_of(entry: PrefabObject):
     """The object's local TRS, out of its transform component. Identity when it has none."""
     component = entry.component(well_known.TRANSFORM_ID)
     if component is None:
@@ -207,7 +207,7 @@ def _transform_of(entry: SceneObject):
     )
 
 
-def _apply_transform(obj: bpy.types.Object, entry: SceneObject) -> None:
+def _apply_transform(obj: bpy.types.Object, entry: PrefabObject) -> None:
     """Place ``obj`` from the document's TRS, rebased into Blender's axes."""
     document_position, document_rotation, document_scale = _transform_of(entry)
     position, rotation, scale = axes.to_blender_trs(
@@ -221,7 +221,7 @@ def _apply_transform(obj: bpy.types.Object, entry: SceneObject) -> None:
     obj.scale = Vector(scale)
 
 
-def _components_payload(entry: SceneObject) -> list:
+def _components_payload(entry: PrefabObject) -> list:
     """The object's components in the shape the panel and the JSON store want."""
     return [
         {"id": component.id, "type": component.type, "data": component.data}
@@ -229,7 +229,7 @@ def _components_payload(entry: SceneObject) -> list:
     ]
 
 
-def _mesh_reference(entry: SceneObject, mesh_fields: schema.MeshFields) -> str | None:
+def _mesh_reference(entry: PrefabObject, mesh_fields: schema.MeshFields) -> str | None:
     """The first mesh path the object's components name, if any.
 
     First rather than all: an object is one placement and gets one display mesh. A component set

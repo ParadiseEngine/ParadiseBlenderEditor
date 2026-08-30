@@ -4,12 +4,25 @@ Guidance for Claude Code when working in this repository.
 
 ## What this is
 
-A Blender addon that authors scenes for Paradise Engine, exports them to the engine-neutral
-data contract, launches them in the standalone runtime, and live-previews them while editing.
+**Two** Blender addons, which point in opposite directions. Know which one you are in before
+changing anything — they disagree about what the source of truth is, and that is the whole
+difference between them.
 
-It is the **second** implementation of a contract whose reference implementation is C#
-`Paradise.Export` (used by `ParadiseGodotEditor`). That framing matters for almost every
-decision here: when this repo and the contract disagree, the contract is right.
+| | `paradise_blender` | `paradise_assets` |
+|---|---|---|
+| source of truth | the `.blend` | `assets/` in the game repo |
+| the other thing | `data/`, exported | the `.blend`, a disposable cache of one scene |
+| format | the JSON export contract | `*.scene`, canonical TOML |
+| does | author, export, play, live-preview | open a scene document, place things, save it back |
+
+`paradise_blender` is the older and much larger of the two: the **second** implementation of a
+contract whose reference implementation is C# `Paradise.Export` (used by `ParadiseGodotEditor`).
+That framing matters for almost every decision in it: when this repo and the contract disagree,
+the contract is right.
+
+`paradise_assets` is the inversion (the asset-management plan's §2.7). It reads `assets/` — the
+committed source tree the `paradise-assets` CLI compiles — and writes only scene documents. Both
+can be installed and enabled at once, which is what makes a migration possible.
 
 ## Commands
 
@@ -41,6 +54,11 @@ paradise_blender/
   play/           runtime resolution and detached launch
   live/           live-preview protocol, transport, session, sync
   ui/             the Paradise sidebar tab
+paradise_assets/
+  document/     ★ pure Python, imports no bpy — the *.scene format and the canonical TOML writer
+  materialize/    document <-> Blender objects: load, save, mesh instancing, ID-property store
+  ops.py          open_scene / save_scene / reload_scene
+  ui.py           the Paradise Assets sidebar tab
 tools/
   ParadiseBlenderBridge/   .NET CLI: navmesh bake + contract conformance check
   mock_runtime.py          reference live-preview listener (the protocol's executable spec)
@@ -162,6 +180,34 @@ light stay read-only derived rows.
 warns "current value '0' matches no enum" and becomes unreadable. Where the contract's value is
 `""` (e.g. `MaterialKind`), use a `NONE` sentinel and map it back at export — see
 `authoring/material_props.py`.
+
+## Things that will bite you in `paradise_assets`
+
+**The canonical TOML writer is a CROSS-LANGUAGE contract, and it is checked by bytes.**
+`document/canonical_toml.py` and C# `CanonicalTomlWriter` must produce identical output;
+`paradise-assets scene-check` compares bytes, so a formatting difference is a failing CI check
+on every scene the addon has touched, not a style nit. Floats are specified as *Python's `repr`
+rules* on purpose — the C# side adopted them so this side could be one call. Do not "improve"
+the formatting.
+
+**An object nobody moved must keep its authored numbers verbatim.** Documents store values that
+came from C# `float`, Blender stores float32, and the axis rebase runs a square root — the round
+trip is accurate to ~4e-8 relative, which is fine as a position and fatal as text, because
+`repr` of a value that moved in its last bit is a completely different string. `save._unchanged`
+is what keeps a one-object edit from rewriting every transform in the file. Its epsilon is not
+tuning: below it, the load itself would churn the document.
+
+**Normalize a document quaternion before composing it.** They are float32-quantized, so none is
+exactly unit, and the length error leaks through the rotation matrix and comes back out of the
+decompose as SCALE — it turned a stored `20.0` into `19.999998` on ShiningPie's skyline props.
+
+**Components are passed through, never rebuilt.** `save.py` takes payloads from the RE-READ
+document, not from Blender. That one decision is what lets a scene full of components this addon
+has never heard of be opened and saved without corruption, and it is why the panel is read-only.
+The ID property holding them is display data.
+
+**`document/` must not import `bpy`** — same rule and same reason as `paradise_blender`'s
+`contract/`: the unit tests are the only defence against the writer drifting from the C# one.
 
 ## When the contract changes
 

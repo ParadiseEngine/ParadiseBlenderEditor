@@ -1,0 +1,38 @@
+schema_version = "1.0.0"
+
+id = "paradise_assets"
+version = "0.1.0"
+name = "Paradise Assets"
+tagline = "Open and place Paradise asset-project scenes"
+maintainer = "Paradise Engine"
+type = "add-on"
+
+website = "https://github.com/ParadiseEngine/ParadiseEngine"
+
+tags = ["Import-Export", "Pipeline", "Game Engine"]
+
+# The version this is actually exercised against. A floor above the running Blender refuses to
+# enable outright rather than degrading, so raise it only alongside a version really tested.
+# 5.2 also guarantees Python 3.13, and the scene reader is stdlib `tomllib` -- no vendored
+# TOML parser, no wheel to bundle.
+blender_version_min = "5.2.0"
+
+license = ["SPDX:MIT"]
+
+# Inside the package, beside __init__.py, because that is what an extension is: a
+# `blender_manifest.toml` next to the Python package root. See the sibling addon's manifest for
+# the full reasoning -- `extension build` refuses a repo root outright.
+#
+# Declared for disclosure. Nothing enforces them; they are here because they are true.
+#
+# This addon reads scene documents and their GLB/PNG sources out of a project's `assets/`
+# directory, and writes scene documents back to it. It opens no sockets and starts no
+# subprocesses -- the build and play verbs belong to the `paradise-assets` CLI.
+[permissions]
+files = "Read and write scene documents and their assets"
+
+[build]
+paths_exclude_pattern = [
+  "__pycache__/",
+  "*.blend1",
+]

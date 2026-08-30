@@ -1,0 +1,45 @@
+"""Paradise Assets -- open ``assets/scenes/*.scene`` in Blender and place things in it.
+
+The INVERSION of what ``paradise_blender`` does, which is why it is a separate addon rather than
+a feature of that one. There, the ``.blend`` is the source of truth and the scene is exported to
+``data/``. Here, ``assets/`` is the committed source of truth and the ``.blend`` is a disposable
+cache of one document in it -- the direction the asset-management plan's §2.7 calls the addon
+inversion. Both can be installed at once during the migration.
+
+The division of ownership, which every module here follows:
+
+* **Blender owns placement** -- names, parents, transforms, which objects exist.
+* **The document owns component data**, and this addon passes it through untouched. That is what
+  lets a scene full of components it has never heard of be opened and saved safely.
+* **The GLB owns geometry.** Meshes are instanced, not editable in place.
+
+``bpy`` MUST NOT be imported at module scope. Python runs a package's ``__init__`` before any
+submodule, so a top-level ``import bpy`` here would make :mod:`paradise_assets.document`
+unimportable outside Blender -- and those unit tests are the only thing standing between this
+addon's canonical-TOML writer and the C# one it has to match byte for byte.
+"""
+
+from __future__ import annotations
+
+__all__ = ["register", "unregister"]
+
+_REGISTERED: list = []
+
+
+def register() -> None:
+    import bpy
+
+    from . import ops, ui
+
+    for cls in (*ops.classes, *ui.classes):
+        bpy.utils.register_class(cls)
+        _REGISTERED.append(cls)
+
+
+def unregister() -> None:
+    import bpy
+
+    # Reverse order: a child panel registered against a parent's bl_idname must go first, or
+    # Blender warns about an unregistered parent while tearing the tab down.
+    while _REGISTERED:
+        bpy.utils.unregister_class(_REGISTERED.pop())

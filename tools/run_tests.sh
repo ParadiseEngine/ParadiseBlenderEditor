@@ -66,6 +66,15 @@ if command -v "$BLENDER" >/dev/null 2>&1; then
   "$BLENDER" --background --factory-startup --python tests/integration/test_export_scene.py 2>&1 \
     | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2})' | tail -30
   check "${PIPESTATUS[0]}" "scene export"
+
+  # paradise_assets: the OTHER addon, which opens assets/scenes/*.scene rather than exporting
+  # to data/. Its gate is a byte-exact round trip through Blender, so it needs a real asset
+  # project -- it skips cleanly when PARADISE_ASSETS_PROJECT names nothing.
+  step "Integration: open and save an asset-project scene"
+  "$BLENDER" --background --factory-startup --python tests/integration/test_open_scene.py -- \
+    "${PARADISE_ASSETS_PROJECT:-../shiningpie}" 2>&1 \
+    | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2})' | tail -30
+  check "${PIPESTATUS[0]}" "open scene"
 else
   echo "SKIPPED: Blender not found (set BLENDER=/path/to/blender) — integration tests not run."
 fi

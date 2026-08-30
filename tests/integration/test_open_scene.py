@@ -23,7 +23,7 @@ import bpy
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from paradise_assets.document import project, scene as scene_document  # noqa: E402
+from paradise_assets.document import project, scene as scene_document, well_known  # noqa: E402
 from paradise_assets.materialize import load, save, store  # noqa: E402
 
 DEFAULT_PROJECT = r"C:\proj\paradise-workspace\shiningpie"
@@ -130,10 +130,18 @@ def main() -> int:
         # changed and say nothing about whether anything really did.
         old, new = before.by_guid(), after.by_guid()
         check(set(old) == set(new), "no object appeared or disappeared")
-        differing = [g for g in old if old[g].transform != new[g].transform]
+        def placement(entry):
+            component = entry.component(well_known.TRANSFORM_ID)
+            return None if component is None else component.data
+
+        differing = [g for g in old if placement(old[g]) != placement(new[g])]
         check(differing == [target], f"exactly the moved object's transform changed ({len(differing)})")
+        def payloads(entry):
+            # Every component EXCEPT the transform, which is the thing the edit was.
+            return [c for c in entry.components if c.id != well_known.TRANSFORM_ID]
+
         check(
-            all(old[g].components == new[g].components for g in old),
+            all(payloads(old[g]) == payloads(new[g]) for g in old),
             "no component payload changed",
         )
         check(
@@ -164,12 +172,14 @@ def main() -> int:
             handle.write(
                 "schema_version = 1\n"
                 "\n[[objects]]\n"
-                'guid = "11111111-2222-4333-8444-555555555555"\n'
-                'name = "thing"\n'
+                "\n[[objects.components]]\n"
+                f'id = "{well_known.META_ID}"\n'
+                'type = "meta"\n'
+                'Guid = "11111111-2222-4333-8444-555555555555"\n'
+                'Name = "thing"\n'
                 "\n[[objects.components]]\n"
                 'id = "99999999-8888-4777-8666-555555555555"\n'
                 'type = "Nobody.Has.Heard.Of.This"\n'
-                "\n[objects.components.data]\n"
                 "Weird = 42\n"
                 'Nested = "keep me"\n'
             )
@@ -177,6 +187,66 @@ def main() -> int:
         open_document(copy, layout)
         save.save_scene(bpy.context.scene)
         check(open(copy, "rb").read() == original, "an unknown component is written back verbatim")
+
+    print("\n== a prefab instance stays an instance through a save ==")
+    with tempfile.TemporaryDirectory() as work:
+        # A project of its own, so the prefab reference resolves against this tree. The manifest
+        # lives under assets/ -- that is what project.locate looks for, and a bare project.toml at
+        # the root finds nothing.
+        assets = os.path.join(work, "assets")
+        prefabs = os.path.join(assets, "prefabs")
+        scenes_dir = os.path.join(assets, "scenes")
+        os.makedirs(prefabs)
+        os.makedirs(scenes_dir)
+        with open(os.path.join(assets, "project.toml"), "w", encoding="utf-8", newline="") as handle:
+            handle.write('name = "probe"\nschema_version = 1\n')
+
+        root_local = "aaaaaaaa-0000-4000-8000-000000000001"
+        child_local = "aaaaaaaa-0000-4000-8000-000000000002"
+        instance_guid = "410f381b-fc6e-5a66-a70a-698972a199b5"
+
+        prefab_path = os.path.join(prefabs, "lamp.prefab")
+        with open(prefab_path, "w", encoding="utf-8", newline="") as handle:
+            handle.write(
+                "schema_version = 1\n"
+                "\n[[objects]]\n\n[[objects.components]]\n"
+                f'id = "{well_known.META_ID}"\ntype = "meta"\nGuid = "{root_local}"\nName = "Post"\n'
+                "\n[[objects]]\n\n[[objects.components]]\n"
+                f'id = "{well_known.META_ID}"\ntype = "meta"\nGuid = "{child_local}"\n'
+                f'Name = "Bulb"\nParent = "{root_local}"\n'
+            )
+
+        scene_path = os.path.join(scenes_dir, "lit.scene")
+        with open(scene_path, "w", encoding="utf-8", newline="") as handle:
+            handle.write(
+                "schema_version = 1\n"
+                "\n[[objects]]\n"
+                'prefab = { guid = "5f2a1111-2222-4333-8444-555555555555", path = "prefabs/lamp.prefab" }\n'
+                "\n[[objects.components]]\n"
+                f'id = "{well_known.META_ID}"\ntype = "meta"\n'
+                f'Guid = "{instance_guid}"\nName = "Lamp_03"\n'
+            )
+
+        original = open(scene_path, "rb").read()
+
+        # The project root is `work`, not the shiningpie checkout.
+        probe_layout = project.locate(scene_path)
+        with open(scene_path, encoding="utf-8") as handle:
+            document = scene_document.loads(handle.read(), scene_path)
+        result = load.load_document(fresh_scene(), document, scene_path, probe_layout)
+
+        check(result.objects == 2, f"the instance materializes as {result.objects} objects (root + child)")
+        check(result.derived == 1, "the prefab's child is marked derived")
+
+        derived = [o for o in bpy.context.scene.collection.all_objects if store.is_derived(o)]
+        check(all(all(o.lock_location) for o in derived), "derived children are locked in the viewport")
+
+        save.save_scene(bpy.context.scene)
+
+        # THE check: the document still holds ONE object with a prefab reference. A save that
+        # treated the resolved children as ordinary objects would have written two plain objects
+        # here and lost the instance for good.
+        check(open(scene_path, "rb").read() == original, "the instance is written back unflattened")
 
     print(f"\n{len(failures)} failure(s)")
     for label in failures:

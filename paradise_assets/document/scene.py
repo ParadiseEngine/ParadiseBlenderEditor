@@ -1,23 +1,19 @@
-"""The authoring scene document -- what a ``*.scene`` file holds.
+"""The authoring scene document -- what a ``*.scene`` holds, and structurally also a ``*.prefab``.
 
 The Python mirror of ``src/Paradise.Assets.Documents/SceneDocument.cs`` and its serializer.
-Deliberately NOT the export contract: the contract JSON is a bake (world matrices, references
-resolved to values, no identities), and this is what the bake is computed FROM. So it keeps
-exactly what baking destroys -- object GUIDs, local transforms, parents, and references left as
+
+Deliberately NOT the export contract. The contract JSON is a bake -- world matrices, references
+resolved to values, no identities -- and this is what the bake is computed FROM, so it keeps
+exactly what baking destroys: durable identity, local transforms, parents, and references left as
 references.
 
-Reading is **strict**, matching the C# reader: unknown keys, malformed GUIDs, duplicate
-identities and dangling or cyclic parents are errors naming the object, never a silent skip. The
-document is committed source of truth, and a reader that guessed would turn an authoring typo
-into a scene that loads and is quietly wrong.
+**An object has no privileged members.** Identity, name, parent and placement are all components
+(:mod:`well_known`), addressed the way a game's components are. That is the whole reason a prefab
+instance needs one override mechanism: a component it repeats is overridden field by field, and
+identity and placement are not special cases.
 
-Writing goes through :mod:`.canonical_toml`, so read -> write is byte-identical for a canonical
-input. That is not a nicety: ``paradise-assets scene-check`` compares bytes, so an addon that
-reformatted on save would put every scene it touched into the diff.
-
-Component payloads are **opaque** to this module. Their schema belongs to the game, and this
-addon passes them through untouched -- which is what makes a component it has never heard of
-survive a round trip.
+Reading is strict, matching the C# reader. Writing goes through :mod:`canonical_toml`, so read ->
+write is byte-identical for a canonical input -- ``paradise-assets scene-check`` compares bytes.
 """
 
 from __future__ import annotations
@@ -25,34 +21,34 @@ from __future__ import annotations
 import tomllib
 from dataclasses import dataclass, field
 
-from . import canonical_toml
+from . import asset_reference, canonical_toml, well_known
+from .asset_reference import AssetReference
 
 __all__ = [
+    "SUPPORTED_SCHEMA_VERSION",
     "SceneComponent",
     "SceneDocument",
     "SceneDocumentError",
     "SceneObject",
-    "SceneTransform",
-    "SUPPORTED_SCHEMA_VERSION",
-    "loads",
     "dumps",
+    "loads",
 ]
 
 #: The only ``schema_version`` this addon reads or writes.
 SUPPORTED_SCHEMA_VERSION = 1
 
 _DOCUMENT_KEYS = frozenset({"schema_version", "objects"})
-_OBJECT_KEYS = frozenset({"guid", "name", "parent", "transform", "components"})
-_TRANSFORM_KEYS = frozenset({"position", "rotation", "scale"})
-_COMPONENT_KEYS = frozenset({"id", "type", "data"})
+_OBJECT_KEYS = frozenset({"prefab", "components"})
 
-#: No translation, no rotation, unit scale -- what an omitted transform means. Written back as
-#: an omitted transform too, so a freshly minted object stays one line in a diff.
-IDENTITY = ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), (1.0, 1.0, 1.0))
+#: The three keys a component payload may not use, because they are the entry's own structure.
+ID_KEY = "id"
+TYPE_KEY = "type"
+REMOVED_KEY = "removed"
+RESERVED_KEYS = frozenset({ID_KEY, TYPE_KEY, REMOVED_KEY})
 
 
 class SceneDocumentError(Exception):
-    """A scene document could not be read, parsed, or validated."""
+    """A scene or prefab document could not be read, parsed, or validated."""
 
     def __init__(self, source: str, problem: str) -> None:
         super().__init__(f"Scene document '{source}' {problem}.")
@@ -60,51 +56,94 @@ class SceneDocumentError(Exception):
 
 
 @dataclass
-class SceneTransform:
-    """A local TRS, in engine convention: Y-up, meters, quaternion as ``(x, y, z, w)``."""
-
-    position: tuple[float, float, float] = (0.0, 0.0, 0.0)
-    rotation: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0)
-    scale: tuple[float, float, float] = (1.0, 1.0, 1.0)
-
-    def is_identity(self) -> bool:
-        return (self.position, self.rotation, self.scale) == IDENTITY
-
-
-@dataclass
 class SceneComponent:
-    """One component entry: the contract's ``{Id, Type, Data}`` triple in authoring form."""
+    """One component entry: identity, readable name, and a payload that sits flat beside them."""
 
     id: str
     type: str | None = None
-    #: The authored payload, an open table owned by the game's schema. Opaque here.
     data: dict = field(default_factory=dict)
+    #: On an instance: drop the prefab's component of this id rather than overriding it.
+    removed: bool = False
 
 
 @dataclass
 class SceneObject:
-    """One authored object: identity, placement, and its component entries."""
+    """One authored object: a prefab reference, if any, and its components."""
 
-    guid: str
-    name: str
-    parent: str | None = None
-    transform: SceneTransform = field(default_factory=SceneTransform)
-    #: In document order. Order is data -- the runtime applies components in it.
+    prefab: AssetReference | None = None
     components: list[SceneComponent] = field(default_factory=list)
+
+    def component(self, component_id: str) -> SceneComponent | None:
+        for candidate in self.components:
+            if candidate.id == component_id:
+                return candidate
+        return None
+
+    @property
+    def meta(self) -> SceneComponent | None:
+        return self.component(well_known.META_ID)
+
+    @property
+    def guid(self) -> str | None:
+        return self._meta_field(well_known.GUID)
+
+    @property
+    def name(self) -> str | None:
+        return self._meta_field(well_known.NAME)
+
+    @property
+    def parent(self) -> str | None:
+        return self._meta_field(well_known.PARENT)
+
+    @property
+    def target(self) -> str | None:
+        return self._meta_field(well_known.TARGET)
+
+    @property
+    def dropped(self) -> bool:
+        return self.meta is not None and self.meta.data.get(well_known.DROPPED) is True
+
+    def _meta_field(self, key: str) -> str | None:
+        meta = self.meta
+        if meta is None:
+            return None
+        value = meta.data.get(key)
+        return value if isinstance(value, str) and value else None
+
+    @staticmethod
+    def with_meta(guid: str, name: str | None = None, parent: str | None = None) -> "SceneObject":
+        """An object carrying just a meta component -- the shape every caller needs."""
+        data: dict = {well_known.GUID: guid}
+        if name is not None:
+            data[well_known.NAME] = name
+        if parent is not None:
+            data[well_known.PARENT] = parent
+        return SceneObject(components=[SceneComponent(well_known.META_ID, well_known.META_TYPE, data)])
 
 
 @dataclass
 class SceneDocument:
-    """The document's objects, in document order."""
+    """The document's objects, in document order. Order is load-bearing."""
 
     objects: list[SceneObject] = field(default_factory=list)
 
     def by_guid(self) -> dict[str, SceneObject]:
-        return {obj.guid: obj for obj in self.objects}
+        return {o.guid: o for o in self.objects if o.guid is not None}
+
+    def single_root(self) -> SceneObject | None:
+        """The single object with no parent -- a prefab's root. ``None`` if there is not exactly one."""
+        root = None
+        for candidate in self.objects:
+            if candidate.parent is not None:
+                continue
+            if root is not None:
+                return None
+            root = candidate
+        return root
 
 
 def loads(text: str, source: str = "<scene>") -> SceneDocument:
-    """Parse and validate a scene document."""
+    """Parse and validate a document."""
 
     def fail(problem: str) -> SceneDocumentError:
         return SceneDocumentError(source, problem)
@@ -115,9 +154,8 @@ def loads(text: str, source: str = "<scene>") -> SceneDocument:
         raise fail(f"is not valid TOML ({error})") from error
 
     # tomllib returns a plain dict for both `x = { … }` and `[x]`, so the model type has to be
-    # recovered before anything writes the document back. Skipping this would move every asset
-    # reference from an inline table to a header on the first save, and scene-check would report
-    # every file this addon touched as non-canonical.
+    # recovered before anything writes the document back -- otherwise every asset reference would
+    # move to a header on the first save and scene-check would call every file non-canonical.
     root = canonical_toml.restore_inline_tables(root)
 
     _reject_unknown(root, _DOCUMENT_KEYS, "at the document root", fail)
@@ -135,8 +173,18 @@ def loads(text: str, source: str = "<scene>") -> SceneDocument:
     parents: dict[str, str | None] = {}
     for index, table in enumerate(root.get("objects", [])):
         obj = _read_object(table, index, fail)
+
+        # A Target carrier addresses a prefab-local object and has no identity of its own -- the
+        # resolved child's guid is always minted -- so it is exempt from the uniqueness map.
+        if obj.target is not None:
+            document.objects.append(obj)
+            continue
+
+        if obj.guid is None:
+            raise fail(f"has an object at index {index} with no '{well_known.META_TYPE}' component carrying a '{well_known.GUID}'")
         if obj.guid in parents:
             raise fail(f"declares guid '{obj.guid}' twice -- identities must be unique per document")
+
         parents[obj.guid] = obj.parent
         document.objects.append(obj)
 
@@ -148,7 +196,7 @@ def dumps(document: SceneDocument) -> str:
     """Render a document as canonical TOML text."""
     root: dict = {"schema_version": SUPPORTED_SCHEMA_VERSION}
     if document.objects:
-        root["objects"] = [_object_table(obj) for obj in document.objects]
+        root["objects"] = [_object_table(o) for o in document.objects]
     return canonical_toml.dumps(root)
 
 
@@ -156,26 +204,11 @@ def _read_object(table: dict, index: int, fail) -> SceneObject:
     context = f"on objects[{index}]"
     _reject_unknown(table, _OBJECT_KEYS, context, fail)
 
-    guid = table.get("guid")
-    if not isinstance(guid, str) or not _is_guid(guid):
-        raise fail(f"holds {guid!r} where 'guid' {context} must be a non-empty UUID")
-
-    name = table.get("name")
-    if not isinstance(name, str) or not name:
-        raise fail(f"needs a non-empty 'name' {context}")
-
-    context = f"on object '{guid}'"
-    obj = SceneObject(guid=guid, name=name)
-
-    parent = table.get("parent")
-    if parent is not None:
-        if not isinstance(parent, str) or not _is_guid(parent):
-            raise fail(f"holds {parent!r} where 'parent' {context} must be a non-empty UUID")
-        obj.parent = parent
-
-    transform = table.get("transform")
-    if transform is not None:
-        obj.transform = _read_transform(transform, context, fail)
+    obj = SceneObject()
+    if "prefab" in table:
+        obj.prefab = asset_reference.read(table["prefab"], context, fail)
+        if obj.prefab is None:
+            raise fail(f"has an empty 'prefab' reference {context}")
 
     seen: set[str] = set()
     for entry in table.get("components", []):
@@ -188,60 +221,46 @@ def _read_object(table: dict, index: int, fail) -> SceneObject:
     return obj
 
 
-def _read_transform(table: dict, context: str, fail) -> SceneTransform:
-    context = f"in the transform {context}"
-    _reject_unknown(table, _TRANSFORM_KEYS, context, fail)
-    return SceneTransform(
-        position=_floats(table, "position", 3, context, fail),
-        rotation=_floats(table, "rotation", 4, context, fail),
-        scale=_floats(table, "scale", 3, context, fail),
-    )
-
-
 def _read_component(table: dict, object_context: str, fail) -> SceneComponent:
     context = f"on a component {object_context}"
-    _reject_unknown(table, _COMPONENT_KEYS, context, fail)
 
-    identity = table.get("id")
-    if not isinstance(identity, str) or not _is_guid(identity):
-        raise fail(f"holds {identity!r} where 'id' {context} must be a non-empty UUID")
+    identity = table.get(ID_KEY)
+    if not isinstance(identity, str) or not identity:
+        raise fail(f"needs a string '{ID_KEY}' {context}")
 
-    type_name = table.get("type")
+    type_name = table.get(TYPE_KEY)
     if type_name is not None and not isinstance(type_name, str):
-        raise fail(f"holds a non-string 'type' {context}")
+        raise fail(f"holds a non-string '{TYPE_KEY}' {context}")
 
-    data = table.get("data", {})
-    if not isinstance(data, dict):
-        raise fail(f"holds a non-table 'data' {context}")
+    removed = table.get(REMOVED_KEY, False)
+    if not isinstance(removed, bool):
+        raise fail(f"holds a non-boolean '{REMOVED_KEY}' {context}")
 
-    return SceneComponent(id=identity, type=type_name, data=data)
+    data = {k: v for k, v in table.items() if k not in RESERVED_KEYS}
+    if removed and data:
+        # "Remove this, and also here is what it should contain" has no meaning, and is almost
+        # certainly an edit that deleted only half of what it meant to.
+        raise fail(f"marks a component '{REMOVED_KEY}' but also gives it fields {context}")
+
+    return SceneComponent(identity, type_name, data, removed)
 
 
 def _object_table(obj: SceneObject) -> dict:
-    """One object as a canonical table. Key order here IS the document's key order."""
-    table: dict = {"guid": obj.guid, "name": obj.name}
-    if obj.parent is not None:
-        table["parent"] = obj.parent
-
-    # An identity transform is omitted on write and defaulted on read, matching the C# writer.
-    if not obj.transform.is_identity():
-        table["transform"] = {
-            "position": [float(v) for v in obj.transform.position],
-            "rotation": [float(v) for v in obj.transform.rotation],
-            "scale": [float(v) for v in obj.transform.scale],
-        }
-
+    table: dict = {}
+    if obj.prefab is not None:
+        table["prefab"] = asset_reference.write(obj.prefab)
     if obj.components:
         table["components"] = [_component_table(c) for c in obj.components]
     return table
 
 
 def _component_table(component: SceneComponent) -> dict:
-    table: dict = {"id": component.id}
+    table: dict = {ID_KEY: component.id}
     if component.type is not None:
-        table["type"] = component.type
-    if component.data:
-        table["data"] = component.data
+        table[TYPE_KEY] = component.type
+    if component.removed:
+        table[REMOVED_KEY] = True
+    table.update(component.data)
     return table
 
 
@@ -251,36 +270,12 @@ def _reject_unknown(table: dict, known: frozenset[str], context: str, fail) -> N
             raise fail(f"has an unknown key '{key}' {context}")
 
 
-def _floats(table: dict, key: str, count: int, context: str, fail) -> tuple[float, ...]:
-    value = table.get(key)
-    if not isinstance(value, list) or len(value) != count:
-        raise fail(f"needs '{key}' as an array of {count} numbers {context}")
-    for element in value:
-        if isinstance(element, bool) or not isinstance(element, (int, float)):
-            raise fail(f"holds a non-number in '{key}' {context}")
-    return tuple(float(v) for v in value)
-
-
-def _is_guid(text: str) -> bool:
-    """Canonical hyphenated form, or the undashed 32-digit form the C# reader also accepts."""
-    if len(text) == 36:
-        parts = text.split("-")
-        return len(parts) == 5 and [len(p) for p in parts] == [8, 4, 4, 4, 12] and all(
-            _is_hex(p) for p in parts
-        )
-    return len(text) == 32 and _is_hex(text)
-
-
-def _is_hex(text: str) -> bool:
-    return all(c in "0123456789abcdefABCDEF" for c in text)
-
-
 def _validate_parents(parents: dict[str, str | None], fail) -> None:
     """Reject dangling and cyclic parents.
 
     A dangling parent is an edit that deleted an object without reparenting its children; a cycle
-    has no world transform at all. Both must fail here rather than as infinite recursion while
-    the loader walks the hierarchy.
+    has no world transform at all. Both must fail here rather than as infinite recursion while the
+    loader walks the hierarchy.
     """
     for guid, parent in parents.items():
         if parent is not None and parent not in parents:

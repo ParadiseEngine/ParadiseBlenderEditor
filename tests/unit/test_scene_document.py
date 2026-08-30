@@ -1,32 +1,55 @@
-"""Tests for reading and writing ``*.scene`` documents.
+"""Reading and writing ``*.scene`` documents, on the all-components model.
 
-Reading is strict on purpose: the document is committed source of truth, and a reader that
-guessed would turn an authoring typo into a scene that loads and is quietly wrong. Each rejection
-below is one the C# reader also makes.
+Mirrors ``Paradise.Assets.Documents.Test/SceneDocumentTests.cs``. Reading is strict on purpose:
+the document is committed source of truth, and a reader that guessed would turn an authoring typo
+into a scene that loads and is quietly wrong.
 """
 
 from __future__ import annotations
 
-from paradise_assets.document import scene
+from paradise_assets.document import scene, well_known
 
-GUID = "11111111-2222-4333-8444-555555555555"
-OTHER = "99999999-8888-4777-8666-555555555555"
+CRATE = "3f2a1b4c-5d6e-4f70-8192-a3b4c5d6e7f8"
+LID = "9a8b7c6d-5e4f-4031-8213-4c5d6e7f8091"
+RENDERABLE = "bdc4fc87-d7b4-41f1-bc90-fc827005adfc"
+
+META = well_known.META_ID
+TRANSFORM = well_known.TRANSFORM_ID
 
 CANONICAL = (
     "schema_version = 1\n"
     "\n[[objects]]\n"
-    f'guid = "{GUID}"\n'
-    'name = "crate"\n'
-    "\n[objects.transform]\n"
-    "position = [0.0, 1.5, 0.0]\n"
-    "rotation = [0.0, 0.0, 0.0, 1.0]\n"
-    "scale = [1.0, 1.0, 1.0]\n"
     "\n[[objects.components]]\n"
-    f'id = "{OTHER}"\n'
+    f'id = "{META}"\n'
+    'type = "meta"\n'
+    f'Guid = "{CRATE}"\n'
+    'Name = "crate_01"\n'
+    "\n[[objects.components]]\n"
+    f'id = "{TRANSFORM}"\n'
+    'type = "transform"\n'
+    "Position = [0.0, 1.5, 0.0]\n"
+    "Rotation = [0.0, 0.0, 0.0, 1.0]\n"
+    "Scale = [1.0, 1.0, 1.0]\n"
+    "\n[[objects.components]]\n"
+    f'id = "{RENDERABLE}"\n'
     'type = "Paradise.Export.Data.RenderableComponentData"\n'
-    "\n[objects.components.data]\n"
-    'Mesh = "Models/crate.glb"\n'
+    'Mesh = { guid = "11111111-2222-4333-8444-555555555555", path = "Models/crate.glb" }\n'
+    "\n[[objects]]\n"
+    "\n[[objects.components]]\n"
+    f'id = "{META}"\n'
+    'type = "meta"\n'
+    f'Guid = "{LID}"\n'
+    'Name = "lid"\n'
+    f'Parent = "{CRATE}"\n'
 )
+
+
+def obj(guid: str, name: str = "x", extra: str = "") -> str:
+    """A minimal object: a meta component carrying an identity."""
+    return (
+        "\n[[objects]]\n\n[[objects.components]]\n"
+        f'id = "{META}"\ntype = "meta"\nGuid = "{guid}"\nName = "{name}"\n' + extra
+    )
 
 
 def rejects(text: str) -> str:
@@ -39,106 +62,142 @@ def rejects(text: str) -> str:
 
 class TestRoundTrip:
     def test_a_canonical_document_round_trips_byte_for_byte(self):
-        # THE property: read -> write must be the identity on canonical input, or every tool
-        # touching a scene would litter diffs with reformatting.
+        # THE property: read -> write is the identity on canonical input, or every tool touching
+        # a scene would litter diffs with reformatting.
         assert scene.dumps(scene.loads(CANONICAL, "x.scene")) == CANONICAL
 
-    def test_the_model_reflects_the_document(self):
+    def test_identity_name_and_parent_come_from_the_meta_component(self):
         document = scene.loads(CANONICAL, "x.scene")
-        assert len(document.objects) == 1
-        crate = document.objects[0]
-        assert crate.name == "crate"
-        assert crate.parent is None
-        assert crate.transform.position == (0.0, 1.5, 0.0)
-        assert crate.components[0].data == {"Mesh": "Models/crate.glb"}
+
+        assert len(document.objects) == 2
+        assert document.objects[0].guid == CRATE
+        assert document.objects[0].name == "crate_01"
+        assert document.objects[0].parent is None
+        assert document.objects[1].parent == CRATE
+
+    def test_a_payload_sits_flat_beside_id_and_type(self):
+        renderable = scene.loads(CANONICAL, "x.scene").objects[0].component(RENDERABLE)
+
+        assert renderable.type == "Paradise.Export.Data.RenderableComponentData"
+        assert "Mesh" in renderable.data
+        assert "id" not in renderable.data and "type" not in renderable.data
+
+    def test_an_asset_reference_survives_the_round_trip(self):
+        mesh = scene.loads(CANONICAL, "x.scene").objects[0].component(RENDERABLE).data["Mesh"]
+
+        assert mesh["path"] == "Models/crate.glb"
 
     def test_an_empty_scene_is_just_its_version(self):
         assert scene.dumps(scene.SceneDocument()) == "schema_version = 1\n"
 
-    def test_an_identity_transform_is_omitted(self):
-        # The common case for a freshly minted object stays one line in a diff.
-        document = scene.SceneDocument()
-        document.objects.append(scene.SceneObject(guid=GUID, name="x"))
-        assert "transform" not in scene.dumps(document)
-
     def test_component_order_survives(self):
-        # Order is data: the runtime applies components in document order.
-        third = "77777777-6666-4555-8444-333333333333"
-        document = scene.SceneDocument()
-        obj = scene.SceneObject(guid=GUID, name="x")
-        obj.components = [scene.SceneComponent(id=OTHER), scene.SceneComponent(id=third)]
-        document.objects.append(obj)
+        ids = [c.id for c in scene.loads(CANONICAL, "x.scene").objects[0].components]
 
-        text = scene.dumps(document)
-        assert text.index(OTHER) < text.index(third)
+        assert ids == [META, TRANSFORM, RENDERABLE]
+
+    def test_a_removed_marker_round_trips(self):
+        text = f'schema_version = 1\n{obj(CRATE)}\n[[objects.components]]\nid = "{RENDERABLE}"\nremoved = true\n'
+
+        document = scene.loads(text, "x.scene")
+
+        assert document.objects[0].component(RENDERABLE).removed is True
+        assert scene.dumps(document) == text
+
+    def test_a_prefab_reference_round_trips(self):
+        text = (
+            "schema_version = 1\n\n[[objects]]\n"
+            f'prefab = {{ guid = "{LID}", path = "prefabs/rail.prefab" }}\n'
+            f'\n[[objects.components]]\nid = "{META}"\ntype = "meta"\nGuid = "{CRATE}"\n'
+        )
+
+        document = scene.loads(text, "x.scene")
+
+        assert document.objects[0].prefab.path == "prefabs/rail.prefab"
+        assert scene.dumps(document) == text
 
 
 class TestStrictness:
+    def test_an_object_with_no_identity_is_refused(self):
+        text = (
+            "schema_version = 1\n\n[[objects]]\n\n[[objects.components]]\n"
+            f'id = "{TRANSFORM}"\ntype = "transform"\nPosition = [0.0, 0.0, 0.0]\n'
+        )
+
+        assert "meta" in rejects(text)
+
+    def test_a_duplicate_identity_is_refused(self):
+        assert "twice" in rejects(f"schema_version = 1\n{obj(CRATE)}{obj(CRATE, 'other')}")
+
+    def test_a_duplicate_component_id_is_refused(self):
+        text = f'schema_version = 1\n{obj(CRATE)}\n[[objects.components]]\nid = "{META}"\ntype = "meta"\n'
+
+        assert "twice" in rejects(text)
+
+    def test_a_dangling_parent_is_refused(self):
+        assert "does not exist" in rejects(f'schema_version = 1\n{obj(CRATE, "a", f'Parent = "{LID}"\n')}')
+
+    def test_a_parent_cycle_is_refused(self):
+        text = (
+            "schema_version = 1\n"
+            + obj(CRATE, "a", f'Parent = "{LID}"\n')
+            + obj(LID, "b", f'Parent = "{CRATE}"\n')
+        )
+
+        assert "cycle" in rejects(text)
+
     def test_an_unknown_document_key_is_refused(self):
-        assert "unknown key 'extra'" in rejects("schema_version = 1\nextra = 1\n")
+        assert "unknown key" in rejects(f"schema_version = 1\nnope = 1\n{obj(CRATE)}")
 
     def test_an_unknown_object_key_is_refused(self):
-        text = f'schema_version = 1\n\n[[objects]]\nguid = "{GUID}"\nname = "x"\nnope = 1\n'
-        assert "unknown key 'nope'" in rejects(text)
+        assert "unknown key" in rejects("schema_version = 1\n\n[[objects]]\nnope = 1\n")
+
+    def test_a_component_without_an_id_is_refused(self):
+        assert "id" in rejects('schema_version = 1\n\n[[objects]]\n\n[[objects.components]]\ntype = "meta"\n')
+
+    def test_a_removed_component_carrying_fields_is_refused(self):
+        text = (
+            f"schema_version = 1\n{obj(CRATE)}"
+            f'\n[[objects.components]]\nid = "{RENDERABLE}"\nremoved = true\nMesh = "x"\n'
+        )
+
+        assert "removed" in rejects(text)
 
     def test_a_wrong_schema_version_names_the_number(self):
         assert "schema_version = 7" in rejects("schema_version = 7\n")
 
-    def test_a_malformed_guid_is_refused(self):
-        assert "must be a non-empty UUID" in rejects(
-            'schema_version = 1\n\n[[objects]]\nguid = "nope"\nname = "x"\n'
-        )
 
-    def test_an_empty_name_is_refused(self):
-        assert "non-empty 'name'" in rejects(
-            f'schema_version = 1\n\n[[objects]]\nguid = "{GUID}"\nname = ""\n'
-        )
-
-    def test_a_duplicate_identity_is_refused(self):
+class TestCarriers:
+    def test_a_target_carrier_needs_no_identity_of_its_own(self):
+        # A carrier addresses a prefab-local object; the resolved child's guid is always minted,
+        # so requiring one here would mean inventing an identity nothing uses.
         text = (
-            "schema_version = 1\n"
-            f'\n[[objects]]\nguid = "{GUID}"\nname = "a"\n'
-            f'\n[[objects]]\nguid = "{GUID}"\nname = "b"\n'
+            "schema_version = 1\n\n[[objects]]\n\n[[objects.components]]\n"
+            f'id = "{META}"\ntype = "meta"\nParent = "{CRATE}"\nTarget = "{LID}"\n' + obj(CRATE)
         )
-        assert "twice" in rejects(text)
 
-    def test_a_dangling_parent_is_refused(self):
-        # An edit that deleted an object without reparenting its children.
-        text = f'schema_version = 1\n\n[[objects]]\nguid = "{GUID}"\nname = "x"\nparent = "{OTHER}"\n'
-        assert "does not exist" in rejects(text)
+        document = scene.loads(text, "x.scene")
 
-    def test_a_parent_cycle_is_refused(self):
-        # A cycle has no world transform at all; it must fail here, not as infinite recursion
-        # while the loader walks the hierarchy.
-        text = (
-            "schema_version = 1\n"
-            f'\n[[objects]]\nguid = "{GUID}"\nname = "a"\nparent = "{OTHER}"\n'
-            f'\n[[objects]]\nguid = "{OTHER}"\nname = "b"\nparent = "{GUID}"\n'
-        )
-        assert "cycle" in rejects(text)
+        assert document.objects[0].target == LID
+        assert document.objects[0].guid is None
 
-    def test_a_short_transform_array_is_refused(self):
-        text = (
-            f'schema_version = 1\n\n[[objects]]\nguid = "{GUID}"\nname = "x"\n'
-            "\n[objects.transform]\nposition = [0.0, 1.0]\nrotation = [0.0, 0.0, 0.0, 1.0]\n"
-            "scale = [1.0, 1.0, 1.0]\n"
-        )
-        assert "array of 3 numbers" in rejects(text)
+
+class TestRoots:
+    def test_the_single_root_is_inferred_from_the_absence_of_a_parent(self):
+        assert scene.loads(CANONICAL, "x.scene").single_root().guid == CRATE
+
+    def test_a_document_with_two_roots_has_no_single_root(self):
+        # Not an error here -- a scene has many roots. It is the prefab that requires exactly one.
+        assert scene.loads(f"schema_version = 1\n{obj(CRATE)}{obj(LID)}", "x").single_root() is None
 
 
 class TestOpaquePayloads:
     def test_an_unrecognised_payload_survives_a_round_trip(self):
-        # The property that makes it safe to open a scene full of components this addon has
-        # never heard of.
+        # What makes it safe to open a document full of components this build never heard of.
         text = (
-            "schema_version = 1\n"
-            f'\n[[objects]]\nguid = "{GUID}"\nname = "x"\n'
-            f'\n[[objects.components]]\nid = "{OTHER}"\ntype = "Nobody.Knows"\n'
-            "\n[objects.components.data]\n"
-            "Count = 3\n"
-            "Ratio = 0.5\n"
-            'Text = "hi"\n'
-            "Flag = true\n"
-            "List = [1, 2]\n"
+            f"schema_version = 1\n{obj(CRATE)}"
+            f'\n[[objects.components]]\nid = "{RENDERABLE}"\ntype = "Nobody.Knows"\n'
+            "Count = 3\nRatio = 0.5\nFlag = true\nList = [1, 2]\n"
+            '\n[objects.components.Nested]\nInner = "deep"\n'
         )
+
         assert scene.dumps(scene.loads(text, "x.scene")) == text

@@ -33,6 +33,14 @@ __all__ = [
 #: The document object's identity, on the Blender object that stands for it.
 GUID_KEY = "paradise_guid"
 
+#: Set on an object that was RESOLVED out of a prefab rather than written in the scene.
+#:
+#: These exist only because the scene instantiates a prefab; the document has no entry for them,
+#: and their identities are minted. Saving one back would write it into the scene as a plain
+#: object -- flattening the instance and, on the next load, producing a duplicate. So they are
+#: marked, locked in the viewport, and skipped by the save path entirely.
+DERIVED_KEY = "paradise_derived"
+
 #: The object's components as a JSON string. Read-only display data; never written back.
 COMPONENTS_KEY = "paradise_components"
 
@@ -106,6 +114,24 @@ def guid_of(obj: bpy.types.Object) -> str | None:
     """The document identity of ``obj``, or ``None`` if it is not a document object."""
     guid = obj.get(GUID_KEY)
     return guid if isinstance(guid, str) and guid else None
+
+
+def is_derived(obj: bpy.types.Object) -> bool:
+    """Whether this object came out of a prefab rather than out of the scene document."""
+    return bool(obj.get(DERIVED_KEY))
+
+
+def mark_derived(obj: bpy.types.Object) -> None:
+    """Mark and LOCK an object resolved from a prefab.
+
+    Locked because the edit would be silently discarded: this addon writes prefab instances back
+    as instances, so a moved child is lost on the next load with nothing to say why. Locking makes
+    the constraint visible in the viewport instead of surprising somebody later.
+    """
+    obj[DERIVED_KEY] = True
+    obj.lock_location = (True, True, True)
+    obj.lock_rotation = (True, True, True)
+    obj.lock_scale = (True, True, True)
 
 
 def component_json(obj: bpy.types.Object) -> list:

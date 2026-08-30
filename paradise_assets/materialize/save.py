@@ -30,8 +30,8 @@ import tempfile
 
 import bpy
 
-from ..document import axes, scene as scene_document
-from ..document.scene import SceneDocument, SceneObject, SceneTransform
+from ..document import axes, scene as scene_document, well_known
+from ..document.scene import SceneComponent, SceneDocument, SceneObject
 from . import store
 
 __all__ = ["SaveError", "SaveResult", "save_scene"]
@@ -116,12 +116,20 @@ def _merge(scene: bpy.types.Scene, base: SceneDocument, result: SaveResult) -> S
 def _document_order(base: SceneDocument):
     """Sort key keeping the file's existing order, with new objects appended in Blender order."""
     order = {entry.guid: index for index, entry in enumerate(base.objects)}
-    return lambda entry: (order.get(entry.guid, len(order)), entry.name)
+    return lambda entry: (order.get(entry.guid, len(order)), entry.name or "")
 
 
 def _object_entry(obj: bpy.types.Object, original: SceneObject | None, result: SaveResult) -> SceneObject:
+    """One Blender object as a document object.
+
+    The FILE's version is the base and Blender overwrites only what Blender owns -- the name, the
+    parent, and the transform's three fields. Everything else, a prefab reference and every
+    component payload included, is carried through untouched. That is what lets a scene full of
+    components this addon has never heard of survive a round trip, and what keeps an instance an
+    instance instead of flattening it into the plain objects it displays as.
+    """
     guid = store.guid_of(obj)
-    entry = SceneObject(guid=guid, name=obj.name)
+    entry = SceneObject() if original is None else original
 
     parent_guid = store.guid_of(obj.parent) if obj.parent is not None else None
     if obj.parent is not None and parent_guid is None:
@@ -131,27 +139,53 @@ def _object_entry(obj: bpy.types.Object, original: SceneObject | None, result: S
             f"{obj.name} is parented to '{obj.parent.name}', which is not a document object; "
             "saved as a root object"
         )
-    entry.parent = parent_guid
 
-    # Components are the FILE's, never Blender's. This is the line that makes an unrecognised
-    # component safe to open.
-    if original is not None:
-        entry.components = original.components
-
-    entry.transform = _transform_of(obj, original, result)
+    _write_meta(entry, guid, obj.name, parent_guid)
+    _write_transform(entry, obj, original, result)
     return entry
 
 
-def _transform_of(obj: bpy.types.Object, original: SceneObject | None, result: SaveResult) -> SceneTransform:
-    position, rotation, scale = _blender_trs(obj)
-    document = axes.from_blender_trs(position, rotation, scale)
+def _write_meta(entry: SceneObject, guid: str, name: str, parent: str | None) -> None:
+    """Update identity, name and parent in place, leaving any other meta field alone."""
+    component = entry.component(well_known.META_ID)
+    if component is None:
+        component = SceneComponent(well_known.META_ID, well_known.META_TYPE, {})
+        entry.components.insert(0, component)
 
-    if original is not None and _unchanged(original.transform, document):
-        return original.transform
+    component.data[well_known.GUID] = guid
+    component.data[well_known.NAME] = name
+    if parent is None:
+        component.data.pop(well_known.PARENT, None)
+    else:
+        component.data[well_known.PARENT] = parent
 
-    if original is not None:
+
+def _write_transform(
+    entry: SceneObject, obj: bpy.types.Object, original: SceneObject | None, result: SaveResult
+) -> None:
+    position, rotation, scale = axes.from_blender_trs(*_blender_trs(obj))
+
+    stored = original.component(well_known.TRANSFORM_ID) if original is not None else None
+    if stored is not None:
+        if _unchanged(stored.data, (position, rotation, scale)):
+            return   # untouched: keep the authored numbers verbatim
         result.moved += 1
-    return SceneTransform(position=document[0], rotation=document[1], scale=document[2])
+    elif _unchanged({}, (position, rotation, scale)):
+        # The document gave this object no transform at all, and it is still at the identity.
+        # WRITING one would add a component the author never had -- turning a save of an
+        # untouched scene into a diff on every such object.
+        return
+    elif original is not None:
+        result.moved += 1
+
+    component = entry.component(well_known.TRANSFORM_ID)
+    if component is None:
+        component = SceneComponent(well_known.TRANSFORM_ID, well_known.TRANSFORM_TYPE, {})
+        entry.components.append(component)
+
+    component.data[well_known.POSITION] = [float(v) for v in position]
+    component.data[well_known.ROTATION] = [float(v) for v in rotation]
+    component.data[well_known.SCALE] = [float(v) for v in scale]
 
 
 def _blender_trs(obj: bpy.types.Object):
@@ -171,7 +205,7 @@ def _blender_trs(obj: bpy.types.Object):
     )
 
 
-def _unchanged(stored: SceneTransform, computed) -> bool:
+def _unchanged(stored: dict, computed) -> bool:
     """Whether the object still sits where the document put it.
 
     Compared per-component and RELATIVE to the stored magnitude, because the error being tolerated
@@ -179,17 +213,44 @@ def _unchanged(stored: SceneTransform, computed) -> bool:
     absolute slack. Rotations compare by the dot product, since a quaternion and its negation are
     the same rotation and a sign flip is not a move.
     """
-    for a, b in ((stored.position, computed[0]), (stored.scale, computed[2])):
-        for x, y in zip(a, b):
+    # Sequence, not `list`: an ABSENT field falls back to the identity default below, and those
+    # are tuples. Testing for `list` alone made every identity transform compare as changed, so
+    # every object the document gave no transform gained one on the first save.
+    def numbers(key, count, default):
+        value = stored.get(key, default)
+        if not isinstance(value, (list, tuple)) or len(value) != count:
+            return None
+        return [float(v) for v in value]
+
+    for key, index, default in (
+        (well_known.POSITION, 0, (0.0, 0.0, 0.0)),
+        (well_known.SCALE, 2, (1.0, 1.0, 1.0)),
+    ):
+        authored = numbers(key, 3, default)
+        if authored is None:
+            return False
+        for x, y in zip(authored, computed[index]):
             if abs(x - y) > _EPSILON * max(abs(x), 1.0):
                 return False
 
-    dot = abs(sum(x * y for x, y in zip(stored.rotation, computed[1])))
+    rotation = numbers(well_known.ROTATION, 4, (0.0, 0.0, 0.0, 1.0))
+    if rotation is None:
+        return False
+    dot = abs(sum(x * y for x, y in zip(rotation, computed[1])))
     return abs(1.0 - dot) <= _EPSILON
 
 
 def _document_objects(scene: bpy.types.Scene) -> list[bpy.types.Object]:
-    return [obj for obj in scene.collection.all_objects if store.guid_of(obj) is not None]
+    """The objects this save may write.
+
+    Objects RESOLVED out of a prefab are excluded: the document has no entry for them, so the
+    merge would count them "added" and write them into the scene as plain objects -- flattening
+    every instance on the first save, and duplicating them on the next load.
+    """
+    return [
+        obj for obj in scene.collection.all_objects
+        if store.guid_of(obj) is not None and not store.is_derived(obj)
+    ]
 
 
 def _write_atomic(path: str, text: str) -> None:

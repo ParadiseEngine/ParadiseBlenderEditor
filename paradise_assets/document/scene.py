@@ -114,6 +114,12 @@ def loads(text: str, source: str = "<scene>") -> SceneDocument:
     except tomllib.TOMLDecodeError as error:
         raise fail(f"is not valid TOML ({error})") from error
 
+    # tomllib returns a plain dict for both `x = { … }` and `[x]`, so the model type has to be
+    # recovered before anything writes the document back. Skipping this would move every asset
+    # reference from an inline table to a header on the first save, and scene-check would report
+    # every file this addon touched as non-canonical.
+    root = canonical_toml.restore_inline_tables(root)
+
     _reject_unknown(root, _DOCUMENT_KEYS, "at the document root", fail)
 
     version = root.get("schema_version")

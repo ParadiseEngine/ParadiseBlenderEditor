@@ -125,6 +125,102 @@ class TestArrays:
         assert ct.format_value([[1, 2], [3]]) == "[[1, 2], [3]]"
 
 
+class TestInlineTables:
+    """Rule 11. These must match the C# CanonicalInlineTableTests byte for byte."""
+
+    def test_written_on_one_line(self):
+        assert ct.dumps({"Mesh": ct.InlineTable({"guid": "5f2a", "path": "Models/x.glb"})}) == (
+            'Mesh = { guid = "5f2a", path = "Models/x.glb" }\n'
+        )
+
+    def test_an_empty_inline_table_is_two_braces(self):
+        # The null slot: an array position carrying no reference but still holding its place,
+        # because slot order is the contract.
+        assert ct.dumps({"Slot": ct.InlineTable()}) == "Slot = {}\n"
+
+    def test_inline_tables_nest_inside_arrays(self):
+        document = {
+            "Slots": [
+                ct.InlineTable({"guid": "a", "path": "materials/one.toml"}),
+                ct.InlineTable(),
+                ct.InlineTable({"guid": "b", "path": "materials/two.toml"}),
+            ]
+        }
+        assert ct.dumps(document) == (
+            'Slots = [{ guid = "a", path = "materials/one.toml" }, {}, '
+            '{ guid = "b", path = "materials/two.toml" }]\n'
+        )
+
+    def test_a_generic_table_is_still_a_header_even_when_all_values_are_scalars(self):
+        # THE property: form follows type, not contents. If this ever emits `t = { a = 1 }` the
+        # rule has become data-dependent and the two writers will drift.
+        assert ct.dumps({"t": {"a": 1}}) == "[t]\na = 1\n"
+
+    def test_a_list_of_inline_tables_is_an_array_not_an_array_of_tables(self):
+        # Rendering this as [[Slots]] headers would drop the empty element and shift every
+        # material override onto the wrong primitive.
+        assert "[[" not in ct.dumps({"Slots": [ct.InlineTable({"guid": "a", "path": "b"})]})
+
+    def test_keys_and_values_follow_the_ordinary_rules(self):
+        document = {
+            "r": ct.InlineTable(
+                {"a b": 1.5, "n": -0.0, "s": 'say "hi"', "list": [1, 2]},
+            )
+        }
+        assert ct.dumps(document) == 'r = { "a b" = 1.5, n = -0.0, s = "say \\"hi\\"", list = [1, 2] }\n'
+
+    def test_model_order_is_preserved(self):
+        assert ct.dumps({"r": ct.InlineTable({"z": 1, "a": 2})}) == "r = { z = 1, a = 2 }\n"
+
+    def test_a_nested_table_inside_an_inline_table_is_refused(self):
+        try:
+            ct.dumps({"r": ct.InlineTable({"nested": {"a": 1}})})
+        except TypeError:
+            return
+        raise AssertionError("expected a nested table to be refused")
+
+
+class TestReferenceShape:
+    """The predicate that lets the reader recover which form a table was written in."""
+
+    def test_empty_is_reference_shaped(self):
+        assert ct.is_reference_shaped({})
+
+    def test_exactly_guid_and_path_is_reference_shaped(self):
+        assert ct.is_reference_shaped({"guid": "a", "path": "b"})
+
+    def test_order_does_not_matter_to_the_predicate(self):
+        assert ct.is_reference_shaped({"path": "b", "guid": "a"})
+
+    def test_other_shapes_are_not(self):
+        assert not ct.is_reference_shaped({"guid": "a"})
+        assert not ct.is_reference_shaped({"guid": "a", "path": "b", "extra": 1})
+        assert not ct.is_reference_shaped({"a": 1, "b": 2})
+
+    def test_non_string_values_are_not(self):
+        assert not ct.is_reference_shaped({"guid": 1, "path": "b"})
+
+    def test_restore_recovers_inline_tables_from_a_parsed_document(self):
+        import tomllib
+
+        text = 'Mesh = { guid = "a", path = "Models/x.glb" }\nSlots = [{ guid = "b", path = "m.toml" }, {}]\n'
+        restored = ct.restore_inline_tables(tomllib.loads(text))
+
+        assert ct.dumps(restored) == text
+
+    def test_restore_leaves_a_header_table_as_a_header(self):
+        import tomllib
+
+        text = "[t]\na = 1\n"
+        assert ct.dumps(ct.restore_inline_tables(tomllib.loads(text))) == text
+
+    def test_restore_leaves_an_array_of_tables_alone(self):
+        import tomllib
+
+        text = "[[items]]\nn = 1\n\n[[items]]\nn = 2\n"
+        assert ct.dumps(ct.restore_inline_tables(tomllib.loads(text))) == text
+
+
 class TestEncoding:
     def test_utf8_without_a_bom(self):
         data = ct.dump_bytes({"k": "价"})

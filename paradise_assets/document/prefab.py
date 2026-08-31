@@ -57,13 +57,27 @@ class PrefabDocumentError(Exception):
 
 @dataclass
 class PrefabComponent:
-    """One component entry: identity, readable name, and a payload that sits flat beside them."""
+    """One component entry: identity, readable name, and a payload that sits flat beside them.
+
+    The payload may not use a reserved key: flattened onto the wire it would collide with the
+    entry's own structure, and ``dict.update`` in the writer would swallow the collision
+    silently. Refusing at construction makes it a named error at the code that built it.
+    (Parsed text cannot collide -- TOML itself rejects a duplicate key.)
+    """
 
     id: str
     type: str | None = None
     data: dict = field(default_factory=dict)
     #: On an instance: drop the prefab's component of this id rather than overriding it.
     removed: bool = False
+
+    def __post_init__(self) -> None:
+        for key in self.data:
+            if key in RESERVED_KEYS:
+                raise ValueError(
+                    f"a component payload may not use the reserved key '{key}'; "
+                    "on the wire it would collide with the component's own structure"
+                )
 
 
 @dataclass
@@ -287,7 +301,12 @@ def _read_component(table: dict, object_context: str, fail) -> PrefabComponent:
         # certainly an edit that deleted only half of what it meant to.
         raise fail(f"marks a component '{REMOVED_KEY}' but also gives it fields {context}")
 
-    return PrefabComponent(identity, type_name, data, removed)
+    component = PrefabComponent(identity, type_name, data, removed)
+    problem = well_known.payload_problem(component)
+    if problem is not None:
+        raise fail(f"{problem} {context}")
+
+    return component
 
 
 def _object_table(obj: PrefabObject) -> dict:
@@ -300,11 +319,24 @@ def _object_table(obj: PrefabObject) -> dict:
 
 
 def _component_table(component: PrefabComponent) -> dict:
+    # The same shape gate the reader applies, pointed the other way: a tool that builds a
+    # malformed well-known payload fails here, not as a document the next read refuses.
+    problem = well_known.payload_problem(component)
+    if problem is not None:
+        raise ValueError(f"this document {problem}, so it cannot be written")
+
     table: dict = {ID_KEY: component.id}
     if component.type is not None:
         table[TYPE_KEY] = component.type
     if component.removed:
         table[REMOVED_KEY] = True
+    for key in component.data:
+        # Guards payloads mutated after construction; without it `update` swallows the collision.
+        if key in RESERVED_KEYS:
+            raise ValueError(
+                f"a component payload may not use the reserved key '{key}'; "
+                "it would collide with the component's own structure"
+            )
     table.update(component.data)
     return table
 

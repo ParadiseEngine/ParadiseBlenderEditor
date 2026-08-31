@@ -243,7 +243,7 @@ def _rewrite_meta(merged, prefab_object, is_root, instance_guid, minted, overrid
 
     if existing is not None:
         for key, value in existing.data.items():
-            if key in (well_known.GUID, well_known.NAME, well_known.PARENT, well_known.TARGET, well_known.DROPPED):
+            if well_known.is_meta_field(key):
                 continue
             data[key] = value
 

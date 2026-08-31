@@ -216,3 +216,63 @@ class TestOpaquePayloads:
         )
 
         assert prefab.dumps(prefab.loads(text, "x.scene")) == text
+
+
+class TestWellKnownShapes:
+    """The shape gate over the two payloads the format itself owns -- mirror of the C# tests."""
+
+    def test_a_malformed_meta_parent_is_refused(self):
+        # Before the shape check a non-UUID Parent read as "no parent" -- an object silently
+        # promoted to a root is exactly the misread the strict reader exists to prevent.
+        text = f"schema_version = 1\n{obj(CRATE)}{obj(LID, 'lid', 'Parent = \"not-a-guid\"\n')}"
+
+        assert "meta.Parent" in rejects(text)
+
+    def test_a_dropped_marker_without_a_target_is_refused(self):
+        # Dropping addresses a prefab child; on a plain object it is ignored, and on an instance
+        # it deletes the whole subtree -- neither is ever what the author meant.
+        text = f"schema_version = 1\n{obj(CRATE, 'x', 'Dropped = true\n')}"
+
+        assert "Dropped" in rejects(text)
+
+    def test_a_short_transform_position_is_refused(self):
+        text = (
+            f"schema_version = 1\n{obj(CRATE)}"
+            f'\n[[objects.components]]\nid = "{TRANSFORM}"\ntype = "transform"\nPosition = [0.0, 1.5]\n'
+        )
+
+        assert "array of 3 numbers" in rejects(text)
+
+    def test_a_three_element_rotation_is_refused(self):
+        text = (
+            f"schema_version = 1\n{obj(CRATE)}"
+            f'\n[[objects.components]]\nid = "{TRANSFORM}"\ntype = "transform"\nRotation = [0.0, 0.0, 0.0]\n'
+        )
+
+        assert "array of 4 numbers" in rejects(text)
+
+    def test_a_misspelled_transform_field_is_refused(self):
+        # 'Postion' used to load silently as the origin. transform is a closed set precisely so
+        # a typo is an error and not a teleport.
+        text = (
+            f"schema_version = 1\n{obj(CRATE)}"
+            f'\n[[objects.components]]\nid = "{TRANSFORM}"\ntype = "transform"\nPostion = [0.0, 1.5, 0.0]\n'
+        )
+
+        assert "Postion" in rejects(text)
+
+    def test_a_game_extended_meta_field_rides_along(self):
+        # meta's payload stays open -- only the fields the format defines are shape-checked.
+        text = f"schema_version = 1\n{obj(CRATE, 'x', 'Zone = \"hub\"\n')}"
+
+        assert prefab.dumps(prefab.loads(text, "x.scene")) == text
+
+    def test_a_payload_using_a_reserved_key_is_refused_at_construction(self):
+        # The named error RESERVED_KEYS promises: flattened onto the wire, a payload 'id' would
+        # collide with the entry's own structure, and dict.update would swallow it silently.
+        try:
+            prefab.PrefabComponent(RENDERABLE, data={prefab.ID_KEY: "collides"})
+        except ValueError as error:
+            assert "reserved" in str(error)
+        else:
+            raise AssertionError("expected the component to be refused")

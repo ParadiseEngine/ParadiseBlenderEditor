@@ -23,7 +23,7 @@ import os
 import bpy
 
 from ..document import project
-from . import store
+from . import store, sync
 
 __all__ = ["path_for", "save", "try_open"]
 
@@ -42,7 +42,12 @@ def save(layout: project.ProjectLayout, document_path: str) -> str | None:
     destination = path_for(layout, document_path)
     try:
         os.makedirs(os.path.dirname(destination), exist_ok=True)
-        bpy.ops.wm.save_as_mainfile(filepath=destination)
+        # Suppressed, because this write is the ADDON's, not the author's. `sync` hooks save_pre to
+        # write the document on every save, and opening a document calls straight through here --
+        # so without this, merely opening a file would rewrite it: dirty in `git status`, and an
+        # mtime bumped for nothing, which also invalidates that prefab's rendered thumbnail.
+        with sync.suppressed():
+            bpy.ops.wm.save_as_mainfile(filepath=destination)
     except (OSError, RuntimeError):
         return None
     return destination

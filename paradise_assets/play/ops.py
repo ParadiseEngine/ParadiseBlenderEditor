@@ -154,7 +154,7 @@ class PARADISE_ASSETS_OT_play(Operator):
             return {"CANCELLED"}
         layout, document_path = found
 
-        if not _run(self, layout, ["assets", "build", "--profile", _profile(), "--play"], "Build"):
+        if not _run(self, layout, ["assets", "build", "--profile", _profile(), "--editor"], "Build"):
             return {"CANCELLED"}
 
         scene_json = _built_scene(layout, document_path)

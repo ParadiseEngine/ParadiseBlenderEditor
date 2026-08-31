@@ -13,7 +13,7 @@ import os
 import bpy
 from bpy.types import Panel
 
-from .materialize import store
+from .materialize import store, sync
 
 __all__ = ["classes"]
 
@@ -49,6 +49,17 @@ class PARADISE_ASSETS_PT_document(_AssetsPanel, Panel):
             warning.alert = True
             warning.label(text="Changed on disk since it was opened.", icon="ERROR")
             warning.label(text="Reload, or your save will be refused.")
+
+        # In the PAST tense, and separate from the warning above, which only predicts a refusal.
+        # Saving writes the document too, and a handler can neither open a dialog nor cancel the
+        # save -- so a refusal that is not said here is a save the author believes happened.
+        refused = sync.refusal(context.scene)
+        if refused is not None:
+            box = layout.box()
+            box.alert = True
+            box.label(text="The last save did NOT reach the document.", icon="ERROR")
+            box.label(text="Your work is in the working file, not lost.")
+            box.label(text=refused[:70])
 
         # Above save/reload, and on its own: it is the one button here that ADDS something, and
         # the drag-and-drop route is not discoverable from a panel.

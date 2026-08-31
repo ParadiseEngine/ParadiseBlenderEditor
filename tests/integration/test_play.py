@@ -180,8 +180,8 @@ def main() -> int:
             check(build is not None, "the CLI ran")
             if build:
                 check(
-                    build["argv"] == ["assets", "build", "--profile", "dev", "--play"],
-                    f"with the play build argv ({build['argv']})",
+                    build["argv"] == ["assets", "build", "--profile", "dev", "--editor"],
+                    f"with the editor build argv ({build['argv']})",
                 )
                 check(
                     os.path.realpath(build["cwd"]) == os.path.realpath(layout.root),
@@ -236,7 +236,7 @@ def main() -> int:
             build = recorded(cli_log)
             check(
                 build is not None and build["argv"] == ["assets", "build", "--profile", "dev"],
-                f"Build omits --play ({build['argv'] if build else None})",
+                f"Build omits --editor ({build['argv'] if build else None})",
             )
 
             _reset(cli_log, runtime_log)

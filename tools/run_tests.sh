@@ -95,6 +95,12 @@ if command -v "$BLENDER" >/dev/null 2>&1; then
   "$BLENDER" --background --factory-startup --python tests/integration/test_play.py 2>&1 \
     | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2})' | tail -30
   check "${PIPESTATUS[0]}" "build and play"
+
+  # Blender's own save writing the document. Its own throwaway project -- every check writes.
+  step "Integration: Ctrl+S writes the prefab document"
+  "$BLENDER" --background --factory-startup --python tests/integration/test_save_on_save.py 2>&1 \
+    | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2}|Info: Saved)' | tail -30
+  check "${PIPESTATUS[0]}" "save on save"
 else
   echo "SKIPPED: Blender not found (set BLENDER=/path/to/blender) — integration tests not run."
 fi

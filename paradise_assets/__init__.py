@@ -30,6 +30,7 @@ def register() -> None:
     import bpy
 
     from . import browser, dropped, ops, prefs, ui
+    from .materialize import sync
     from .play import ops as play_ops
 
     # Preferences FIRST: every operator below resolves the toolchain through them, and an
@@ -42,6 +43,10 @@ def register() -> None:
     # see paradise_assets.dropped for why that handler exists and how it stays harmless.
     dropped.register_handler()
 
+    # Blender's own save writes the document too: the .blend is a disposable cache, so saving only
+    # the cache is how a day's work goes missing. See paradise_assets.materialize.sync.
+    sync.register_handler()
+
     # After the classes: the menu draws the operator, so it must exist by the time anyone opens it.
     browser.register_menu()
 
@@ -50,9 +55,11 @@ def unregister() -> None:
     import bpy
 
     from . import browser, dropped
+    from .materialize import sync
 
     browser.unregister_menu()
     dropped.unregister_handler()
+    sync.unregister_handler()
 
     # Reverse order: a child panel registered against a parent's bl_idname must go first, or
     # Blender warns about an unregistered parent while tearing the tab down.

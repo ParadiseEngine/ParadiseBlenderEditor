@@ -61,6 +61,40 @@ class PARADISE_ASSETS_PT_document(_AssetsPanel, Panel):
         layout.operator("paradise_assets.open_prefab", text="Open Another…", icon="FILE_FOLDER")
 
 
+class PARADISE_ASSETS_PT_play(_AssetsPanel, Panel):
+    """Build the project and run the game on whatever document is open."""
+
+    bl_label = "Play"
+    bl_idname = "PARADISE_ASSETS_PT_play"
+    bl_parent_id = "PARADISE_ASSETS_PT_document"
+
+    @classmethod
+    def poll(cls, context):
+        return store.read_state(context.scene) is not None
+
+    def draw(self, context):
+        layout = self.layout
+
+        # Resolved on every redraw, which is why `status` neither logs nor touches the project:
+        # an author with nothing configured would otherwise get a warning per frame.
+        from .play.ops import status
+
+        problems = status()
+        if problems:
+            box = layout.box()
+            box.alert = True
+            for icon, message in problems:
+                box.label(text=message, icon=icon)
+
+        layout.operator("paradise_assets.play", icon="PLAY")
+
+        row = layout.row(align=True)
+        row.operator("paradise_assets.build", icon="MOD_BUILD")
+        row.operator("paradise_assets.verify", icon="CHECKMARK")
+        # Off on its own: the only button here that deletes anything.
+        layout.operator("paradise_assets.clean", icon="TRASH")
+
+
 class PARADISE_ASSETS_PT_object(_AssetsPanel, Panel):
     bl_label = "Components"
     bl_idname = "PARADISE_ASSETS_PT_object"
@@ -132,5 +166,8 @@ def _payload_lines(data, prefix: str = "", depth: int = 0) -> list[str]:
 
 classes = (
     PARADISE_ASSETS_PT_document,
+    # Child panels follow their parent: Blender warns about an unregistered bl_parent_id
+    # otherwise, and unregistration walks this in reverse for the same reason.
+    PARADISE_ASSETS_PT_play,
     PARADISE_ASSETS_PT_object,
 )

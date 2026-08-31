@@ -29,9 +29,12 @@ _REGISTERED: list = []
 def register() -> None:
     import bpy
 
-    from . import browser, dropped, ops, ui
+    from . import browser, dropped, ops, prefs, ui
+    from .play import ops as play_ops
 
-    for cls in (*ops.classes, *ui.classes, *browser.classes):
+    # Preferences FIRST: every operator below resolves the toolchain through them, and an
+    # AddonPreferences that is not registered yet reads as "nothing configured".
+    for cls in (*prefs.classes, *ops.classes, *play_ops.classes, *ui.classes, *browser.classes):
         bpy.utils.register_class(cls)
         _REGISTERED.append(cls)
 

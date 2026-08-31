@@ -89,6 +89,12 @@ if command -v "$BLENDER" >/dev/null 2>&1; then
     "${PARADISE_ASSETS_PROJECT:-../shiningpie}" 2>&1 \
     | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2}|.*\| (Saved|Read blend):)' | tail -30
   check "${PIPESTATUS[0]}" "asset browser menu"
+
+  # Build & Play, against FAKE tools -- it needs no project, no CLI and no game.
+  step "Integration: build and play, up to the process"
+  "$BLENDER" --background --factory-startup --python tests/integration/test_play.py 2>&1 \
+    | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2})' | tail -30
+  check "${PIPESTATUS[0]}" "build and play"
 else
   echo "SKIPPED: Blender not found (set BLENDER=/path/to/blender) — integration tests not run."
 fi

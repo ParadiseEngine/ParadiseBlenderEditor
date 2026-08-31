@@ -29,15 +29,27 @@ _REGISTERED: list = []
 def register() -> None:
     import bpy
 
-    from . import ops, ui
+    from . import browser, dropped, ops, ui
 
-    for cls in (*ops.classes, *ui.classes):
+    for cls in (*ops.classes, *ui.classes, *browser.classes):
         bpy.utils.register_class(cls)
         _REGISTERED.append(cls)
+
+    # The Asset Browser's drop is Blender's own operation and cannot be replaced, only followed --
+    # see paradise_assets.dropped for why that handler exists and how it stays harmless.
+    dropped.register_handler()
+
+    # After the classes: the menu draws the operator, so it must exist by the time anyone opens it.
+    browser.register_menu()
 
 
 def unregister() -> None:
     import bpy
+
+    from . import browser, dropped
+
+    browser.unregister_menu()
+    dropped.unregister_handler()
 
     # Reverse order: a child panel registered against a parent's bl_idname must go first, or
     # Blender warns about an unregistered parent while tearing the tab down.

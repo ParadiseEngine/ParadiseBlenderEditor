@@ -14,6 +14,7 @@ a save that rewrote every float it touched.
 
 from __future__ import annotations
 
+import glob
 import os
 import shutil
 import sys
@@ -23,7 +24,7 @@ import bpy
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from paradise_assets.document import project, scene as scene_document, well_known  # noqa: E402
+from paradise_assets.document import project, prefab as prefab_document, well_known  # noqa: E402
 from paradise_assets.materialize import load, save, store  # noqa: E402
 
 DEFAULT_PROJECT = r"C:\proj\paradise-workspace\shiningpie"
@@ -46,7 +47,7 @@ def fresh_scene() -> bpy.types.Scene:
 
 def open_document(path: str, layout) -> load.LoadResult:
     with open(path, encoding="utf-8") as handle:
-        document = scene_document.loads(handle.read(), path)
+        document = prefab_document.loads(handle.read(), path)
     return load.load_document(fresh_scene(), document, path, layout)
 
 
@@ -59,22 +60,28 @@ def main() -> int:
         print(f"SKIP: no asset project at or above {root}")
         return 0
 
-    scenes = sorted(
-        os.path.join(layout.scenes, name)
-        for name in os.listdir(layout.scenes)
-        if name.endswith(project.SCENE_SUFFIX)
-    )
-    check(bool(scenes), f"found {len(scenes)} scene document(s) under {layout.scenes}")
+    # Recursive, because authoring documents are no longer confined to one `scenes/` directory:
+    # they are `*.prefab` anywhere under assets/, and shiningpie keeps levels and props in separate
+    # folders. The extension is spelled out here rather than taken from `project.SCENE_SUFFIX` --
+    # that constant still says ".scene" and nothing else reads it, so trusting it would silently
+    # find zero documents and pass every check below by vacuum. Same glob `catalogue.build` uses.
+    documents = sorted(glob.glob(os.path.join(layout.assets, "**", "*.prefab"), recursive=True))
+    check(bool(documents), f"found {len(documents)} document(s) under {layout.assets}")
+    if not documents:
+        # Everything past here indexes documents[0]; without this the suite dies with an
+        # IndexError that says nothing about the actual problem.
+        print("\n(no documents to exercise -- stopping here)")
+        return 1
 
     print("\n== the round trip: open -> save must be byte-identical ==")
-    for path in scenes:
+    for path in documents:
         original = open(path, "rb").read()
         with tempfile.TemporaryDirectory() as work:
             copy = os.path.join(work, os.path.basename(path))
             shutil.copy2(path, copy)
 
             result = open_document(copy, layout)
-            saved = save.save_scene(bpy.context.scene)
+            saved = save.save_prefab(bpy.context.scene)
 
             check(
                 open(copy, "rb").read() == original,
@@ -83,11 +90,15 @@ def main() -> int:
             check(saved.moved == 0, f"{os.path.basename(path)}: nothing reported as moved")
 
     print("\n== the document is materialized faithfully ==")
-    test_scene = os.path.join(layout.scenes, "test" + project.SCENE_SUFFIX)
-    if os.path.isfile(test_scene):
-        with open(test_scene, encoding="utf-8") as handle:
-            document = scene_document.loads(handle.read(), test_scene)
-        result = open_document(test_scene, layout)
+    # By name rather than by a fixed path: `test.prefab` sits under `levels/` in shiningpie, and
+    # which folder a project files its levels in is not this test's business.
+    test_document = next(
+        (p for p in documents if os.path.basename(p) == "test.prefab"), None
+    )
+    if test_document is not None:
+        with open(test_document, encoding="utf-8") as handle:
+            document = prefab_document.loads(handle.read(), test_document)
+        result = open_document(test_document, layout)
 
         objects = [o for o in bpy.context.scene.collection.all_objects if store.guid_of(o)]
         check(len(objects) == len(document.objects), f"{len(document.objects)} objects created")
@@ -112,17 +123,17 @@ def main() -> int:
 
     print("\n== a real edit writes exactly that edit ==")
     with tempfile.TemporaryDirectory() as work:
-        copy = os.path.join(work, "edit.scene")
-        shutil.copy2(scenes[0], copy)
-        before = scene_document.loads(open(copy, encoding="utf-8").read(), copy)
+        copy = os.path.join(work, "edit.prefab")
+        shutil.copy2(documents[0], copy)
+        before = prefab_document.loads(open(copy, encoding="utf-8").read(), copy)
 
         open_document(copy, layout)
         moved = next(o for o in bpy.context.scene.collection.all_objects if store.guid_of(o))
         target = store.guid_of(moved)
         moved.location.x += 5.0
-        result = save.save_scene(bpy.context.scene)
+        result = save.save_prefab(bpy.context.scene)
 
-        after = scene_document.loads(open(copy, encoding="utf-8").read(), copy)
+        after = prefab_document.loads(open(copy, encoding="utf-8").read(), copy)
         check(result.moved == 1, "exactly one object reported as moved")
 
         # Compared as DOCUMENTS, not as lines: giving an object its first transform inserts a
@@ -151,8 +162,8 @@ def main() -> int:
 
     print("\n== the stamp refuses a save over an external change ==")
     with tempfile.TemporaryDirectory() as work:
-        copy = os.path.join(work, "stale.scene")
-        shutil.copy2(scenes[0], copy)
+        copy = os.path.join(work, "stale.prefab")
+        shutil.copy2(documents[0], copy)
         open_document(copy, layout)
 
         # Rewrite it behind the addon's back, as another tool or a `git pull` would.
@@ -160,14 +171,14 @@ def main() -> int:
             handle.write("\n")
 
         try:
-            save.save_scene(bpy.context.scene)
+            save.save_prefab(bpy.context.scene)
             check(False, "a stale document refuses the save")
         except save.SaveError as error:
             check("changed on disk" in str(error), "a stale document refuses the save")
 
     print("\n== an unrecognised component survives the round trip ==")
     with tempfile.TemporaryDirectory() as work:
-        copy = os.path.join(work, "unknown.scene")
+        copy = os.path.join(work, "unknown.prefab")
         with open(copy, "w", encoding="utf-8", newline="") as handle:
             handle.write(
                 "schema_version = 1\n"
@@ -185,7 +196,7 @@ def main() -> int:
             )
         original = open(copy, "rb").read()
         open_document(copy, layout)
-        save.save_scene(bpy.context.scene)
+        save.save_prefab(bpy.context.scene)
         check(open(copy, "rb").read() == original, "an unknown component is written back verbatim")
 
     print("\n== a prefab instance stays an instance through a save ==")
@@ -216,7 +227,7 @@ def main() -> int:
                 f'Name = "Bulb"\nParent = "{root_local}"\n'
             )
 
-        scene_path = os.path.join(scenes_dir, "lit.scene")
+        scene_path = os.path.join(scenes_dir, "lit.prefab")
         with open(scene_path, "w", encoding="utf-8", newline="") as handle:
             handle.write(
                 "schema_version = 1\n"
@@ -232,7 +243,7 @@ def main() -> int:
         # The project root is `work`, not the shiningpie checkout.
         probe_layout = project.locate(scene_path)
         with open(scene_path, encoding="utf-8") as handle:
-            document = scene_document.loads(handle.read(), scene_path)
+            document = prefab_document.loads(handle.read(), scene_path)
         result = load.load_document(fresh_scene(), document, scene_path, probe_layout)
 
         check(result.objects == 2, f"the instance materializes as {result.objects} objects (root + child)")
@@ -241,7 +252,7 @@ def main() -> int:
         derived = [o for o in bpy.context.scene.collection.all_objects if store.is_derived(o)]
         check(all(all(o.lock_location) for o in derived), "derived children are locked in the viewport")
 
-        save.save_scene(bpy.context.scene)
+        save.save_prefab(bpy.context.scene)
 
         # THE check: the document still holds ONE object with a prefab reference. A save that
         # treated the resolved children as ordinary objects would have written two plain objects

@@ -53,6 +53,7 @@ class PARADISE_ASSETS_PT_document(_AssetsPanel, Panel):
         # Above save/reload, and on its own: it is the one button here that ADDS something, and
         # the drag-and-drop route is not discoverable from a panel.
         layout.operator("paradise_assets.add_prefab_instance", text="Add Prefab…", icon="ADD")
+        layout.operator("paradise_assets.refresh_catalogue", icon="ASSET_MANAGER")
 
         column = layout.column(align=True)
         column.operator("paradise_assets.save_prefab", icon="EXPORT")

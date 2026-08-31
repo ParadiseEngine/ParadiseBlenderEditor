@@ -36,9 +36,25 @@ class LoadResult:
         self.instances = 0
         self.derived = 0
         self.warnings: list[str] = []
+        #: Every file the load READ, absolute -- the document itself, the prefabs it instances,
+        #: the GLBs it displayed, the materials it took colour from.
+        #:
+        #: The loader reports this because it is the only place that knows it. A caller wanting to
+        #: cache something derived from a load (the Asset Browser thumbnails do) needs to know what
+        #: to invalidate on, and the alternative -- walking the document itself looking for things
+        #: that smell like paths -- is a second implementation of reference discovery that drifts
+        #: from this one silently. When it drifts it does not error; it keeps serving a stale
+        #: artifact. Recorded even for files that failed to parse, so fixing a broken one counts
+        #: as a change.
+        self.sources: set[str] = set()
 
     def warn(self, message: str) -> None:
         self.warnings.append(message)
+
+    def read(self, path: str) -> str:
+        """Record ``path`` as read, and hand it back so call sites stay one line."""
+        self.sources.add(os.path.normcase(os.path.abspath(path)))
+        return path
 
 
 def load_document(
@@ -49,6 +65,7 @@ def load_document(
 ) -> LoadResult:
     """Materialize ``document`` into ``scene``, replacing anything already loaded there."""
     result = LoadResult()
+    result.read(scene_path)
     _clear_previous(scene)
 
     mesh_fields = schema.load(layout.root)
@@ -95,6 +112,7 @@ def load_document(
         child.matrix_parent_inverse.identity()
 
     result.meshes = library.imported
+    result.sources |= library.sources
     store.write_state(scene, scene_path)
     return result
 
@@ -123,11 +141,13 @@ def _create_object(
         else:
             result.warn(f"{entry.name}: mesh '{reference}' could not be displayed")
 
-    _apply_authored_colour(obj, entry, layout)
+    _apply_authored_colour(obj, entry, layout, result)
     return obj
 
 
-def _apply_authored_colour(obj: bpy.types.Object, entry: PrefabObject, layout) -> None:
+def _apply_authored_colour(
+    obj: bpy.types.Object, entry: PrefabObject, layout, result: LoadResult
+) -> None:
     """Put the object's authored material colour on ``obj.color``.
 
     A prefab instance shares ONE mesh with every other instance, so its colour cannot live in the
@@ -148,7 +168,7 @@ def _apply_authored_colour(obj: bpy.types.Object, entry: PrefabObject, layout) -
         if not isinstance(first, dict) or not first.get("path"):
             continue
 
-        colour = _base_colour(layout.resolve(first["path"]))
+        colour = _base_colour(result.read(layout.resolve(first["path"])))
         if colour is not None:
             obj.color = colour
         return
@@ -176,7 +196,7 @@ def _base_colour(path: str):
 
 def _load_prefab(layout, reference, result):
     """Read a prefab a scene references, reporting rather than raising."""
-    path = layout.resolve(reference.path)
+    path = result.read(layout.resolve(reference.path))
     try:
         with open(path, encoding="utf-8") as handle:
             return parse_document(handle.read(), path)

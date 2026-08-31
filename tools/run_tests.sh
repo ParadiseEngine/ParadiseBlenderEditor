@@ -75,6 +75,20 @@ if command -v "$BLENDER" >/dev/null 2>&1; then
     "${PARADISE_ASSETS_PROJECT:-../shiningpie}" 2>&1 \
     | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2})' | tail -30
   check "${PIPESTATUS[0]}" "open scene"
+
+  # Asset Browser thumbnails. Renders, so it wants the same real project -- and its load-bearing
+  # check is that the catalogue came out with no geometry in it.
+  step "Integration: prefab thumbnails and the catalogue's weight"
+  "$BLENDER" --background --factory-startup --python tests/integration/test_prefab_thumbnails.py -- \
+    "${PARADISE_ASSETS_PROJECT:-../shiningpie}" 2>&1 \
+    | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2}|.*\| Saved:)' | tail -30
+  check "${PIPESTATUS[0]}" "prefab thumbnails"
+
+  step "Integration: the Asset Browser context menu and its sidecar"
+  "$BLENDER" --background --factory-startup --python tests/integration/test_asset_browser_menu.py -- \
+    "${PARADISE_ASSETS_PROJECT:-../shiningpie}" 2>&1 \
+    | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2}|.*\| (Saved|Read blend):)' | tail -30
+  check "${PIPESTATUS[0]}" "asset browser menu"
 else
   echo "SKIPPED: Blender not found (set BLENDER=/path/to/blender) — integration tests not run."
 fi

@@ -51,14 +51,16 @@ class ProjectLayout:
         """Materialized working ``.blend`` files -- derived from scene documents, disposable."""
         return os.path.join(self.editor, "blend")
 
-    @property
-    def scenes(self) -> str:
-        return os.path.join(self.assets, "scenes")
+    def blend_for(self, document_path: str) -> str:
+        """Where the ``.blend`` materialized from ``document_path`` belongs.
 
-    def blend_for(self, scene_path: str) -> str:
-        """Where the ``.blend`` materialized from ``scene_path`` belongs."""
-        stem = os.path.splitext(os.path.basename(scene_path))[0]
-        return os.path.join(self.editor_blend, f"{stem}.blend")
+        Mirrors the document's path UNDER assets/, not just its filename. Every authoring document
+        now ends in ``.prefab``, so ``levels/test.prefab`` and ``prefabs/test.prefab`` are two
+        different files with one stem -- and a stem-keyed cache would hand the second one the
+        first one's working file.
+        """
+        relative = os.path.relpath(document_path, self.assets)
+        return os.path.join(self.editor_blend, os.path.splitext(relative)[0] + ".blend")
 
     def relative(self, path: str) -> str:
         """A path under ``assets/`` as the '/'-separated form documents reference it by."""

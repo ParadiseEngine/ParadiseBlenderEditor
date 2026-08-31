@@ -9,14 +9,16 @@ truth, including the ones made to see what something looks like.
 from __future__ import annotations
 
 import os
+import subprocess
 
 import bpy
 from bpy.props import StringProperty
 from bpy.types import Operator
 
+from . import catalogue
 from .document import project
 from .document.prefab import PrefabDocumentError, loads
-from .materialize import instancing, load, save, store
+from .materialize import instancing, load, save, store, workfile
 
 __all__ = ["classes"]
 
@@ -50,6 +52,17 @@ class PARADISE_ASSETS_OT_open_prefab(Operator):
             )
             return {"CANCELLED"}
 
+        # The working file first: if there is one and the document has not moved on, it IS this
+        # document materialized, plus the camera and selection the last session left. Re-reading
+        # the document instead would rebuild the same objects and throw that away.
+        if workfile.try_open(layout, path):
+            self.report(
+                {"INFO"},
+                f"Opened {os.path.basename(path)} from its working file "
+                f"({os.path.relpath(workfile.path_for(layout, path), layout.root)})",
+            )
+            return {"FINISHED"}
+
         try:
             with open(path, encoding="utf-8") as handle:
                 document = loads(handle.read(), path)
@@ -60,9 +73,15 @@ class PARADISE_ASSETS_OT_open_prefab(Operator):
             self.report({"ERROR"}, f"Could not read {path}: {error}")
             return {"CANCELLED"}
 
-        result = load.load_document(context.scene, document, path, layout)
+        # try_open may have replaced the session with a stale working file, so the scene to
+        # materialize into is whatever we have NOW rather than the one this started with.
+        result = load.load_document(bpy.context.scene, document, path, layout)
         for warning in result.warnings[:5]:
             self.report({"WARNING"}, warning)
+
+        written = workfile.save(layout, path)
+        if written is None:
+            self.report({"WARNING"}, "could not write the working file under .editor/blend")
 
         self.report(
             {"INFO"},
@@ -93,8 +112,12 @@ class PARADISE_ASSETS_OT_reload_prefab(Operator):
             self.report({"ERROR"}, str(error))
             return {"CANCELLED"}
 
+        # Reload deliberately does NOT consult the working file: its whole job is to discard what
+        # this session did and go back to the document, and the working file is this session's.
         layout = project.locate(state.path)
         result = load.load_document(context.scene, document, state.path, layout)
+        workfile.save(layout, state.path)
+
         self.report({"INFO"}, f"Reloaded {result.objects} object(s)")
         return {"FINISHED"}
 
@@ -121,6 +144,13 @@ class PARADISE_ASSETS_OT_save_prefab(Operator):
 
         for warning in result.warnings[:5]:
             self.report({"WARNING"}, warning)
+
+        # The document moved, so its stamp did too. Rewriting the working file re-records the new
+        # stamp; without this the next open would find a workfile that looks stale against a
+        # document it is in fact identical to, and rebuild it for nothing.
+        state = store.read_state(context.scene)
+        if state is not None and (layout := project.locate(state.path)) is not None:
+            workfile.save(layout, state.path)
 
         changes = []
         if result.moved:
@@ -197,6 +227,76 @@ class PARADISE_ASSETS_OT_add_prefab_instance(Operator):
         return {"FINISHED"}
 
 
+class PARADISE_ASSETS_OT_refresh_catalogue(Operator):
+    """Regenerate the Asset Browser catalogue of this project's prefabs"""
+
+    bl_idname = "paradise_assets.refresh_catalogue"
+    bl_label = "Refresh Prefab Catalogue"
+
+    @classmethod
+    def poll(cls, context):
+        return store.read_state(context.scene) is not None
+
+    def execute(self, context):
+        state = store.read_state(context.scene)
+        layout = project.locate(state.path)
+        if layout is None:
+            self.report({"ERROR"}, "No asset project found for the open document")
+            return {"CANCELLED"}
+
+        # Building the catalogue REPLACES the current Blender file, so it runs in its own process.
+        # Doing it in-process would throw away whatever the author has open, which is not a trade
+        # a button labelled "refresh" is allowed to make.
+        # __package__ rather than a literal: this addon is installed as an extension, so its module
+        # is bl_ext.<repo>.paradise_assets and the repo name is whatever the user called it.
+        script = (
+            "import importlib;"
+            f"c=importlib.import_module('{__package__}.catalogue');"
+            f"print('CATALOGUE', *c.build(r'{layout.root}'))"
+        )
+        result = subprocess.run(
+            [bpy.app.binary_path, "--background", "--python-expr", script],
+            # Generous because the build now RENDERS a thumbnail per prefab on a cold cache --
+            # measured at roughly half a second each, so a large project's first build is minutes.
+            # Later builds re-render only what changed and come back in seconds.
+            capture_output=True, text=True, timeout=1800,
+        )
+
+        if result.returncode != 0:
+            self.report({"ERROR"}, f"Catalogue build failed: {result.stderr.strip()[-300:]}")
+            return {"CANCELLED"}
+
+        # 'CATALOGUE <made> <pictured> [warnings]' -- build() returns three values and the print
+        # unpacks them, so the counts are fields 1 and 2.
+        fields = next(
+            (line.split() for line in result.stdout.splitlines() if line.startswith("CATALOGUE")),
+            [],
+        )
+        made = fields[1] if len(fields) > 1 else "?"
+        pictured = fields[2] if len(fields) > 2 else "?"
+
+        # Registering happens HERE, in the running session, not in the subprocess that built the
+        # file: a preferences change made in a background Blender dies with it. Without this the
+        # catalogue is a file nothing looks at, which is exactly how it first shipped.
+        name, added = catalogue.ensure_library(layout.root)
+        if added:
+            bpy.ops.wm.save_userpref()
+
+        # So it appears without restarting Blender.
+        try:
+            bpy.ops.asset.library_refresh()
+        except RuntimeError:
+            pass
+
+        self.report(
+            {"INFO"},
+            f"Catalogue rebuilt with {made} prefab(s), {pictured} with thumbnails — "
+            + (f"registered the '{name}' asset library" if added else f"library '{name}' refreshed")
+            + ". Open an Asset Browser and pick it from the library dropdown.",
+        )
+        return {"FINISHED"}
+
+
 class PARADISE_ASSETS_FH_prefab(bpy.types.FileHandler):
     """Drag a ``.prefab`` from the file browser into the viewport to instance it."""
 
@@ -221,5 +321,6 @@ classes = (
     PARADISE_ASSETS_OT_reload_prefab,
     PARADISE_ASSETS_OT_save_prefab,
     PARADISE_ASSETS_OT_add_prefab_instance,
+    PARADISE_ASSETS_OT_refresh_catalogue,
     PARADISE_ASSETS_FH_prefab,
 )

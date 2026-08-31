@@ -25,7 +25,7 @@ from ..document.prefab import PrefabDocumentError, loads as parse_document
 from . import store
 from .meshes import MeshLibrary
 
-__all__ = ["InstanceError", "add_instance"]
+__all__ = ["InstanceError", "add_instance", "adopt_template"]
 
 
 class InstanceError(Exception):
@@ -78,6 +78,43 @@ def add_instance(
     return obj
 
 
+def adopt_template(
+    scene: bpy.types.Scene,
+    obj: bpy.types.Object,
+    prefab_guid: str,
+    relative: str,
+    layout: project.ProjectLayout,
+) -> bool:
+    """Turn an object dropped from the Asset Browser into a real instance, in place.
+
+    The same end state as :func:`add_instance` -- fresh identity, prefab reference, parented to the
+    document root, showing the prefab's mesh -- but applied to an object Blender already created
+    rather than to one made here. Sharing this is the point: there is one definition of what makes
+    an instance, so a dropped one and a placed one cannot drift apart.
+
+    Returns False when the prefab cannot be read, leaving ``obj`` an ordinary empty. That is the
+    honest outcome for a drop whose target is missing: something visible at the drop point, and
+    nothing written into the document.
+    """
+    path = layout.resolve(relative)
+    try:
+        with open(path, encoding="utf-8") as handle:
+            document = parse_document(handle.read(), path)
+    except (OSError, PrefabDocumentError):
+        return False
+
+    root = document.root()
+    if obj.name.startswith("Empty") or not obj.name:
+        obj.name = root.name or os.path.splitext(os.path.basename(relative))[0]
+
+    store.tag_object(obj, str(uuid.uuid4()), _components(root))
+    store.tag_prefab(obj, prefab_guid, relative)
+
+    _parent_to_document_root(obj, scene)
+    _show_prefab_mesh(obj, document, layout, path)
+    return True
+
+
 def _components(root) -> list:
     """The prefab root's components, for the panel to show.
 
@@ -116,11 +153,18 @@ def _assets_relative(path: str, layout: project.ProjectLayout) -> str | None:
 
 
 def _parent_to_document_root(obj: bpy.types.Object, scene: bpy.types.Scene) -> None:
-    """Parent the new object to the document's root, if the scene has one loaded.
+    """Parent the new object to the document's root, and put it in the root's collection.
 
     Every document has exactly one root, and an object with no parent would BE a second one --
-    which the reader refuses outright. So this is not tidiness; without it the first save produces
-    a document that will not open.
+    which the reader refuses outright. So the parenting is not tidiness; without it the first save
+    produces a document that will not open.
+
+    The COLLECTION matters too, and for a different reason. Blender links a dropped asset into
+    whatever collection is active, which in a default file is "Collection" -- while the document's
+    objects were linked into the master Scene Collection. The result is parented correctly and
+    still looks wrong: the Outliner groups by collection, so the new instance appears off on its
+    own beside the level instead of within it. Moving it beside the root is what makes the
+    Outliner show what the document says.
     """
     # `obj` is excluded: it has an identity and no parent yet, so counting it would make every
     # document look like it already had two roots and this would never parent anything.
@@ -134,10 +178,25 @@ def _parent_to_document_root(obj: bpy.types.Object, scene: bpy.types.Scene) -> N
     if len(roots) != 1:
         return
 
-    obj.parent = roots[0]
+    root = roots[0]
+    obj.parent = root
     # Identity, so the placement the user sees is the local transform that gets written -- the
     # same reason load sets it.
     obj.matrix_parent_inverse.identity()
+
+    _link_beside(obj, root)
+
+
+def _link_beside(obj: bpy.types.Object, root: bpy.types.Object) -> None:
+    """Move ``obj`` into exactly the collections ``root`` is in."""
+    targets = list(root.users_collection)
+    if not targets or set(targets) == set(obj.users_collection):
+        return
+
+    for collection in list(obj.users_collection):
+        collection.objects.unlink(obj)
+    for collection in targets:
+        collection.objects.link(obj)
 
 
 def _show_prefab_mesh(obj, document, layout, prefab_path) -> None:

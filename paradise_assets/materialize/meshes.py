@@ -50,6 +50,18 @@ class MeshLibrary:
         """How many distinct GLBs were imported (a failed import does not count)."""
         return sum(1 for value in self._by_path.values() if value is not None)
 
+    @property
+    def sources(self) -> set[str]:
+        """The GLBs this library actually read, absolute.
+
+        Reported so a caller can key a cache on what a load TOUCHED rather than on its own reading
+        of what the document references. The second one goes stale the day a component gains a
+        mesh field, and a stale key does not fail loudly -- it serves last week's artifact and
+        reports success. A failed import is excluded: nothing was read, so there is nothing for it
+        to invalidate on, and including it would peg the cache to a file that may never appear.
+        """
+        return {path for path, value in self._by_path.items() if value is not None}
+
     def collection_for(self, path: str) -> bpy.types.Collection | None:
         """The collection holding ``path``'s contents, importing it the first time.
 

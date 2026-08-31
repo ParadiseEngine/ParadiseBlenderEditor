@@ -358,11 +358,21 @@ def status() -> list[tuple[str, str]]:
 
     Resolves without logging, because the panel asks on every redraw.
     """
+    from .host import _preference
+
     problems: list[tuple[str, str]] = []
     if resolve_cli_command() is None:
         problems.append(("ERROR", "No Paradise CLI — set it in preferences"))
     if resolve_runtime_command() is None:
         problems.append(("ERROR", "No runtime host — set it in preferences"))
+
+    # Said out loud because the alternative is silent. The pipeline resolves PARADISE_KTX_PATH
+    # with File.Exists, so a path that is a directory -- or a typo, or a moved install -- is
+    # discarded rather than rejected, and the only symptom is a build that cannot encode a
+    # texture. A field that LOOKS filled in is worse than an empty one.
+    ktx = _preference("ktx_path").strip()
+    if ktx and not os.path.isfile(os.path.expanduser(ktx)):
+        problems.append(("ERROR", "KTX path is not a file — point it at ktx.exe itself"))
     return problems
 
 

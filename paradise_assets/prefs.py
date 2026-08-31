@@ -68,12 +68,17 @@ class ParadiseAssetsPreferences(AddonPreferences):
     )
 
     ktx_path: StringProperty(  # type: ignore[valid-type]
-        name="KTX-Software",
+        name="KTX Executable",
         description=(
-            "Directory holding the KTX tools, exported to the build as PARADISE_KTX_PATH. "
-            "Without it a build that needs to encode a texture cannot, and says so"
+            "The ktx binary itself (KTX-Software v5), e.g. .../KTX-Software/bin/ktx.exe — not "
+            "the directory holding it. Exported to the build as PARADISE_KTX_PATH"
         ),
-        subtype="DIR_PATH",
+        # FILE_PATH, and the distinction is not cosmetic: the pipeline resolves this with
+        # File.Exists on the value, so a DIRECTORY does not fail loudly -- it fails the check,
+        # falls through to a repo-local third_party/tools/KTX-Software and then to PATH, and if
+        # neither is there the build simply cannot encode a texture. Pointing this at a folder
+        # looks configured and behaves exactly like leaving it blank.
+        subtype="FILE_PATH",
         default="",
     )
 

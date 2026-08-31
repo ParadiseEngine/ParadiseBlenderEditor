@@ -4,7 +4,7 @@ Blender owns placement: names, parents, transforms, and which objects exist. The
 component payloads, which this addon does not edit and therefore takes from the file rather than
 from Blender -- so a component it has never heard of round-trips verbatim.
 
-Three rules guard the write, each against a failure that has a name:
+Four rules guard the write, each against a failure that has a name:
 
 * **Re-read and merge.** The document is re-read at save time and used as the base. A hand edit
   made since the load survives, because only what Blender owns is overwritten.
@@ -12,6 +12,10 @@ Three rules guard the write, each against a failure that has a name:
   silently drop whatever made the change.
 * **Atomic.** Written to a temp file beside the target and replaced, so an interrupted save
   cannot leave a half-written document as the source of truth.
+* **The addon is the guarantor.** Every saved entity carries a ``meta`` AND a ``transform``
+  component, and a parent must be an entity in the same document -- refused, not warned, because
+  since contract v6 nothing downstream re-checks or synthesizes placement: what the addon writes
+  is what the game loads.
 
 And one rule that is not about safety but about diffs:
 
@@ -77,6 +81,7 @@ def save_prefab(scene: bpy.types.Scene) -> SaveResult:
         base = prefab_document.loads(handle.read(), state.path)
 
     _refuse_duplicate_identities(scene)
+    _refuse_foreign_parents(scene)
 
     result = SaveResult()
     merged = _merge(scene, base, result)
@@ -124,6 +129,34 @@ def _refuse_duplicate_identities(scene: bpy.types.Scene) -> None:
         + "\n".join(lines)
         + "\n\nA duplicated object keeps the original's identity. Delete the copy, or use "
         "Add Prefab Instance to place a genuinely new one."
+    )
+
+
+def _refuse_foreign_parents(scene: bpy.types.Scene) -> None:
+    """Refuse to save when an entity is parented to something that is not an entity.
+
+    A parent link is recorded as ``meta.Parent`` naming another document object; a Blender-only
+    parent has no identity to name. The old behaviour warned and saved the object AS A ROOT --
+    which silently moved it, because Blender still showed the hierarchy the document no longer
+    had. Since contract v6 the parent chain ships to the runtime, so a link the document cannot
+    express is a link the game never sees: refusing names the objects and lets the author decide
+    in a second.
+    """
+    entities = {obj.name for obj in _document_objects(scene) if store.guid_of(obj) is not None}
+    violations = [
+        f"  '{obj.name}' is parented to '{obj.parent.name}'"
+        for obj in _document_objects(scene)
+        if obj.parent is not None and obj.parent.name not in entities
+    ]
+
+    if not violations:
+        return
+
+    raise SaveError(
+        "a parent must be a document object too, or the game never sees the link:\n"
+        + "\n".join(violations)
+        + "\n\nParent these to a document object, or clear the parent (Alt+P, Clear and Keep "
+        "Transform)."
     )
 
 
@@ -181,14 +214,9 @@ def _object_entry(obj: bpy.types.Object, original: PrefabObject | None, result: 
         reference_guid, reference_path = store.prefab_of(obj)
         entry.prefab = AssetReference(reference_guid, reference_path)
 
+    # A foreign parent was refused before the merge began (_refuse_foreign_parents), so a parent
+    # here always has an identity to record.
     parent_guid = store.guid_of(obj.parent) if obj.parent is not None else None
-    if obj.parent is not None and parent_guid is None:
-        # Parented to something the document does not contain. Recording it is impossible and
-        # dropping it silently would move the object, so say so and treat it as a root.
-        result.warnings.append(
-            f"{obj.name} is parented to '{obj.parent.name}', which is not a document object; "
-            "saved as a root object"
-        )
 
     _write_meta(entry, guid, obj.name, parent_guid)
     _write_transform(entry, obj, original, result)
@@ -220,13 +248,13 @@ def _write_transform(
         if _unchanged(stored.data, (position, rotation, scale)):
             return   # untouched: keep the authored numbers verbatim
         result.moved += 1
-    elif _unchanged({}, (position, rotation, scale)):
-        # The document gave this object no transform at all, and it is still at the identity.
-        # WRITING one would add a component the author never had -- turning a save of an
-        # untouched scene into a diff on every such object.
-        return
-    elif original is not None:
+    elif original is not None and not _unchanged({}, (position, rotation, scale)):
         result.moved += 1
+
+    # An object the document gave no transform GETS one now, even at the identity: every saved
+    # entity carries a transform, because since contract v6 nothing downstream synthesizes
+    # placement -- an absent component would be whatever each loader decides it means. The
+    # one-time diff on a previously transform-less object is the rule taking effect.
 
     component = entry.component(well_known.TRANSFORM_ID)
     if component is None:

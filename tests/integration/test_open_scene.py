@@ -176,6 +176,28 @@ def main() -> int:
         except save.SaveError as error:
             check("changed on disk" in str(error), "a stale document refuses the save")
 
+    print("\n== a parent that is not an entity refuses the save ==")
+    with tempfile.TemporaryDirectory() as work:
+        copy = os.path.join(work, "parented.prefab")
+        shutil.copy2(documents[0], copy)
+        open_document(copy, layout)
+
+        # A Blender-only helper object, the way an author's rig or guide empty appears: no
+        # identity, so a parent link to it has nothing to record.
+        helper = bpy.data.objects.new("RigHelper", None)
+        bpy.context.scene.collection.objects.link(helper)
+        entity = next(o for o in bpy.context.scene.collection.all_objects if store.guid_of(o))
+        entity.parent = helper
+
+        try:
+            save.save_prefab(bpy.context.scene)
+            check(False, "a foreign parent refuses the save")
+        except save.SaveError as error:
+            check(
+                "RigHelper" in str(error) and entity.name in str(error),
+                "a foreign parent refuses the save, naming both objects",
+            )
+
     print("\n== an unrecognised component survives the round trip ==")
     with tempfile.TemporaryDirectory() as work:
         copy = os.path.join(work, "unknown.prefab")
@@ -188,6 +210,11 @@ def main() -> int:
                 'type = "meta"\n'
                 'Guid = "11111111-2222-4333-8444-555555555555"\n'
                 'Name = "thing"\n'
+                "\n[[objects.components]]\n"
+                f'id = "{well_known.TRANSFORM_ID}"\ntype = "transform"\n'
+                'Position = [0.0, 0.0, 0.0]\n'
+                'Rotation = [0.0, 0.0, 0.0, 1.0]\n'
+                'Scale = [1.0, 1.0, 1.0]\n'
                 "\n[[objects.components]]\n"
                 'id = "99999999-8888-4777-8666-555555555555"\n'
                 'type = "Nobody.Has.Heard.Of.This"\n'
@@ -222,9 +249,15 @@ def main() -> int:
                 "schema_version = 1\n"
                 "\n[[objects]]\n\n[[objects.components]]\n"
                 f'id = "{well_known.META_ID}"\ntype = "meta"\nGuid = "{root_local}"\nName = "Post"\n'
+                "\n[[objects.components]]\n"
+                f'id = "{well_known.TRANSFORM_ID}"\ntype = "transform"\n'
+                'Position = [0.0, 0.0, 0.0]\nRotation = [0.0, 0.0, 0.0, 1.0]\nScale = [1.0, 1.0, 1.0]\n'
                 "\n[[objects]]\n\n[[objects.components]]\n"
                 f'id = "{well_known.META_ID}"\ntype = "meta"\nGuid = "{child_local}"\n'
                 f'Name = "Bulb"\nParent = "{root_local}"\n'
+                "\n[[objects.components]]\n"
+                f'id = "{well_known.TRANSFORM_ID}"\ntype = "transform"\n'
+                'Position = [0.0, 0.0, 0.0]\nRotation = [0.0, 0.0, 0.0, 1.0]\nScale = [1.0, 1.0, 1.0]\n'
             )
 
         scene_path = os.path.join(scenes_dir, "lit.prefab")
@@ -236,6 +269,9 @@ def main() -> int:
                 "\n[[objects.components]]\n"
                 f'id = "{well_known.META_ID}"\ntype = "meta"\n'
                 f'Guid = "{instance_guid}"\nName = "Lamp_03"\n'
+                "\n[[objects.components]]\n"
+                f'id = "{well_known.TRANSFORM_ID}"\ntype = "transform"\n'
+                'Position = [0.0, 0.0, 0.0]\nRotation = [0.0, 0.0, 0.0, 1.0]\nScale = [1.0, 1.0, 1.0]\n'
             )
 
         original = open(scene_path, "rb").read()

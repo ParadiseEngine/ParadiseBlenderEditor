@@ -183,22 +183,22 @@ class TestInlineTables:
 class TestReferenceShape:
     """The predicate that lets the reader recover which form a table was written in."""
 
-    def test_empty_is_reference_shaped(self):
-        assert ct.is_reference_shaped({})
+    def test_empty_is_written_inline(self):
+        assert ct.is_written_inline({})
 
-    def test_exactly_guid_and_path_is_reference_shaped(self):
-        assert ct.is_reference_shaped({"guid": "a", "path": "b"})
+    def test_exactly_guid_and_path_is_written_inline(self):
+        assert ct.is_written_inline({"guid": "a", "path": "b"})
 
     def test_order_does_not_matter_to_the_predicate(self):
-        assert ct.is_reference_shaped({"path": "b", "guid": "a"})
+        assert ct.is_written_inline({"path": "b", "guid": "a"})
 
     def test_other_shapes_are_not(self):
-        assert not ct.is_reference_shaped({"guid": "a"})
-        assert not ct.is_reference_shaped({"guid": "a", "path": "b", "extra": 1})
-        assert not ct.is_reference_shaped({"a": 1, "b": 2})
+        assert not ct.is_written_inline({"guid": "a"})
+        assert not ct.is_written_inline({"guid": "a", "path": "b", "extra": 1})
+        assert not ct.is_written_inline({"a": 1, "b": 2})
 
     def test_non_string_values_are_not(self):
-        assert not ct.is_reference_shaped({"guid": 1, "path": "b"})
+        assert not ct.is_written_inline({"guid": 1, "path": "b"})
 
     def test_restore_recovers_inline_tables_from_a_parsed_document(self):
         import tomllib

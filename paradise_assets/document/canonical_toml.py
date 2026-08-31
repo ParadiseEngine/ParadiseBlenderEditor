@@ -34,9 +34,11 @@ The spec, normative (numbering follows the C# doc so the two can be read side by
     is how a null element inside an array is spelled. Inline tables never nest another table.
 
     WRITING picks the form by TYPE, so a caller that builds a model controls what comes out.
-    READING cannot: TOML gives ``x = { … }`` and ``[x]`` the same parse, so the reader restores
-    the type with one exact predicate -- a table is inline iff it is empty or has exactly the two
-    string keys ``guid`` and ``path`` (:func:`is_reference_shaped`). That shape is therefore
+    READING restores it from CONTENT, not from the parse: our tomllib erases the inline/header
+    distinction entirely (the C# side could ask Tomlyn, but a rule only one side can compute is
+    no rule at all -- both readers must rebuild the same model from the same bytes). So a table
+    is inline iff it is empty or has exactly the two string
+    keys ``guid`` and ``path`` (:func:`is_written_inline`). That shape is therefore
     RESERVED for asset references. Exact, because a vaguer rule ("all its values are scalars")
     would have this and the C# implementation agreeing until the first document where they read it
     differently, surfacing as a ``scene-check`` byte failure with nothing pointing at formatting.
@@ -63,7 +65,7 @@ __all__ = [
     "format_float",
     "format_key",
     "format_value",
-    "is_reference_shaped",
+    "is_written_inline",
     "restore_inline_tables",
 ]
 
@@ -87,8 +89,9 @@ class InlineTable(dict):
     __slots__ = ()
 
 
-def is_reference_shaped(table) -> bool:
-    """Whether a parsed table is an asset reference, and so was written inline.
+def is_written_inline(table) -> bool:
+    """Whether a parsed table was written inline -- i.e. whether it is an asset reference,
+    the one thing this format writes inline at value position. Decision record: engine issue #187.
 
     Exact by design -- see rule 11. Empty, or exactly ``guid`` and ``path``, both strings.
     """
@@ -125,7 +128,7 @@ def restore_inline_tables(value):
     if any(isinstance(member, list) and _holds_tables(member) for member in restored.values()):
         return restored
 
-    return InlineTable(restored) if is_reference_shaped(restored) else restored
+    return InlineTable(restored) if is_written_inline(restored) else restored
 
 
 def _holds_tables(elements) -> bool:

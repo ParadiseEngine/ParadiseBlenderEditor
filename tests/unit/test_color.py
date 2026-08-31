@@ -51,19 +51,22 @@ class TestToByte:
 
 
 class TestColor32:
-    def test_channels_expand_back_to_byte_over_255(self):
+    def test_json_is_the_packed_bytes_as_hex(self):
         color = Color32.from_rgba(8 / 255, 0.0, 0.0, 1.0)
-        assert color.to_json() == {"r": pytest.approx(8 / 255), "g": 0.0, "b": 0.0, "a": 1.0}
+        assert color.to_json() == "#080000FF"
 
-    def test_json_key_order_matches_the_converter(self):
-        assert list(Color32.from_rgba(1, 1, 1).to_json()) == ["r", "g", "b", "a"]
+    def test_alpha_is_always_written(self):
+        """Fixed nine characters, so a reader never has to guess whether a short form meant
+        opaque or malformed."""
+        assert Color32.from_rgba(1, 1, 1).to_json() == "#FFFFFFFF"
+        assert len(Color32.from_rgba(0, 0, 0, 0).to_json()) == 9
 
     def test_from_srgb_linearizes_rgb_but_not_alpha(self):
         """Alpha is coverage, not light -- applying a transfer function to it would make
         every semi-transparent material the wrong opacity."""
         color = Color32.from_srgb(0.5, 0.5, 0.5, 0.5)
-        assert color.to_json()["r"] == pytest.approx(to_byte(srgb_to_linear(0.5)) / 255)
-        assert color.to_json()["a"] == pytest.approx(128 / 255)
+        expected_rgb = to_byte(srgb_to_linear(0.5))
+        assert color.to_json() == f"#{expected_rgb:02X}{expected_rgb:02X}{expected_rgb:02X}80"
 
     def test_precision_loss_is_the_contract(self):
         """Two distinct floats that quantize to the same byte are equal in the contract."""

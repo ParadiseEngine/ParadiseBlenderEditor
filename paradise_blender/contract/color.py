@@ -59,8 +59,8 @@ class Color32:
     """A contract color: four channels quantized to bytes.
 
     Constructed from linear float channels via :meth:`from_rgba`; serialized by
-    :meth:`to_json` as ``{"r", "g", "b", "a"}`` with each channel back-expanded to
-    ``byte / 255`` -- exactly what ``Color32Converter`` writes.
+    :meth:`to_json` as ``"#RRGGBBAA"``, which is the packed bytes spelled directly rather than
+    back-expanded to ``byte / 255`` -- exactly what ``Color32Converter`` writes.
     """
 
     __slots__ = ("_bytes",)
@@ -94,8 +94,24 @@ class Color32:
     def a(self) -> float:
         return f32(self._bytes[3] / 255.0)
 
-    def to_json(self) -> dict[str, float]:
-        return {"r": self.r, "g": self.g, "b": self.b, "a": self.a}
+    def to_json(self) -> str:
+        """``"#RRGGBBAA"`` -- the spelling of the 32 bits this already is.
+
+        The four ``byte / 255`` floats it used to write were an exact value wearing a lossy
+        costume: ``0.078431375, 0.12156863, 0.3137255, 1.0`` is ``#141F50FF`` and nothing else.
+        The hex form is shorter, exact, and reads as a colour.
+
+        It also removes a formatting problem rather than adding one. TOML parses ``x = { ... }``
+        and ``[x]`` identically, so a table's inline-ness cannot be recovered from the document --
+        which is why the canonical writer RESERVES the exact ``{guid, path}`` shape and rebuilds
+        the form from it, a predicate this side and the C# one must spell identically forever. A
+        colour written as an object needed a SECOND such reservation. A string needs none: it is a
+        scalar both writers already agree on, and nothing has to detect it.
+
+        Alpha is always written, so the literal is a fixed nine characters and no reader has to
+        guess whether a short form meant opaque or malformed. Mirrors ``Color32Converter``.
+        """
+        return "#%02X%02X%02X%02X" % self._bytes
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, Color32) and other._bytes == self._bytes

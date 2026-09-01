@@ -18,7 +18,9 @@ def test_cli_csproj_does_not_rebuild_on_every_verb(tmp_path, monkeypatch):
     project = tmp_path / "Paradise.Cli.csproj"
     project.write_text("<Project />\n")
     monkeypatch.setattr(host.shutil, "which", lambda name: "/opt/homebrew/bin/dotnet")
-    monkeypatch.setattr(host, "_preference", lambda name, default="": str(project) if name == "cli" else default)
+    monkeypatch.setattr(
+        host, "_preference", lambda name, default="": str(project) if name == "cli" else default
+    )
 
     argv = host.resolve_cli_command()
 

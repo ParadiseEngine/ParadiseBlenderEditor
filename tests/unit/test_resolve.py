@@ -119,7 +119,11 @@ class TestSingleObject:
         # Scale given, Position not -- so Position must survive from the prefab, or every instance
         # would have to restate every field it did not want to change.
         obj = instance(
-            PrefabComponent(well_known.TRANSFORM_ID, well_known.TRANSFORM_TYPE, {well_known.SCALE: [1.0, 0.08, 4.0]})
+            PrefabComponent(
+                well_known.TRANSFORM_ID,
+                well_known.TRANSFORM_TYPE,
+                {well_known.SCALE: [1.0, 0.08, 4.0]},
+            )
         )
 
         transform = expand(single_object_prefab(), obj).document.objects[0].component(well_known.TRANSFORM_ID)
@@ -238,7 +242,10 @@ class TestMultipleObjects:
                 PrefabComponent(
                     well_known.META_ID,
                     well_known.META_TYPE,
-                    {well_known.PARENT: INSTANCE_GUID, well_known.TARGET: "99999999-8888-4777-8666-555555555555"},
+                    {
+                        well_known.PARENT: INSTANCE_GUID,
+                        well_known.TARGET: "99999999-8888-4777-8666-555555555555",
+                    },
                 )
             ]
         )

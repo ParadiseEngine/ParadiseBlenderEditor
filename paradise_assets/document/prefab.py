@@ -125,7 +125,7 @@ class PrefabObject:
         return value if isinstance(value, str) and value else None
 
     @staticmethod
-    def with_meta(guid: str, name: str | None = None, parent: str | None = None) -> "PrefabObject":
+    def with_meta(guid: str, name: str | None = None, parent: str | None = None) -> PrefabObject:
         """An object carrying just a meta component -- the shape every caller needs."""
         data: dict = {well_known.GUID: guid}
         if name is not None:
@@ -236,7 +236,10 @@ def loads(text: str, source: str = "<document>") -> PrefabDocument:
             continue
 
         if obj.guid is None:
-            raise fail(f"has an object at index {index} with no '{well_known.META_TYPE}' component carrying a '{well_known.GUID}'")
+            raise fail(
+                f"has an object at index {index} with no '{well_known.META_TYPE}' "
+                f"component carrying a '{well_known.GUID}'"
+            )
         if obj.guid in parents:
             raise fail(f"declares guid '{obj.guid}' twice -- identities must be unique per document")
 

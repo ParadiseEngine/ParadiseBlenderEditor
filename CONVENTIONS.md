@@ -181,12 +181,14 @@ bright, which is why `tests/unit/test_sky.py` pins it.
 Some `[Authored]` fields are not typed in: they point at one of Blender's own objects, and the
 exporter bakes what that object IS into the field's own numbers. The engine calls this
 `[AuthoredByHost(kind)]`, and the kinds are a closed set (`Paradise.Authoring`'s
-`AuthoredBySources`): shape, mesh, sprite, light, asset, **transform**.
+`AuthoredBySources`): shape, mesh, sprite, light, camera, asset, entity, parent, id, name,
+local TRS, **transform**.
 
-**This host implements exactly one of them: `transform`.** The others are still reported in the
-Components panel as *"baked from …; not authored in Blender yet"* — colliders, meshes and lights
-reach the export through their own dedicated Blender-native paths instead, not through this
-mechanism.
+This host implements all of them except `node` (not an engine kind). Record kinds (transform,
+shape, light, camera) are an object slot; leaf kinds (mesh, entity, sprite, asset) write a
+scalar; self kinds (id, name, parent, local TRS) have no picker — they are read off the entity
+being exported. Engine components this host already writes by other paths (renderable, light,
+meta, transform, materials) stay off the Add menu.
 
 A `transform` reference is an **object slot**: you pick an object, and you place it with Blender's
 own move/rotate gizmo. That is the entire point — a destination you can see is a destination you

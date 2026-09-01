@@ -28,22 +28,21 @@ The wire format, stated once (reference: ``AuthoredEntityCore.ValueOf``):
   A numeric segment re-nests into a JSON array rather than an object, which is the only place
   the two halves of this module need to agree about a spelling.
 * Fields (or whole components) with ``authoredBy`` are host-object *references*: authored by
-  pointing at one of the host's own objects, exported as the value baked out of it. This host
-  implements FIVE kinds, in two families that differ in the SHAPE of what comes back:
+  pointing at one of the host's own objects (or read off THIS object), exported as the value
+  baked out of it. Three families, which differ in the SHAPE of what comes back:
 
   - RECORD references fill the leaves a record declares under them.
-    :data:`HOST_TRANSFORM` bakes where the object stands (``bake_transform_refs``);
-    :data:`HOST_SHAPE` bakes the collider drawn on it (``bake_shape_refs``).
+    :data:`HOST_TRANSFORM` bakes where the object stands, :data:`HOST_SHAPE` the collider drawn
+    on it, :data:`HOST_LIGHT` the lamp, :data:`HOST_CAMERA` the lens.
   - LEAF references ARE the value, written at the reference's own path (``bake_leaf_refs``).
-    :data:`HOST_MESH` bakes the object's geometry as an exported GLB, :data:`HOST_ENTITY` bakes
-    the object's NAME, and :data:`HOST_ASSET` is a file browser rather than an object slot.
+    :data:`HOST_MESH` bakes geometry as a GLB, :data:`HOST_ENTITY` the object's GUID,
+    :data:`HOST_SPRITE` the spritesheet field, and :data:`HOST_ASSET` is a file browser.
+  - SELF references have no picker: :data:`HOST_ID`, :data:`HOST_NAME`, :data:`HOST_PARENT`
+    and the local TRS kinds are read off the entity being exported.
 
-  Four of the five are the same picker; only what the exporter takes off what you point at
-  differs. Every other kind (``sprite``, ``light``, ``node``) is still reported and skipped, which
-  the reader treats as unauthored; :func:`flatten` surfaces them so the UI can say so instead of
-  drawing a control that exports nothing. An ``authoredBy`` LIST stays a reference regardless of
-  kind: a row editor over a collider's shapes would be a second, lying copy of the pointer list
-  the entity already holds.
+  An ``authoredBy`` LIST stays a reference regardless of kind: a row editor over a collider's
+  shapes would be a second, lying copy of the pointer list the entity already holds. A kind
+  this host does not implement (``node``) is still reported and skipped.
 
 No ``bpy`` import: this module is pure data and is unit-tested standalone.
 """
@@ -122,14 +121,11 @@ TYPE_VECTOR3 = "vector3"
 TYPE_QUATERNION = "quaternion"
 TYPE_COLOR = "color"
 
-#: ``authoredBy`` kinds. The engine's closed set is shape/mesh/sprite/light/asset/transform
-#: (``Paradise.Authoring``'s ``AuthoredBySources``); this host implements exactly one of them.
+#: ``authoredBy`` kinds. Closed set is ``Paradise.Authoring``'s ``AuthoredBySources``.
 HOST_TRANSFORM = "transform"
-
-#: A reference to a COLLISION SHAPE -- the engine's ``AuthoredBySources.Shape``. Authored as an
-#: object slot exactly as a transform is; what differs is that the exporter bakes the collider
-#: drawn on the object rather than where the object stands.
 HOST_SHAPE = "shape"
+HOST_LIGHT = "light"
+HOST_CAMERA = "camera"
 
 #: A reference to a RENDERABLE MESH. An object slot again, and the exporter writes the referenced
 #: object's mesh out as a GLB and bakes the data-relative field naming it.
@@ -138,6 +134,9 @@ HOST_SHAPE = "shape"
 #: own mesh, and the slot exists so that "this draws" is a thing an author says rather than a thing
 #: an exporter infers from the object having mesh data.
 HOST_MESH = "mesh"
+
+#: A spritesheet, baked as a data-relative field under ``sprites/``. Object slot like a mesh.
+HOST_SPRITE = "sprite"
 
 #: A reference to ANOTHER OBJECT in the scene, baked as its NAME -- the one thing every exported
 #: object carries. The odd kind: what travels is the reference itself rather than a value read off
@@ -148,11 +147,38 @@ HOST_ENTITY = "entity"
 #: field's declared extensions, storing the data-relative field the runtime resolves.
 HOST_ASSET = "asset"
 
-#: The kinds whose reference IS the value -- one scalar field, filled in place, rather than a
-#: record whose declared leaves an exporter fills. What separates them is not the picker but the
-#: SHAPE of what comes back: a pose is four numbers a record takes some of, a mesh path is a
-#: string.
-HOST_LEAF_KINDS = (HOST_MESH, HOST_ENTITY, HOST_ASSET)
+#: The host object's own identity, name, parent and local pose -- no picker, baked from THIS
+#: object at export.
+HOST_ID = "id"
+HOST_NAME = "name"
+HOST_PARENT = "parent"
+HOST_LOCAL_POSITION = "local-position"
+HOST_LOCAL_ROTATION = "local-rotation"
+HOST_LOCAL_SCALE = "local-scale"
+
+#: Record kinds: pick an object, fill the leaves a record declared under the reference.
+HOST_RECORD_KINDS = (HOST_TRANSFORM, HOST_SHAPE, HOST_LIGHT, HOST_CAMERA)
+
+#: Leaf kinds: the reference IS the value, written at the reference's own path.
+HOST_LEAF_KINDS = (HOST_MESH, HOST_ENTITY, HOST_ASSET, HOST_SPRITE)
+
+#: Self kinds: no slot, read off the entity being exported.
+HOST_SELF_KINDS = (
+    HOST_ID,
+    HOST_NAME,
+    HOST_PARENT,
+    HOST_LOCAL_POSITION,
+    HOST_LOCAL_ROTATION,
+    HOST_LOCAL_SCALE,
+)
+
+#: Every kind this host actually bakes. A kind outside the set is still reported so the panel
+#: can say so instead of drawing a control that exports nothing.
+HOST_IMPLEMENTED_KINDS = HOST_RECORD_KINDS + HOST_LEAF_KINDS + HOST_SELF_KINDS
+
+#: Storage path for a component-level host reference -- the whole record is authored by pointing
+#: at one object. Matches the Godot host's ``/Source`` suffix.
+HOST_SOURCE_PATH = "Source"
 
 #: Pose leaves a ``transform`` reference can bake into, by NAME. A record declares whichever
 #: parts of the pose it means and an exporter fills those, ignoring the rest -- which is what
@@ -469,9 +495,9 @@ class HostRef:
 
     ``kind`` names what the object IS (see ``HOST_TRANSFORM`` and the engine's
     ``AuthoredBySources``). Whether THIS host can author one depends on the kind:
-    :data:`HOST_TRANSFORM` is authorable here -- an object slot, baked at export -- and every
-    other kind is still reported so the UI can say what is missing and why, instead of silently
-    exporting a component with holes.
+    record and leaf kinds are object (or file) slots baked at export; self kinds are read
+    off the entity being exported, with no picker. A kind outside
+    :data:`HOST_IMPLEMENTED_KINDS` is still reported so the UI can say what is missing.
 
     ``leaves`` is the field schemas the reference fills, for an authorable kind: the record
     declares which parts of the pose it means, and that list IS the contract between the picker
@@ -509,25 +535,28 @@ class HostRef:
     def is_authorable(self) -> bool:
         """Whether this host can actually author the reference, rather than only report it.
 
-        FIVE KINDS, in two families. Four are an object slot and differ only in what the exporter
-        bakes out of what you point at: :data:`HOST_TRANSFORM` takes where the object STANDS,
-        :data:`HOST_SHAPE` the collider drawn ON it, :data:`HOST_MESH` the geometry exported FROM
-        it, and :data:`HOST_ENTITY` its NAME. The fifth, :data:`HOST_ASSET`, is a file browser.
+        Three families. Record kinds (transform, shape, light, camera) are an object slot and
+        differ only in what the exporter bakes out of what you point at. Leaf kinds (mesh,
+        entity, sprite, asset) ARE the value, written at the reference's own path. Self kinds
+        (id, name, parent, local TRS) have no slot: they are read off the entity being exported.
 
-        The picker being identical across four of them is the point -- a kind is a statement about
-        what the object IS, and a host implements as many of them as it can rather than one.
-
-        What separates the families is not the picker but the shape of the answer: a record
-        reference has LEAVES to fill, a leaf reference IS the value. ``leaf_type`` is set for
-        exactly the second, and is what this checks.
+        A list of references is never authorable here -- a row editor over a pointer list would
+        be a second, lying copy of the list the entity already holds.
         """
         if self.is_list:
-            # A list of references is a row editor over a pointer list, which this host does not
-            # draw on an entity -- see the arrays note in build_payload.
             return False
-        if self.kind in HOST_LEAF_KINDS:
+        if self.kind in HOST_SELF_KINDS or self.kind in HOST_LEAF_KINDS:
             return self.leaf_type is not None
-        return self.kind in (HOST_TRANSFORM, HOST_SHAPE) and bool(self.leaves)
+        return self.kind in HOST_RECORD_KINDS and bool(self.leaves)
+
+    @property
+    def stores_slot(self) -> bool:
+        """Whether enabling the component writes a picker key (object name or file path).
+
+        Self kinds bake from THIS object and must not grow a stored name that can disagree
+        with it.
+        """
+        return self.is_authorable and self.kind not in HOST_SELF_KINDS
 
 
 @dataclass
@@ -666,20 +695,28 @@ def _walk_field(
         # whatever names the record declared, so the record itself says which parts of a shape it
         # means -- take them all and let the bake fill the ones it has.
         children = tuple(field.fields or ())
-        leaves = (
-            tuple(child for child in children if child.name in TRANSFORM_FIELDS)
-            if field.authored_by == HOST_TRANSFORM
-            else children if field.authored_by == HOST_SHAPE
-            else ()
-        )
+        if field.authored_by == HOST_TRANSFORM:
+            # A pose has a closed vocabulary this contract defines (TRANSFORM_FIELDS), and a
+            # record is free to carry others a host would only be inventing meaning for.
+            leaves = tuple(child for child in children if child.name in TRANSFORM_FIELDS)
+        elif field.authored_by in HOST_RECORD_KINDS:
+            # Light, camera, shape: the exporter bakes a whole record and writes back whatever
+            # names the referencing record declared.
+            leaves = children
+        else:
+            leaves = ()
         plan.hosts.append(HostRef(
             path=path,
             kind=field.authored_by,
             leaves=leaves,
-            # A LEAF reference has no leaves to fill because it IS one: the mesh path, the target's
-            # name, the asset field. Carrying its type is what lets build_payload write the baked
-            # value at the reference's own path instead of under it.
-            leaf_type=field.type if field.authored_by in HOST_LEAF_KINDS else None,
+            # A LEAF or SELF reference has no leaves to fill because it IS one: the mesh path,
+            # the identity, the local translation. Carrying its type is what lets build_payload
+            # write the baked value at the reference's own path instead of under it.
+            leaf_type=(
+                field.type
+                if field.authored_by in HOST_LEAF_KINDS or field.authored_by in HOST_SELF_KINDS
+                else None
+            ),
             asset_kinds=tuple(field.asset_kinds or ()),
         ))
         return

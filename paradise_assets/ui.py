@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import os
 
-import bpy
 from bpy.types import Panel
 
 from . import component_ops, edits, watch
@@ -190,7 +189,9 @@ class PARADISE_ASSETS_PT_object(_AssetsPanel, Panel):
         if pending:
             row = layout.box().row()
             row.label(text=f"{edits.count(obj)} unsaved field edit(s)", icon="GREASEPENCIL")
-            row.operator("paradise_assets.revert_component_field", text="", icon="LOOP_BACK").component_id = ""
+            row.operator(
+                "paradise_assets.revert_component_field", text="", icon="LOOP_BACK"
+            ).component_id = ""
 
         if not vocabulary:
             # Not a failure: the dump is a build product of the GAME, and a fresh clone has none.

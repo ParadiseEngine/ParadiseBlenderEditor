@@ -32,9 +32,9 @@ import bpy
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-import paradise_assets  # noqa: E402
-from paradise_assets import browser, catalogue  # noqa: E402
-from paradise_assets.document import project  # noqa: E402
+import paradise_assets
+from paradise_assets import browser, catalogue
+from paradise_assets.document import project
 
 DEFAULT_PROJECT = r"C:\proj\paradise-workspace\shiningpie"
 
@@ -181,7 +181,10 @@ def registration() -> None:
     # double-registered class only shows up on the second pass.
     paradise_assets.register()
     paradise_assets.unregister()
-    check(browser._draw not in menu._dyn_ui_initialize(), "a second register/unregister leaves nothing behind")
+    check(
+        browser._draw not in menu._dyn_ui_initialize(),
+        "a second register/unregister leaves nothing behind",
+    )
 
 
 def main() -> int:

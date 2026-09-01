@@ -40,7 +40,8 @@ import tempfile
 import bpy
 
 from .. import edits as component_edits
-from ..document import axes, prefab as prefab_document, well_known
+from ..document import axes, well_known
+from ..document import prefab as prefab_document
 from ..document.asset_reference import AssetReference
 from ..document.prefab import PrefabComponent, PrefabDocument, PrefabObject
 from . import store
@@ -349,14 +350,14 @@ def _unchanged(stored: dict, computed) -> bool:
         authored = numbers(key, 3, default)
         if authored is None:
             return False
-        for x, y in zip(authored, computed[index]):
+        for x, y in zip(authored, computed[index], strict=True):
             if abs(x - y) > _EPSILON * max(abs(x), 1.0):
                 return False
 
     rotation = numbers(well_known.ROTATION, 4, (0.0, 0.0, 0.0, 1.0))
     if rotation is None:
         return False
-    dot = abs(sum(x * y for x, y in zip(rotation, computed[1])))
+    dot = abs(sum(x * y for x, y in zip(rotation, computed[1], strict=True)))
     return abs(1.0 - dot) <= _EPSILON
 
 
@@ -380,15 +381,15 @@ def _write_atomic(path: str, text: str) -> None:
     the system temp directory can land on another volume and degrade to a copy.
     """
     directory = os.path.dirname(path)
-    handle = tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", newline="", dir=directory, delete=False, suffix=".tmp"
-    )
+    handle = None
     try:
-        with handle:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", newline="", dir=directory, delete=False, suffix=".tmp"
+        ) as handle:
             handle.write(text)
         os.replace(handle.name, path)
     except BaseException:
         with_suppress = getattr(os, "unlink", None)
-        if with_suppress is not None and os.path.exists(handle.name):
+        if handle is not None and with_suppress is not None and os.path.exists(handle.name):
             os.unlink(handle.name)
         raise

@@ -573,9 +573,15 @@ class PARADISE_PT_entity_components(_ParadisePanel, Panel):
         # picker below has nothing to bind to and simply does not appear.
         missing = [
             item.path
-            for item in [*fields, *[h for h in hosts if h.is_authorable]]
+            for item in [*fields, *[h for h in hosts if h.stores_slot]]
             if authored.value_key(component.id, item.path) not in obj
         ]
+        if component.authored_by in (
+            *contract_authoring.HOST_RECORD_KINDS,
+            *contract_authoring.HOST_LEAF_KINDS,
+        ):
+            if authored.value_key(component.id, contract_authoring.HOST_SOURCE_PATH) not in obj:
+                missing.append(contract_authoring.HOST_SOURCE_PATH)
         if missing:
             # The schema grew since this component was enabled. Draw() may not write ID data,
             # so the fields are created by an operator click rather than silently here.
@@ -606,7 +612,12 @@ class PARADISE_PT_entity_components(_ParadisePanel, Panel):
 
         for host in hosts:
             key = authored.value_key(component.id, host.path)
-            if host.is_authorable and key in obj:
+            if host.kind in contract_authoring.HOST_SELF_KINDS and host.is_authorable:
+                row = box.row()
+                row.enabled = False
+                row.label(text=f"{host.path} — baked from this object", icon="DECORATE_LINKED")
+                continue
+            if host.stores_slot and key in obj:
                 if host.kind == contract_authoring.HOST_ASSET:
                     # A FILE, not an object: there is nothing in the scene to point at. Drawn as
                     # the plain field it is — the extensions the schema declares are enforced at
@@ -617,16 +628,24 @@ class PARADISE_PT_entity_components(_ParadisePanel, Panel):
                     box.prop(obj, f'["{key}"]', text=label)
                     continue
                 # An OBJECT SLOT, not a text field. You point at the object and move it with
-                # Blender's own gizmo; the exporter bakes what the KIND says to take from it —
-                # where it stands, the collider drawn on it, its geometry, or its name. Nothing is
-                # mirrored into this panel, because the reference IS the authoring surface, and a
-                # second copy of the numbers here would be one that can disagree with the object.
+                # Blender's own gizmo; the exporter bakes what the KIND says to take from it.
                 box.prop_search(obj, f'["{key}"]', bpy.data, "objects", text=host.path)
                 continue
             row = box.row()
             row.enabled = False
             row.label(text=f"{host.path} — baked from {host.kind}; not authored in Blender yet",
                       icon="DECORATE_LINKED")
+
+        if component.authored_by in (
+            *contract_authoring.HOST_RECORD_KINDS,
+            *contract_authoring.HOST_LEAF_KINDS,
+        ):
+            source_key = authored.value_key(component.id, contract_authoring.HOST_SOURCE_PATH)
+            if source_key in obj:
+                box.prop_search(
+                    obj, f'["{source_key}"]', bpy.data, "objects",
+                    text=f"Source ({component.authored_by})",
+                )
 
         # Authorable lists are editable in CONFIG DOCUMENTS but not on an entity: an entity's key
         # budget is tighter, and exporting rows from here would change what every scene emits.

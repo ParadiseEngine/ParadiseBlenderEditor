@@ -8,6 +8,7 @@ truth, including the ones made to see what something looks like.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import subprocess
 
@@ -326,10 +327,8 @@ class PARADISE_ASSETS_OT_refresh_catalogue(Operator):
             bpy.ops.wm.save_userpref()
 
         # So it appears without restarting Blender.
-        try:
+        with contextlib.suppress(RuntimeError):
             bpy.ops.asset.library_refresh()
-        except RuntimeError:
-            pass
 
         self.report(
             {"INFO"},

@@ -111,7 +111,7 @@ class Color32:
         Alpha is always written, so the literal is a fixed nine characters and no reader has to
         guess whether a short form meant opaque or malformed. Mirrors ``Color32Converter``.
         """
-        return "#%02X%02X%02X%02X" % self._bytes
+        return "#{:02X}{:02X}{:02X}{:02X}".format(*self._bytes)
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, Color32) and other._bytes == self._bytes

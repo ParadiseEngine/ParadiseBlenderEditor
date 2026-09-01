@@ -27,7 +27,8 @@ import bpy
 from mathutils import Vector
 
 from .document import project
-from .document.prefab import PrefabDocumentError, loads as parse_document
+from .document.prefab import PrefabDocumentError
+from .document.prefab import loads as parse_document
 from .materialize.load import load_document
 
 __all__ = ["SIZE", "preview_path", "previews_directory", "render_all"]

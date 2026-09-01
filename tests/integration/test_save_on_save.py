@@ -27,10 +27,10 @@ import bpy
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-import paradise_assets  # noqa: E402
-from paradise_assets.document import project  # noqa: E402
-from paradise_assets.document.prefab import loads as parse_document  # noqa: E402
-from paradise_assets.materialize import load, store, sync, workfile  # noqa: E402
+import paradise_assets
+from paradise_assets.document import project
+from paradise_assets.document.prefab import loads as parse_document
+from paradise_assets.materialize import load, store, sync, workfile
 
 failures: list[str] = []
 
@@ -119,7 +119,7 @@ def main() -> int:
 
             print("== opening a document does not modify it ==")
             before = fingerprint(document)
-            scene = materialize(document, layout)
+            materialize(document, layout)
             written = workfile.save(layout, document)
             check(written is not None, "the working file was written")
             check(
@@ -144,26 +144,30 @@ def main() -> int:
             check(sync.refusal(bpy.context.scene) is None, "and nothing was refused")
 
             print("\n== a save that changes nothing rewrites nothing ==")
-            steady = open(document, "rb").read()
+            with open(document, "rb") as handle:
+                steady = handle.read()
             bpy.ops.wm.save_mainfile()
-            check(
-                open(document, "rb").read() == steady,
-                "an unchanged save leaves the document byte-identical",
-            )
+            with open(document, "rb") as handle:
+                check(
+                    handle.read() == steady,
+                    "an unchanged save leaves the document byte-identical",
+                )
 
             print("\n== a stale document is refused, and says so ==")
             # Behind the addon's back, as another tool or a `git pull` would.
             with open(document, "a", encoding="utf-8", newline="") as handle:
                 handle.write("\n# touched externally\n")
-            external = open(document, "rb").read()
+            with open(document, "rb") as handle:
+                external = handle.read()
 
             crate.location.x += 5.0
             bpy.ops.wm.save_mainfile()
 
-            check(
-                open(document, "rb").read() == external,
-                "the external change survived — the save did not clobber it",
-            )
+            with open(document, "rb") as handle:
+                check(
+                    handle.read() == external,
+                    "the external change survived — the save did not clobber it",
+                )
             refusal = sync.refusal(bpy.context.scene)
             check(refusal is not None, f"the refusal is recorded for the panel ({refusal})")
             check(
@@ -175,7 +179,7 @@ def main() -> int:
             check(os.path.isfile(written), "the working file was still written")
 
             print("\n== a reload clears the refusal ==")
-            scene = materialize(document, layout)
+            materialize(document, layout)
             workfile.save(layout, document)
             bpy.ops.wm.save_mainfile()
             check(
@@ -190,12 +194,14 @@ def main() -> int:
                 store.read_state(bpy.context.scene) is None,
                 "the scene carries no document state",
             )
-            steady = open(document, "rb").read()
+            with open(document, "rb") as handle:
+                steady = handle.read()
             bpy.ops.wm.save_as_mainfile(filepath=other)
-            check(
-                open(document, "rb").read() == steady,
-                "saving an unrelated .blend left the document alone",
-            )
+            with open(document, "rb") as handle:
+                check(
+                    handle.read() == steady,
+                    "saving an unrelated .blend left the document alone",
+                )
     finally:
         paradise_assets.unregister()
 

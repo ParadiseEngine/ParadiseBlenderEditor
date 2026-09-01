@@ -139,7 +139,7 @@ def start(project_root: str) -> str | None:
 
     path = log_path(project_root)
     try:
-        handle = open(path, "w", encoding="utf-8")
+        handle = open(path, "w", encoding="utf-8")  # noqa: SIM115 -- handed to the child, then closed
     except OSError as error:
         return f"Could not open the watch log: {error}"
 

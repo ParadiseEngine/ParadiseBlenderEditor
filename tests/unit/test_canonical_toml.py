@@ -225,4 +225,4 @@ class TestEncoding:
     def test_utf8_without_a_bom(self):
         data = ct.dump_bytes({"k": "价"})
         assert not data.startswith(b"\xef\xbb\xbf")
-        assert data == 'k = "价"\n'.encode("utf-8")
+        assert data == 'k = "价"\n'.encode()

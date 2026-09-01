@@ -22,7 +22,7 @@ import uuid
 from dataclasses import dataclass, field
 
 from . import well_known
-from .prefab import PrefabComponent, PrefabDocument, PrefabDocumentError, PrefabObject
+from .prefab import PrefabComponent, PrefabDocument, PrefabObject
 
 __all__ = ["ResolveResult", "mint_child_guid", "resolve"]
 
@@ -68,7 +68,8 @@ def _expand_document(document, prefabs, result, stack, cache, depth) -> int:
             continue
         if candidate.parent is None:
             result.errors.append(
-                f"an override carrier targeting '{candidate.target}' has no Parent naming the instance it belongs to"
+                f"an override carrier targeting '{candidate.target}' "
+                "has no Parent naming the instance it belongs to"
             )
             continue
         key = (candidate.parent, candidate.target)
@@ -114,7 +115,7 @@ def _flatten(reference, prefabs, result, stack, cache, depth):
     key = reference.path
     lowered = [entry.lower() for entry in stack]
     if key.lower() in lowered:
-        chain = " -> ".join(stack[lowered.index(key.lower()):] + [key])
+        chain = " -> ".join([*stack[lowered.index(key.lower()):], key])
         result.errors.append(f"prefabs form a cycle: {chain}")
         return None
 
@@ -146,7 +147,9 @@ def _flatten(reference, prefabs, result, stack, cache, depth):
 
 def _expand(instance, instance_guid, prefab, carriers, result) -> None:
     minted = {
-        member.guid: (instance_guid if member.guid == prefab.root_guid else mint_child_guid(instance_guid, member.guid))
+        member.guid: (
+            instance_guid if member.guid == prefab.root_guid else mint_child_guid(instance_guid, member.guid)
+        )
         for member in prefab.objects
         if member.guid is not None
     }
@@ -212,7 +215,8 @@ def _merge(prefab_object, overrides, is_root, instance_guid, minted, prefab, res
                 continue
             if component.removed:
                 result.errors.append(
-                    f"an override removes component '{component.id}', which '{prefab.root().name}' does not have"
+                    f"an override removes component '{component.id}', "
+                    f"which '{prefab.root().name}' does not have"
                 )
                 continue
             merged.components.append(component)

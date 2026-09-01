@@ -17,7 +17,7 @@ from paradise_assets.document import axes
 
 def approx(actual, expected, tol=1e-9):
     assert len(actual) == len(expected)
-    for a, e in zip(actual, expected):
+    for a, e in zip(actual, expected, strict=True):
         assert abs(a - e) <= tol, f"{actual} != {expected}"
 
 
@@ -40,7 +40,7 @@ class TestBasis:
     def test_the_two_directions_are_inverses(self):
         m = axes.trs_to_matrix((1.0, 2.0, 3.0), (0.1, 0.2, 0.3, 0.927), (1.0, 2.0, 3.0))
         back = axes.to_document(axes.to_blender(m))
-        for row_a, row_b in zip(m, back):
+        for row_a, row_b in zip(m, back, strict=True):
             approx(row_a, row_b)
 
     def test_conjugation_distributes_over_composition(self):
@@ -52,6 +52,7 @@ class TestBasis:
         for row_a, row_b in zip(
             axes.to_blender(axes.matmul(a, b)),
             axes.matmul(axes.to_blender(a), axes.to_blender(b)),
+            strict=True,
         ):
             approx(row_a, row_b)
 
@@ -71,7 +72,7 @@ class TestScale:
         position, rotation, scale = axes.from_blender_trs(*axes.to_blender_trs(*trs))
         approx(position, trs[0])
         approx(scale, trs[2])
-        assert abs(1.0 - abs(sum(x * y for x, y in zip(rotation, trs[1])))) < 1e-9
+        assert abs(1.0 - abs(sum(x * y for x, y in zip(rotation, trs[1], strict=True)))) < 1e-9
 
 
 class TestQuaternions:
@@ -91,7 +92,7 @@ class TestQuaternions:
         trs = ((0.0, 0.0, 0.0), (0.0, 1.0, 0.0, 0.0), (1.0, 1.0, 1.0))
         _, rotation, _ = axes.from_blender_trs(*axes.to_blender_trs(*trs))
         assert all(math.isfinite(v) for v in rotation)
-        assert abs(1.0 - abs(sum(x * y for x, y in zip(rotation, trs[1])))) < 1e-9
+        assert abs(1.0 - abs(sum(x * y for x, y in zip(rotation, trs[1], strict=True)))) < 1e-9
 
 
 class TestIdentity:

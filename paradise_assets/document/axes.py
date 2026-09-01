@@ -165,7 +165,7 @@ def _decompose(m: Mat4) -> tuple[Vec3, Quat, Vec3]:
         scale[0] = -scale[0]
 
     basis = []
-    for col, length in zip(columns, scale):
+    for col, length in zip(columns, scale, strict=True):
         basis.append((0.0, 0.0, 0.0) if length == 0.0 else tuple(v / length for v in col))
 
     return translation, _matrix_to_quaternion(basis), (scale[0], scale[1], scale[2])

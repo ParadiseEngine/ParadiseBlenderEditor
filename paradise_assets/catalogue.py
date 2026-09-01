@@ -32,7 +32,8 @@ import bpy
 
 from . import thumbnail
 from .document import project
-from .document.prefab import PrefabDocumentError, loads as parse_document
+from .document.prefab import PrefabDocumentError
+from .document.prefab import loads as parse_document
 
 __all__ = ["CATALOGUE_RELATIVE", "TEMPLATE_KEY", "build", "catalogue_path", "ensure_library"]
 

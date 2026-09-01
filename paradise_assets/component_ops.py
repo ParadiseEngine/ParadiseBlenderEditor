@@ -16,8 +16,14 @@ type and be written through :mod:`.edits` exactly once, in the shape the schema 
 
 from __future__ import annotations
 
-import bpy
-from bpy.props import BoolProperty, EnumProperty, FloatProperty, FloatVectorProperty, IntProperty, StringProperty
+from bpy.props import (
+    BoolProperty,
+    EnumProperty,
+    FloatProperty,
+    FloatVectorProperty,
+    IntProperty,
+    StringProperty,
+)
 from bpy.types import Operator
 
 from . import edits

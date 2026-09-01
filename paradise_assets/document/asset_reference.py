@@ -51,7 +51,9 @@ def write(reference: AssetReference | None) -> InlineTable:
 def read(value, context: str, fail) -> AssetReference | None:
     """Reads a reference from a document value; ``None`` when it is ``{}``."""
     if not isinstance(value, dict):
-        raise fail(f"holds {type(value).__name__} where an asset reference {{ guid, path }} was expected {context}")
+        raise fail(
+            f"holds {type(value).__name__} where an asset reference {{ guid, path }} was expected {context}"
+        )
     if len(value) == 0:
         return None
 

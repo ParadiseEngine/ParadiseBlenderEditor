@@ -96,7 +96,10 @@ class TestRoundTrip:
         assert ids == [META, TRANSFORM, RENDERABLE]
 
     def test_a_removed_marker_round_trips(self):
-        text = f'schema_version = 1\n{obj(CRATE)}\n[[objects.components]]\nid = "{RENDERABLE}"\nremoved = true\n'
+        text = (
+            f"schema_version = 1\n{obj(CRATE)}\n"
+            f'[[objects.components]]\nid = "{RENDERABLE}"\nremoved = true\n'
+        )
 
         document = prefab.loads(text, "x.scene")
 
@@ -134,7 +137,9 @@ class TestStrictness:
         assert "twice" in rejects(text)
 
     def test_a_dangling_parent_is_refused(self):
-        assert "does not exist" in rejects(f'schema_version = 1\n{obj(CRATE, "a", f'Parent = "{LID}"\n')}')
+        assert "does not exist" in rejects(
+            "schema_version = 1\n" + obj(CRATE, "a", f'Parent = "{LID}"\n')
+        )
 
     def test_a_parent_cycle_is_refused(self):
         text = (
@@ -224,14 +229,14 @@ class TestWellKnownShapes:
     def test_a_malformed_meta_parent_is_refused(self):
         # Before the shape check a non-UUID Parent read as "no parent" -- an object silently
         # promoted to a root is exactly the misread the strict reader exists to prevent.
-        text = f"schema_version = 1\n{obj(CRATE)}{obj(LID, 'lid', 'Parent = \"not-a-guid\"\n')}"
+        text = "schema_version = 1\n" + obj(CRATE) + obj(LID, "lid", 'Parent = "not-a-guid"\n')
 
         assert "meta.Parent" in rejects(text)
 
     def test_a_dropped_marker_without_a_target_is_refused(self):
         # Dropping addresses a prefab child; on a plain object it is ignored, and on an instance
         # it deletes the whole subtree -- neither is ever what the author meant.
-        text = f"schema_version = 1\n{obj(CRATE, 'x', 'Dropped = true\n')}"
+        text = "schema_version = 1\n" + obj(CRATE, "x", "Dropped = true\n")
 
         assert "Dropped" in rejects(text)
 
@@ -263,7 +268,7 @@ class TestWellKnownShapes:
 
     def test_a_game_extended_meta_field_rides_along(self):
         # meta's payload stays open -- only the fields the format defines are shape-checked.
-        text = f"schema_version = 1\n{obj(CRATE, 'x', 'Zone = \"hub\"\n')}"
+        text = "schema_version = 1\n" + obj(CRATE, "x", 'Zone = "hub"\n')
 
         assert prefab.dumps(prefab.loads(text, "x.scene")) == text
 

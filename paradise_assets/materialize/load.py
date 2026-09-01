@@ -20,7 +20,8 @@ import bpy
 from mathutils import Quaternion, Vector
 
 from ..document import axes, project, resolve, schema, well_known
-from ..document.prefab import PrefabDocument, PrefabObject, loads as parse_document
+from ..document.prefab import PrefabDocument, PrefabObject
+from ..document.prefab import loads as parse_document
 from . import store
 from .meshes import MeshLibrary
 

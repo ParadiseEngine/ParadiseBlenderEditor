@@ -60,7 +60,7 @@ def register() -> None:
 def unregister() -> None:
     import bpy
 
-    from . import browser, dropped
+    from . import browser, dropped, watch
     from .materialize import sync
 
     browser.unregister_menu()

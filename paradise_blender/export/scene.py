@@ -37,10 +37,10 @@ from ..prefs import export_paths
 from . import navmesh as navmesh_export
 from . import project_settings
 from .entity import export_entity
-from .placement import Placement
 from .light import export_light
 from .material import MaterialExporter
 from .mesh import MeshExporter
+from .placement import Placement
 from .world import export_environment
 
 __all__ = ["build_level_data", "export_scene", "resolve_scene_name"]

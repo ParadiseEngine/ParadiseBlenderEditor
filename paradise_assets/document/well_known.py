@@ -123,7 +123,10 @@ def _meta_problem(data: dict) -> str | None:
             return f"needs '{META_TYPE}.{DROPPED}' to be a boolean"
 
     if DROPPED in data and TARGET not in data:
-        return f"marks '{META_TYPE}.{DROPPED}' without a '{TARGET}' -- only an override carrier can drop a prefab child"
+        return (
+            f"marks '{META_TYPE}.{DROPPED}' without a '{TARGET}' -- "
+            "only an override carrier can drop a prefab child"
+        )
 
     return None
 

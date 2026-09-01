@@ -30,7 +30,10 @@ it would mean an old edit could resurrect itself over a newer value someone else
 from __future__ import annotations
 
 import json
+from typing import TYPE_CHECKING
 
+if TYPE_CHECKING:
+    import bpy
 
 __all__ = [
     "EDITS_KEY",

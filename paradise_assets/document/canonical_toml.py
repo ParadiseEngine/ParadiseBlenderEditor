@@ -60,8 +60,8 @@ import re
 
 __all__ = [
     "InlineTable",
-    "dumps",
     "dump_bytes",
+    "dumps",
     "format_float",
     "format_key",
     "format_value",
@@ -236,7 +236,7 @@ def format_value(value: object) -> str:
     )
 
 
-def format_inline_table(table: "InlineTable") -> str:
+def format_inline_table(table: InlineTable) -> str:
     """Rule 11: ``{ key = value, … }`` on one line, model order, ``{}`` when empty."""
     if len(table) == 0:
         return "{}"

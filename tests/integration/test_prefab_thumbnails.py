@@ -27,8 +27,8 @@ import bpy
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from paradise_assets import catalogue, thumbnail  # noqa: E402
-from paradise_assets.document import project  # noqa: E402
+from paradise_assets import catalogue, thumbnail
+from paradise_assets.document import project
 
 DEFAULT_PROJECT = r"C:\proj\paradise-workspace\shiningpie"
 

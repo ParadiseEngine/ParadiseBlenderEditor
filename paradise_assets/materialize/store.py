@@ -24,11 +24,11 @@ __all__ = [
     "clear_object",
     "component_json",
     "guid_of",
+    "prefab_of",
     "read_state",
     "stamp_of",
     "tag_object",
     "tag_prefab",
-    "prefab_of",
     "write_state",
 ]
 

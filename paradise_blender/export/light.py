@@ -32,7 +32,7 @@ from ..contract import axes
 from ..contract.color import Color32
 from ..contract.schema import SceneLightData
 
-__all__ = ["WATTS_PER_INTENSITY_UNIT", "export_light", "light_type_name"]
+__all__ = ["WATTS_PER_INTENSITY_UNIT", "export_light", "host_light_values", "light_type_name"]
 
 #: Blender's default point/spot lamp is 100 W; the contract's (and Godot's) default light
 #: energy is 1.0. Dividing by this maps default to default, so a scene lit "normally" in
@@ -101,6 +101,35 @@ def export_light(obj: bpy.types.Object) -> SceneLightData:
         )
 
     return data
+
+
+def host_light_values(obj: bpy.types.Object) -> dict | None:
+    """A lamp as the HostLight field set, in the storage shape ``build_payload`` consumes.
+
+    Shares intensity, aim and falloff with :func:`export_light` so a light cannot describe
+    itself one way as a scene lamp and another as an authored host reference. Two differences
+    are load-bearing: ``SpotAngle`` stays in radians (that is what ``HostLight`` declares), and
+    ``Color`` is the lamp's linear Vector4 rather than a quantized ``Color32``.
+    """
+    if obj.type != "LIGHT" or obj.data is None:
+        return None
+    data = export_light(obj)
+    color = obj.data.color
+    return {
+        "Type": data.type,
+        "Position": list(data.position),
+        "Direction": list(data.direction),
+        "Color": [float(color[0]), float(color[1]), float(color[2]), 1.0],
+        "Enabled": data.enabled,
+        "Intensity": data.intensity,
+        "ShadowsEnabled": data.shadows_enabled,
+        "ShadowStrength": data.shadow_strength,
+        "Specular": data.specular,
+        "Size": data.size,
+        "Range": data.range,
+        "SpotAngle": float(obj.data.spot_size) if obj.data.type == "SPOT" else 0.0,
+        "AttenuationExponent": data.attenuation_exponent,
+    }
 
 
 def _intensity(light: bpy.types.Light) -> float:

@@ -24,8 +24,9 @@ import bpy
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from paradise_assets.document import project, prefab as prefab_document, well_known  # noqa: E402
-from paradise_assets.materialize import load, save, store  # noqa: E402
+from paradise_assets.document import prefab as prefab_document
+from paradise_assets.document import project, well_known
+from paradise_assets.materialize import load, save, store
 
 DEFAULT_PROJECT = r"C:\proj\paradise-workspace\shiningpie"
 
@@ -75,7 +76,8 @@ def main() -> int:
 
     print("\n== the round trip: open -> save must be byte-identical ==")
     for path in documents:
-        original = open(path, "rb").read()
+        with open(path, "rb") as handle:
+            original = handle.read()
         with tempfile.TemporaryDirectory() as work:
             copy = os.path.join(work, os.path.basename(path))
             shutil.copy2(path, copy)
@@ -83,10 +85,11 @@ def main() -> int:
             result = open_document(copy, layout)
             saved = save.save_prefab(bpy.context.scene)
 
-            check(
-                open(copy, "rb").read() == original,
-                f"{os.path.basename(path)}: {result.objects} objects round-trip byte for byte",
-            )
+            with open(copy, "rb") as handle:
+                check(
+                    handle.read() == original,
+                    f"{os.path.basename(path)}: {result.objects} objects round-trip byte for byte",
+                )
             check(saved.moved == 0, f"{os.path.basename(path)}: nothing reported as moved")
 
     print("\n== the document is materialized faithfully ==")
@@ -125,7 +128,8 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as work:
         copy = os.path.join(work, "edit.prefab")
         shutil.copy2(documents[0], copy)
-        before = prefab_document.loads(open(copy, encoding="utf-8").read(), copy)
+        with open(copy, encoding="utf-8") as handle:
+            before = prefab_document.loads(handle.read(), copy)
 
         open_document(copy, layout)
         moved = next(o for o in bpy.context.scene.collection.all_objects if store.guid_of(o))
@@ -133,7 +137,8 @@ def main() -> int:
         moved.location.x += 5.0
         result = save.save_prefab(bpy.context.scene)
 
-        after = prefab_document.loads(open(copy, encoding="utf-8").read(), copy)
+        with open(copy, encoding="utf-8") as handle:
+            after = prefab_document.loads(handle.read(), copy)
         check(result.moved == 1, "exactly one object reported as moved")
 
         # Compared as DOCUMENTS, not as lines: giving an object its first transform inserts a
@@ -221,10 +226,12 @@ def main() -> int:
                 "Weird = 42\n"
                 'Nested = "keep me"\n'
             )
-        original = open(copy, "rb").read()
+        with open(copy, "rb") as handle:
+            original = handle.read()
         open_document(copy, layout)
         save.save_prefab(bpy.context.scene)
-        check(open(copy, "rb").read() == original, "an unknown component is written back verbatim")
+        with open(copy, "rb") as handle:
+            check(handle.read() == original, "an unknown component is written back verbatim")
 
     print("\n== a prefab instance stays an instance through a save ==")
     with tempfile.TemporaryDirectory() as work:
@@ -274,7 +281,8 @@ def main() -> int:
                 'Position = [0.0, 0.0, 0.0]\nRotation = [0.0, 0.0, 0.0, 1.0]\nScale = [1.0, 1.0, 1.0]\n'
             )
 
-        original = open(scene_path, "rb").read()
+        with open(scene_path, "rb") as handle:
+            original = handle.read()
 
         # The project root is `work`, not the shiningpie checkout.
         probe_layout = project.locate(scene_path)
@@ -293,7 +301,8 @@ def main() -> int:
         # THE check: the document still holds ONE object with a prefab reference. A save that
         # treated the resolved children as ordinary objects would have written two plain objects
         # here and lost the instance for good.
-        check(open(scene_path, "rb").read() == original, "the instance is written back unflattened")
+        with open(scene_path, "rb") as handle:
+            check(handle.read() == original, "the instance is written back unflattened")
 
     print(f"\n{len(failures)} failure(s)")
     for label in failures:

@@ -26,10 +26,11 @@ import bpy
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-import paradise_assets  # noqa: E402
-from paradise_assets.document import project  # noqa: E402
-from paradise_assets.materialize import store  # noqa: E402
-from paradise_assets.play import host, ops as play_ops  # noqa: E402
+import paradise_assets
+from paradise_assets.document import project
+from paradise_assets.materialize import store
+from paradise_assets.play import host
+from paradise_assets.play import ops as play_ops
 
 failures: list[str] = []
 

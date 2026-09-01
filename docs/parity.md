@@ -64,10 +64,8 @@ textures from files under `data/`. The exporter warns and omits the reference.
 **Interaction collider geometry is not forwarded.** The contract's interactable component
 carries only a display name today. Both hosts behave identically here.
 
-**An object reference is baked as a NAME.** `authoredBy: entity` resolves to the target's `Name`
-component, because that is the one thing every exported object carries. Names are not unique and
-nothing here makes them so, so a scene with two objects sharing a name has an ambiguous reference
-— the runtime resolving it is what must say so.
+**An object reference is baked as a GUID.** `authoredBy: entity` resolves to the target's durable
+identity, the same GUID its `meta` carries. Names are not unique; the GUID is.
 
 **Schema v5 is a hard break.** The engine refuses a v4 document by version rather than reading it:
 a v4 entity is a JSON object where v5 expects an array, so it would parse as nothing and load an

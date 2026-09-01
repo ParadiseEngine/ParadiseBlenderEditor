@@ -122,6 +122,50 @@ def test_stopping_something_that_is_not_running_is_harmless():
     assert watch.watched_roots() == []
 
 
+def test_the_log_path_is_stable_across_processes():
+    # THE bug this test exists for, found by driving the thing end to end rather than by reading
+    # it. The digest was `hash()`, which Python SALTS PER PROCESS for strings -- so the watcher
+    # (started from one Blender session) and the panel (drawing in a later one) computed different
+    # filenames, and the panel read a file nothing had ever written. It reported no errors for a
+    # watcher that was reporting plenty.
+    #
+    # Asserted as a literal rather than against a recomputed value: comparing the function to
+    # itself passes under a salted hash too, which is exactly how this got through.
+    import hashlib
+    import os as _os
+
+    root = "/checkout/shiningpie"
+    expected = hashlib.sha1(_os.path.normcase(root).encode("utf-8")).hexdigest()[:6]
+
+    assert expected in watch.log_path(root)
+
+
+def test_last_error_prefers_the_detail_over_the_tally():
+    # A failed rebuild ends with "build FAILED with N error(s)", and the line naming the FILE is
+    # above it. Showing the tally is showing an author a number they cannot act on.
+    import tempfile
+
+    root = tempfile.mkdtemp()
+    with open(watch.log_path(root), "w", encoding="utf-8") as handle:
+        handle.write(
+            "watch: watching /x/assets\n"
+            "error: /x/assets/levels/main.prefab: is not valid TOML\n"
+            "watch: build FAILED with 1 error(s)\n")
+
+    assert "main.prefab" in (watch.last_error(root) or "")
+
+
+def test_last_error_falls_back_to_the_tally_when_there_is_no_detail():
+    # A failure with nothing above it still has to say something -- silence would read as success.
+    import tempfile
+
+    root = tempfile.mkdtemp()
+    with open(watch.log_path(root), "w", encoding="utf-8") as handle:
+        handle.write("watch: watching /x/assets\nwatch: build FAILED with 2 error(s)\n")
+
+    assert "FAILED" in (watch.last_error(root) or "")
+
+
 def test_log_paths_differ_per_project():
     # Two checkouts of one game is a normal thing to have; a shared log would interleave them.
     first = watch.log_path("/checkout/one/shiningpie")

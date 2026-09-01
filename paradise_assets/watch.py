@@ -29,6 +29,7 @@ lands, the panel is the only place an author finds out.
 from __future__ import annotations
 
 import atexit
+import hashlib
 import os
 import subprocess
 import tempfile
@@ -55,7 +56,12 @@ def log_path(project_root: str) -> str:
     are a normal thing to have open, and a shared log would interleave them into nonsense.
     """
     name = os.path.basename(os.path.normpath(project_root)) or "project"
-    digest = format(abs(hash(os.path.normcase(project_root))) % 0xFFFFFF, "06x")
+    # hashlib, NOT hash(): Python salts str hashing per process, so hash() would name a different
+    # file on every Blender launch -- and the panel, running in a later process than the one that
+    # started the watcher, would read a path nothing had ever written to and report no errors for
+    # a watcher that was reporting plenty. Found by testing this end to end rather than by
+    # reading it, which is the only way that class of bug shows up.
+    digest = hashlib.sha1(os.path.normcase(project_root).encode("utf-8")).hexdigest()[:6]
     return os.path.join(tempfile.gettempdir(), f"paradise_assets_watch_{name}_{digest}.log")
 
 
@@ -189,14 +195,30 @@ def last_error(project_root: str) -> str | None:
     except OSError:
         return None
 
+    summary = None
     for line in reversed(lines):
         text = line.strip()
         if not text:
             continue
         lowered = text.lower()
-        if lowered.startswith("error") or "failed" in lowered or "error:" in lowered:
-            return text[:200]
-    return None
+        if not (lowered.startswith("error") or "failed" in lowered):
+            continue
+
+        # A failed rebuild ends with a COUNT -- "watch: build FAILED with 1 error(s)" -- and the
+        # line that says WHAT went wrong is above it. Taking the last match verbatim would show an
+        # author the tally and hide the sentence naming the file, which is the one thing they need
+        # to act. So the summary is remembered and the scan keeps going for a detail line.
+        if _is_summary(lowered):
+            summary = summary or text
+            continue
+        return text[:200]
+
+    return summary[:200] if summary is not None else None
+
+
+def _is_summary(lowered: str) -> bool:
+    """Whether a line is a rebuild's tally rather than a description of what failed."""
+    return "build failed with" in lowered
 
 
 def status_line(project_root: str) -> str:

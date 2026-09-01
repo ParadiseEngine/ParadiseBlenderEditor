@@ -102,19 +102,19 @@ def _run(operator, layout, arguments: list[str], verb: str) -> bool:
 def _built_scene(layout, document_path: str) -> str:
     """Where the CLI puts this document's compiled form in the play tree.
 
-    ``assets/levels/x.prefab`` -> ``.editor/play/levels/x.json``: the build mirrors the source tree
-    and rewrites the extension, which is why this is a path computation rather than a lookup.
+    ``assets/levels/x.prefab`` -> ``.editor/play/levels/x.prefab``: play bakes the document but
+    keeps the authoring name, so this is the source-relative path under the play tree.
     """
     relative = os.path.relpath(document_path, layout.assets)
-    return os.path.join(layout.editor, "play", os.path.splitext(relative)[0] + ".json")
+    return os.path.join(layout.editor, "play", relative)
 
 
 def _derived_config(play_root: str) -> list[str]:
     """``--config`` for games that keep one where the build puts it, and nothing otherwise.
 
     The build copies the project's own folder through under its manifest name, so a game whose
-    config lives at ``assets/<name>/config.json`` has it at ``<play>/<name>/config.json``. That is
-    a convenience, NEVER a requirement: the file is passed only when it is actually there, and a
+    config lives at ``assets/<name>/config.toml`` has it at ``<play>/<name>/config.toml`` (or
+    ``.json``, if that is the profile). The file is passed only when it is actually there, and a
     game that arranges things differently says so through the Runtime Arguments preference rather
     than being second-guessed here.
     """
@@ -127,8 +127,12 @@ def _derived_config(play_root: str) -> list[str]:
 
     if not isinstance(name, str) or not name:
         return []
-    config = os.path.join(play_root, name, "config.json")
-    return ["--config", config] if os.path.isfile(config) else []
+    directory = os.path.join(play_root, name)
+    for extension in (".toml", ".json"):
+        config = os.path.join(directory, "config" + extension)
+        if os.path.isfile(config):
+            return ["--config", config]
+    return []
 
 
 class PARADISE_ASSETS_OT_play(Operator):
@@ -157,18 +161,18 @@ class PARADISE_ASSETS_OT_play(Operator):
         if not _run(self, layout, ["assets", "build", "--profile", _profile(), "--editor"], "Build"):
             return {"CANCELLED"}
 
-        scene_json = _built_scene(layout, document_path)
-        if not os.path.isfile(scene_json):
+        scene_path = _built_scene(layout, document_path)
+        if not os.path.isfile(scene_path):
             # The build succeeded and did not produce this. Most likely the document is not one
             # the profile emits; say which file was expected rather than "something went wrong".
             self.report(
                 {"ERROR"},
-                f"The build succeeded but {os.path.relpath(scene_json, layout.root)} is not there.",
+                f"The build succeeded but {os.path.relpath(scene_path, layout.root)} is not there.",
             )
             return {"CANCELLED"}
 
         play_root = os.path.join(layout.editor, "play")
-        arguments = ["--scene", scene_json, *_derived_config(play_root)]
+        arguments = ["--scene", scene_path, *_derived_config(play_root)]
 
         # IN THE PROJECT ROOT, not wherever Blender happens to be. --scene is absolute so the
         # level is always found; everything else a runtime reads is conventionally relative to

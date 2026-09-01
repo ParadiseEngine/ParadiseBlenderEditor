@@ -27,12 +27,14 @@ import tempfile
 
 __all__ = [
     "CliResult",
+    "ensure_cli_built",
     "first_error_line",
     "launch_runtime",
     "log_path",
     "resolve_cli_command",
     "resolve_runtime_command",
     "run_cli",
+    "subprocess_environment",
 ]
 
 
@@ -55,15 +57,28 @@ def _well_known_dotnet() -> str | None:
     return next((c for c in candidates if os.path.exists(c)), None)
 
 
-def _dotnet_run(project: str) -> list[str] | None:
-    """``dotnet run --project <csproj> --``, or None when the SDK is not installed."""
+def _dotnet_run(project: str, *, no_build: bool = False) -> list[str] | None:
+    """``dotnet run --project <csproj> --``, or None when the SDK is not installed.
+
+    ``no_build`` is for the CLI. The watcher is a long-lived ``dotnet run`` of that same
+    csproj; a second ``dotnet run`` without ``--no-build`` (Play, Build, Verify) tries to
+    compile through the MSBuild server the first process still owns and dies on MSB0001
+    ``Invalid node id specified``. The game launcher still builds — it is a different
+    project, and Play is when an author expects a code change to show up.
+    """
     if not os.path.exists(project):
         return None
     dotnet = shutil.which("dotnet") or _well_known_dotnet()
-    return None if dotnet is None else [dotnet, "run", "--project", project, "--"]
+    if dotnet is None:
+        return None
+    argv = [dotnet, "run"]
+    if no_build:
+        argv.append("--no-build")
+    argv.extend(["--project", project, "--"])
+    return argv
 
 
-def _configured(value: str) -> list[str] | None:
+def _configured(value: str, *, no_build: bool = False) -> list[str] | None:
     """Turn a configured path into an argv prefix.
 
     ``realpath``, not ``abspath``: a project reached through a symlink builds against the wrong
@@ -74,14 +89,14 @@ def _configured(value: str) -> list[str] | None:
     """
     resolved = os.path.realpath(os.path.expanduser(value.strip()))
     if resolved.endswith(".csproj"):
-        return _dotnet_run(resolved)
+        return _dotnet_run(resolved, no_build=no_build)
     return [resolved] if os.path.exists(resolved) else None
 
 
-def _ladder(configured: str, command_name: str) -> list[str] | None:
+def _ladder(configured: str, command_name: str, *, no_build: bool = False) -> list[str] | None:
     """Configured path, then PATH, then the installed dotnet tool."""
     if configured.strip():
-        found = _configured(configured)
+        found = _configured(configured, no_build=no_build)
         if found is not None:
             return found
 
@@ -117,7 +132,7 @@ def resolve_cli_command() -> list[str] | None:
     ``~/.dotnet/tools`` rungs are what will find it once it ships. Until then the preference is
     pointed at a build of ``Paradise.Cli``.
     """
-    return _ladder(_preference("cli"), "paradise")
+    return _ladder(_preference("cli"), "paradise", no_build=True)
 
 
 def resolve_runtime_command() -> list[str] | None:
@@ -129,6 +144,66 @@ def resolve_runtime_command() -> list[str] | None:
     """
     configured = _preference("runtime_host")
     return _configured(configured) if configured.strip() else None
+
+
+def subprocess_environment() -> dict[str, str]:
+    """Environment for a ``dotnet`` child started from Blender.
+
+    Turns off the MSBuild persistent server. Two ``dotnet run`` processes otherwise share
+    one, and the second dies on MSB0001 ``Invalid node id specified`` — which is what Play
+    looked like while a watcher started from the same csproj was already alive.
+    """
+    environment = dict(os.environ)
+    environment["DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER"] = "1"
+    ktx = _preference("ktx_path").strip()
+    if ktx:
+        environment["PARADISE_KTX_PATH"] = os.path.realpath(os.path.expanduser(ktx))
+    return environment
+
+
+def _cli_csproj() -> str | None:
+    configured = _preference("cli").strip()
+    if not configured:
+        return None
+    resolved = os.path.realpath(os.path.expanduser(configured))
+    if resolved.endswith(".csproj") and os.path.exists(resolved):
+        return resolved
+    return None
+
+
+def ensure_cli_built() -> str | None:
+    """Compile the CLI csproj if ``dotnet run --no-build`` would have nothing to run.
+
+    Returns ``None`` when the output is already there, when the CLI is not a csproj, or
+    after a successful build. A string is why it could not be built.
+    """
+    project = _cli_csproj()
+    if project is None:
+        return None
+    output = os.path.join(os.path.dirname(project), "bin", "Debug", "net10.0", "paradise.dll")
+    if os.path.isfile(output):
+        return None
+
+    dotnet = shutil.which("dotnet") or _well_known_dotnet()
+    if dotnet is None:
+        return "No dotnet SDK found to build the Paradise CLI."
+
+    try:
+        completed = subprocess.run(
+            [dotnet, "build", project, "-v", "q", "--nologo"],
+            capture_output=True,
+            text=True,
+            env=subprocess_environment(),
+            timeout=300,
+        )
+    except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired) as error:
+        return f"Could not build the Paradise CLI: {error}"
+
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip().splitlines()
+        last = next((line for line in reversed(detail) if line.strip()), "build failed")
+        return last
+    return None
 
 
 # --------------------------------------------------------------------------------------
@@ -175,13 +250,10 @@ def run_cli(arguments: list[str], cwd: str, timeout: float = 900.0) -> CliResult
     if command is None:
         return None
 
-    environment = dict(os.environ)
-    ktx = _preference("ktx_path").strip()
-    if ktx:
-        # The CLI probes a vendored third_party/tools/KTX-Software, then PATH, then this. A
-        # GUI-launched Blender usually has neither of the first two, and the failure is a build
-        # that cannot encode a texture rather than one that says the tool is missing.
-        environment["PARADISE_KTX_PATH"] = os.path.realpath(os.path.expanduser(ktx))
+    environment = subprocess_environment()
+    problem = ensure_cli_built()
+    if problem:
+        return CliResult(-1, "", f"error: {problem}")
 
     try:
         completed = subprocess.run(
@@ -232,12 +304,14 @@ def launch_runtime(arguments: list[str], cwd: str) -> tuple[subprocess.Popen | N
         )
 
     argv = [*command, *arguments, *shlex.split(_preference("runtime_arguments"))]
+    environment = subprocess_environment()
 
     try:
         if os.name == "nt":
             process = subprocess.Popen(  # argv is built from resolved paths
                 argv,
                 cwd=cwd,
+                env=environment,
                 creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
             )
         else:
@@ -247,7 +321,12 @@ def launch_runtime(arguments: list[str], cwd: str) -> tuple[subprocess.Popen | N
             dotnet_dir = os.path.dirname(shutil.which("dotnet") or "/usr/local/share/dotnet/dotnet")
             quoted = " ".join(shlex.quote(a) for a in argv)
             script = f'export PATH="{dotnet_dir}:$PATH"; exec {quoted} > {shlex.quote(log_path())} 2>&1'
-            process = subprocess.Popen(["/bin/sh", "-c", script], cwd=cwd, start_new_session=True)
+            process = subprocess.Popen(
+                ["/bin/sh", "-c", script],
+                cwd=cwd,
+                env=environment,
+                start_new_session=True,
+            )
     except OSError as error:
         return None, f"Failed to launch the runtime: {error}"
 

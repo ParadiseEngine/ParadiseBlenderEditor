@@ -90,14 +90,14 @@ def make_play_tree(root: str, *, with_config: bool) -> None:
     """What a successful build would have left behind."""
     play = os.path.join(root, ".editor", "play")
     os.makedirs(os.path.join(play, "levels"), exist_ok=True)
-    with open(os.path.join(play, "levels", "arena.json"), "w", encoding="utf-8") as handle:
+    with open(os.path.join(play, "levels", "arena.prefab"), "w", encoding="utf-8") as handle:
         handle.write("{}")
     with open(os.path.join(play, "manifest.json"), "w", encoding="utf-8") as handle:
         json.dump({"version": 1, "project": "playtest", "assets": []}, handle)
     if with_config:
         os.makedirs(os.path.join(play, "playtest"), exist_ok=True)
-        with open(os.path.join(play, "playtest", "config.json"), "w", encoding="utf-8") as handle:
-            handle.write("{}")
+        with open(os.path.join(play, "playtest", "config.toml"), "w", encoding="utf-8") as handle:
+            handle.write("schema_version = 1\n")
 
 
 def configure(ktx: str = "") -> None:
@@ -197,13 +197,19 @@ def main() -> int:
                 scene = argv[argv.index("--scene") + 1] if "--scene" in argv else ""
                 check(
                     os.path.normcase(scene)
-                    == os.path.normcase(os.path.join(root, ".editor", "play", "levels", "arena.json")),
+                    == os.path.normcase(os.path.join(root, ".editor", "play", "levels", "arena.prefab")),
                     f"--scene points at the built document ({os.path.basename(scene)})",
                 )
                 check("--config" in argv, "--config is derived when the build produced one")
+                config = argv[argv.index("--config") + 1] if "--config" in argv else ""
+                check(
+                    os.path.normcase(config)
+                    == os.path.normcase(os.path.join(root, ".editor", "play", "playtest", "config.toml")),
+                    f"--config points at the play tree ({os.path.basename(config)})",
+                )
 
             print("\n== a config the build did not produce is not invented ==")
-            os.remove(os.path.join(root, ".editor", "play", "playtest", "config.json"))
+            os.remove(os.path.join(root, ".editor", "play", "playtest", "config.toml"))
             _reset(cli_log, runtime_log)
             _play_with_runtime_record(runtime_log)
             launch = recorded(runtime_log)

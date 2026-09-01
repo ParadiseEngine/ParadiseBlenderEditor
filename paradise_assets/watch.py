@@ -1,6 +1,6 @@
 """``paradise assets watch``, supervised by Blender for as long as a document is open.
 
-Opening a level and having edits appear in the build should not also require remembering to start
+Opening a level and having edits appear in ``.editor/play`` should not also require remembering to start
 a watcher in a terminal. The addon knows which project the open document belongs to, so it can
 start one and stop it again.
 
@@ -42,6 +42,7 @@ __all__ = [
     "status_line",
     "stop",
     "stop_all",
+    "watch_command",
     "watched_roots",
 ]
 
@@ -100,6 +101,18 @@ def watched_roots() -> list[str]:
     return [root for root in list(_WATCHERS) if is_running(root)]
 
 
+def watch_command(cli_argv: list[str], project_root: str) -> list[str]:
+    """The argv for ``paradise assets watch`` when started from the addon.
+
+    Always ``--editor`` so the tray starts with play mode on (the CLI default). The tray
+    checkbox can turn it off; a restart is not required.
+    """
+    from .play import host
+
+    profile = host._preference("build_profile", "dev") or "dev"
+    return [*cli_argv, "assets", "watch", "--editor", "--profile", profile, "--project", project_root]
+
+
 def start(project_root: str) -> str | None:
     """Start this project's watcher, or return why it could not.
 
@@ -120,17 +133,22 @@ def start(project_root: str) -> str | None:
             "the addon preferences at it."
         )
 
+    problem = host.ensure_cli_built()
+    if problem:
+        return problem
+
     path = log_path(project_root)
     try:
         handle = open(path, "w", encoding="utf-8")
     except OSError as error:
         return f"Could not open the watch log: {error}"
 
-    argv = [*command, "assets", "watch", "--project", project_root]
+    argv = watch_command(command, project_root)
     try:
         process = subprocess.Popen(  # argv is built from resolved paths
             argv,
             cwd=project_root,
+            env=host.subprocess_environment(),
             stdout=handle,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,

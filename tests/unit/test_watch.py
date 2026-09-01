@@ -181,3 +181,14 @@ def test_log_paths_differ_per_project():
 
 def test_status_line_reports_not_watching_when_it_is_not():
     assert watch.status_line("/some/project") == "Not watching."
+
+
+def test_watch_command_rebuilds_play_mode(monkeypatch):
+    from paradise_assets.play import host
+
+    monkeypatch.setattr(
+        host, "_preference", lambda name, default="": "dev" if name == "build_profile" else default)
+
+    assert watch.watch_command(["paradise"], "/game") == [
+        "paradise", "assets", "watch", "--editor", "--profile", "dev", "--project", "/game",
+    ]

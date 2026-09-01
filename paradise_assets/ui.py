@@ -1,9 +1,18 @@
 """The "Paradise Assets" sidebar tab.
 
 Two panels: what document this scene came from and what can be done to it, and what the selected
-object is in that document. The second is READ-ONLY by design -- component payloads pass through
-untouched, and a panel that let you type into them would be promising an edit that never reaches
-the file.
+object is in that document.
+
+The second used to be READ-ONLY, on the grounds that component payloads pass through untouched
+and a panel that let you type into them would promise an edit that never reached the file. Both
+halves of that are still true -- the save still takes payloads from the re-read document -- and
+what changed is that an edit is now recorded as an OVERLAY of the fields an author touched
+(see ..edits), applied over the file version at save. A component nobody edited is still written
+back byte-for-byte, including one this addon has never heard of.
+
+A field is editable when the GAME schema describes it and the host does not author it. Everything
+else is shown as it always was: the format own meta and transform (Blender name field and gizmo
+are their editor), nested payloads, and anything a dump does not mention.
 """
 
 from __future__ import annotations
@@ -13,6 +22,7 @@ import os
 import bpy
 from bpy.types import Panel
 
+from . import component_ops, edits
 from .materialize import store, sync
 
 __all__ = ["classes"]
@@ -131,15 +141,91 @@ class PARADISE_ASSETS_PT_object(_AssetsPanel, Panel):
             layout.label(text="No components.")
             return
 
-        # Read-only, and the panel says so once rather than per row: this addon passes component
-        # payloads through untouched, so anything typed here would be discarded on save.
-        layout.label(text="Read-only — edited in the document.", icon="INFO")
+        vocabulary = component_ops.vocabulary_for(context)
+        pending = edits.read(obj)
+
+        if pending:
+            row = layout.box().row()
+            row.label(text=f"{edits.count(obj)} unsaved field edit(s)", icon="GREASEPENCIL")
+            row.operator("paradise_assets.revert_component_field", text="", icon="LOOP_BACK").component_id = ""
+
+        if not vocabulary:
+            # Not a failure: the dump is a build product of the GAME, and a fresh clone has none.
+            # Saying which file is missing is the difference between "this addon is broken" and
+            # "build the launcher once".
+            layout.label(text="No schema — build the game to edit fields.", icon="INFO")
 
         for component in components:
+            component_id = str(component.get("id", ""))
+            schema = vocabulary.get(component_id)
+            edited = pending.get(component_id, {})
+
             box = layout.box()
-            box.label(text=_component_label(component), icon="PROPERTIES")
-            for line in _payload_lines(component.get("data")):
-                box.label(text=line)
+            header = box.row()
+            header.label(text=_component_label(component), icon="PROPERTIES")
+            if edited:
+                revert = header.operator(
+                    "paradise_assets.revert_component_field", text="", icon="LOOP_BACK")
+                revert.component_id = component_id
+                revert.field_name = ""
+
+            if schema is None:
+                # Either the format's own two (meta, transform -- Blender's name field and gizmo
+                # ARE their editor) or a component this game's dump does not describe. Shown as
+                # it was before, because a value nobody can type is still a value worth reading.
+                for line in _payload_lines(component.get("data")):
+                    box.label(text=line)
+                continue
+
+            _draw_schema_fields(box, component, schema, edited)
+
+
+def _draw_schema_fields(box, component: dict, schema, edited: dict) -> None:
+    """One component's fields, editable where the schema says they can be."""
+    data = component.get("data")
+    data = data if isinstance(data, dict) else {}
+
+    for field in schema.fields:
+        row = box.row(align=True)
+        value = edited.get(field.name, data.get(field.name, field.default))
+
+        if not field.editable:
+            # A host-authored field is shown and not offered: its value comes from the object it
+            # points at, so typing one in would be authoring in the place the export overwrites.
+            row.label(text=f"{field.name}: {_short_value(value)}", icon="DECORATE_LOCKED")
+            continue
+
+        label = f"{field.name}: {_short_value(value)}"
+        edit = row.operator(
+            "paradise_assets.edit_component_field",
+            text=label,
+            icon="GREASEPENCIL" if field.name in edited else "DOT")
+        edit.component_id = str(component.get("id", ""))
+        edit.field_name = field.name
+
+        if field.name in edited:
+            revert = row.operator(
+                "paradise_assets.revert_component_field", text="", icon="LOOP_BACK")
+            revert.component_id = str(component.get("id", ""))
+            revert.field_name = field.name
+
+
+def _short_value(value) -> str:
+    """A value as one short line. A panel row is not a document viewer."""
+    if isinstance(value, float):
+        return f"{value:g}"
+    if isinstance(value, (list, tuple)):
+        if all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in value):
+            return "(" + ", ".join(f"{float(v):g}" for v in value) + ")"
+        return f"[{len(value)} item(s)]"
+    if isinstance(value, dict):
+        # An asset reference is the dict an author actually recognises, so it reads as its path.
+        path = value.get("path")
+        return str(path) if isinstance(path, str) else "{…}"
+    if value is None:
+        return "—"
+    text = str(value)
+    return text if len(text) <= 28 else text[:27] + "…"
 
 
 def _component_label(component: dict) -> str:

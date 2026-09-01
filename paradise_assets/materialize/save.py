@@ -1,8 +1,13 @@
 """Blender objects -> scene document.
 
 Blender owns placement: names, parents, transforms, and which objects exist. The document owns
-component payloads, which this addon does not edit and therefore takes from the file rather than
-from Blender -- so a component it has never heard of round-trips verbatim.
+component payloads, which are taken from the FILE rather than from Blender -- so a component this
+addon has never heard of round-trips verbatim.
+
+Component EDITS join that arrangement without ending it. What Blender holds is not a copy of the
+payloads but an overlay of the fields an author actually changed (:mod:`..edits`), applied on top
+of the file's version at merge time. So an edited component keeps every member nobody touched,
+including the ones this addon has no schema for and could not have displayed.
 
 Four rules guard the write, each against a failure that has a name:
 
@@ -34,6 +39,7 @@ import tempfile
 
 import bpy
 
+from .. import edits as component_edits
 from ..document import axes, prefab as prefab_document, well_known
 from ..document.asset_reference import AssetReference
 from ..document.prefab import PrefabComponent, PrefabDocument, PrefabObject
@@ -61,6 +67,8 @@ class SaveResult:
         self.moved = 0
         self.added = 0
         self.removed = 0
+        #: How many component FIELDS an overlay wrote (see ..edits).
+        self.edited = 0
         self.warnings: list[str] = []
 
 
@@ -88,6 +96,15 @@ def save_prefab(scene: bpy.types.Scene) -> SaveResult:
 
     _write_atomic(state.path, prefab_document.dumps(merged))
     store.write_state(scene, state.path)
+
+    # AFTER the write, and only after: an edit is a PENDING change to the document, not a second
+    # place the value lives. Once it is in the file, the file is the truth again -- and a leftover
+    # overlay would re-apply itself on the next save, resurrecting an old value over whatever
+    # someone else had written in the meantime. Before the write, a failed save would lose the
+    # author's edits along with it.
+    for obj in _document_objects(scene):
+        component_edits.clear(obj)
+
     result.written = len(merged.objects)
     return result
 
@@ -220,7 +237,32 @@ def _object_entry(obj: bpy.types.Object, original: PrefabObject | None, result: 
 
     _write_meta(entry, guid, obj.name, parent_guid)
     _write_transform(entry, obj, original, result)
+
+    # LAST, so a component edit is applied to the entry the file gave us rather than to one this
+    # function is still assembling -- and so an edit to `meta` or `transform`, which the overlay
+    # refuses to record in the first place, could not win against the two writes above.
+    _apply_edits(obj, entry, result)
     return entry
+
+
+def _apply_edits(obj: bpy.types.Object, entry: PrefabObject, result: SaveResult) -> None:
+    """Apply this object's pending field edits, and report a component that went missing.
+
+    Missing is worth REPORTING rather than passing over: it means the document changed under an
+    edit -- the component was deleted, or its id changed -- and the author's change is being
+    dropped. Silence there is the same failure as a save that does not reach the document, which
+    this module already treats as something an author must be told about.
+    """
+    pending = component_edits.read(obj)
+    if not pending:
+        return
+
+    missing = [component_id for component_id in pending if entry.component(component_id) is None]
+    result.edited += component_edits.apply_to(entry, pending)
+    for component_id in missing:
+        result.warnings.append(
+            f"{obj.name}: an edit to component {component_id} was dropped -- the document no "
+            "longer carries it.")
 
 
 def _write_meta(entry: PrefabObject, guid: str, name: str, parent: str | None) -> None:

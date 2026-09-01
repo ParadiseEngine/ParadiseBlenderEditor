@@ -29,13 +29,18 @@ _REGISTERED: list = []
 def register() -> None:
     import bpy
 
-    from . import browser, dropped, ops, prefs, ui
+    from . import browser, component_ops, dropped, ops, prefs, ui
     from .materialize import sync
     from .play import ops as play_ops
 
     # Preferences FIRST: every operator below resolves the toolchain through them, and an
     # AddonPreferences that is not registered yet reads as "nothing configured".
-    for cls in (*prefs.classes, *ops.classes, *play_ops.classes, *ui.classes, *browser.classes):
+    # component_ops BEFORE ui: the Components panel draws those operators, and a panel that
+    # names an unregistered operator draws a dead button rather than failing loudly.
+    for cls in (
+        *prefs.classes, *ops.classes, *play_ops.classes, *component_ops.classes,
+        *ui.classes, *browser.classes,
+    ):
         bpy.utils.register_class(cls)
         _REGISTERED.append(cls)
 

@@ -203,7 +203,25 @@ decompose as SCALE — it turned a stored `20.0` into `19.999998` on ShiningPie'
 
 **Components are passed through, never rebuilt.** `save.py` takes payloads from the RE-READ
 document, not from Blender. That one decision is what lets a scene full of components this addon
-has never heard of be opened and saved without corruption, and it is why the panel is read-only.
+has never heard of be opened and saved without corruption.
+
+**Editing a field does not change that, and the shape of the edit is why.** `edits.py` holds an
+OVERLAY — `{component id: {field: value}}`, only the members an author actually touched — applied
+over the file's version at merge time. So a component nobody edited is still written byte-for-byte,
+a field nobody edited keeps whatever the file says (including one this addon has no schema for),
+and the overlay is cleared once the save has written it, so an old edit cannot resurrect itself
+over a newer value. The ID property holding the payloads is still display data; do not write back
+from it.
+
+A field is offered as editable only when the GAME's schema describes it *and* nothing else
+authors it: `[AuthoredByHost]` fields are shown locked, because their value comes from the object
+they point at and typing one in would be authoring in the place the export overwrites. `meta` and
+`transform` are refused by the vocabulary outright — Blender's name field and transform gizmo are
+their editor, and a second way to type an identity is a second thing that can disagree.
+
+`edits.py` imports no `bpy`, and that is load-bearing rather than tidy: it is the only new logic
+on the save path, and being importable outside Blender is what lets it be unit-tested against a
+plain dict. Keep it that way.
 The ID property holding them is display data.
 
 **`document/` must not import `bpy`** — same rule and same reason as `paradise_blender`'s

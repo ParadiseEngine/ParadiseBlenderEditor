@@ -36,7 +36,8 @@ from ..pipeline import prune
 from ..prefs import export_paths
 from . import navmesh as navmesh_export
 from . import project_settings
-from .entity import export_entity, placement_components
+from .entity import export_entity
+from .placement import Placement
 from .light import export_light
 from .material import MaterialExporter
 from .mesh import MeshExporter
@@ -77,15 +78,26 @@ def build_level_data(
 
     document.entities.append(_environment_object(scene, paths))
 
+    # TWO PASSES, because v6 placement is not answerable one object at a time. A transform is
+    # LOCAL to the nearest EXPORTED ancestor, and whether an ancestor is exported is only known
+    # once every object has been offered -- an empty that authors nothing is not in the document,
+    # so a child parked under it hangs from whatever is above THAT.
+    emitted: list[tuple[bpy.types.Object, EntityComponentsData]] = []
+
     for obj in sorted((o for o in scene.objects if o.type == "LIGHT"), key=lambda o: o.name):
         if authoring.is_entity(obj):
             continue  # travels as that object's own Light component (export/entity.py)
-        document.entities.append(_light_object(obj, paths))
+        emitted.append((obj, _light_object(obj, paths)))
 
     for obj in authoring.entity_objects(scene):
         components = export_entity(obj, paths, materials, meshes)
         if components is not None:
-            document.entities.append(components)
+            emitted.append((obj, components))
+
+    placement = Placement({obj.name for obj, _ in emitted})
+    for obj, components in emitted:
+        placement.components(obj, components)
+        document.entities.append(components)
 
     if export_assets:
         written = materials.write_exported_materials(paths)
@@ -124,7 +136,6 @@ def _light_object(obj: bpy.types.Object, paths: ExportPaths) -> EntityComponents
     record's business rather than something this walk should resolve.
     """
     components = EntityComponentsData(data_dir=paths.data_dir)
-    placement_components(obj, components)
     components.add_engine(component_ids.LIGHT, export_light(obj))
     return components
 

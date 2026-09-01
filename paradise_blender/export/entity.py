@@ -32,35 +32,14 @@ from ..contract.schema import (
     ColliderComponentData,
     EntityComponentsData,
     MaterialsComponentData,
-    NameComponentData,
     PhysicsBodyType,
     RigidbodyComponentData,
-    TransformComponentData,
 )
 from ..paths import ExportPaths
 from .collider import build_colliders
 from .light import export_light
-from .transform import to_contract_matrix
 
-__all__ = ["export_entity", "placement_components"]
-
-
-def placement_components(obj: bpy.types.Object, components: EntityComponentsData) -> None:
-    """The two things this host says about every object it writes: what it is called, and where
-    it stands.
-
-    Separate and public because the scene walk uses it for objects that are not authored entities
-    at all — a lamp, the scene's environment — and those need naming and placing by exactly the
-    same rule. A second spelling of "write a Name and a Transform" is a second thing that can
-    disagree about the matrix convention.
-    """
-    components.add_engine(component_ids.NAME, NameComponentData(value=obj.name))
-    # The CONVERTED matrix, not one rebuilt from a decomposition. The entity record used to carry
-    # both a decomposed pose and a matrix, and kept them consistent by writing the matrix as
-    # trs(decompose(...)) -- lossy for a sheared transform, and the only reason to do it was that
-    # the two had to agree. With one value there is nothing to agree with, so it is exact.
-    components.add_engine(
-        component_ids.TRANSFORM, TransformComponentData(world=to_contract_matrix(obj.matrix_world)))
+__all__ = ["export_entity"]
 
 
 def export_entity(
@@ -71,19 +50,24 @@ def export_entity(
 ) -> EntityComponentsData | None:
     """This object's components, or None when it authors nothing worth a row in the document.
 
-    "Nothing" means nothing BEYOND the name and the transform this host writes unconditionally.
-    An empty an author marked as an entity and never gave a mesh, a collider or a component is
-    not a statement about the world; the runtime would build an entity with no shape for it and
-    then have nothing to do with it.
+    "Nothing" still means nothing BEYOND the identity and the placement this host writes for every
+    object it emits. An empty an author marked as an entity and never gave a mesh, a collider or a
+    component is not a statement about the world; the runtime would build an entity with no shape
+    for it and then have nothing to do with it.
+
+    **The placement is no longer added here**, so the emptiness test is simply "did anything get
+    added" rather than "more than the two this host prepends". Since v6 an object's transform is
+    LOCAL and names a parent, so it cannot be built until the export knows which objects are being
+    written -- an object may hang from an ancestor that authors nothing and is therefore absent
+    from the document. :class:`.placement.Placement` answers that once, over the whole set, and
+    the scene walk applies it to the survivors.
     """
     components = EntityComponentsData(data_dir=paths.data_dir)
-    placement_components(obj, components)
-    placed = len(components.components)
 
     _build_derived(obj, paths, materials, meshes, components)
     _apply_authored_components(obj, components, paths, meshes)
 
-    return components if len(components.components) > placed else None
+    return components if components.components else None
 
 
 def _build_derived(

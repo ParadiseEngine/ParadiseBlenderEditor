@@ -58,6 +58,15 @@ __all__ = [
 
 # LevelData.CurrentSchemaVersion. Bump only in lockstep with the engine.
 #
+# v6 took the engine out of the authoring vocabulary entirely: it declares NO authored components,
+# so every record below except the two well-known ones is a GAME declaration now, and the ids this
+# host writes resolve against whatever the game declares under them. Two consequences here. The
+# entity's name and world matrix stop being engine records (NameComponentData,
+# TransformComponentData) and become the format's own `meta` and `transform` payloads -- see
+# contract/well_known.py. And the HIERARCHY comes back: the bake stopped flattening, so a document
+# carries local TRS plus a parent guid and composing the chain is the loader's job. That is why
+# export/placement.py exists and why the scene walk needs two passes.
+#
 # v5 reduced an entity to its authored components: an entry under "Entities" is now a bare ARRAY
 # of {Id, Type, Data}, not an object with eighteen fields and a Components key. The object's name
 # and its world matrix travel as ordinary components (Name, Transform); an object the author
@@ -68,7 +77,7 @@ __all__ = [
 #
 # v4 moved an entity's material slots onto its Renderable component; v3 replaced nine named
 # component slots with one list. Both are below the engine's floor now.
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 Vec3 = tuple[float, float, float]
 Quat = tuple[float, float, float, float]

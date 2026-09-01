@@ -15,8 +15,17 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
 
 BLENDER="${BLENDER:-blender}"
-PYTHON="${PYTHON:-.venv/bin/python}"
-[ -x "$PYTHON" ] || PYTHON="python3"
+# A venv puts its interpreter in `bin` on POSIX and `Scripts` on Windows, so both are tried
+# before falling back. The fallback matters on Windows in particular: `python3` there is usually
+# the Microsoft Store's stub, which prints an install advert and exits non-zero -- so without the
+# Scripts branch this reported "FAILED: unit tests" on a machine where every test passes.
+PYTHON="${PYTHON:-}"
+if [ -z "$PYTHON" ]; then
+  for candidate in .venv/bin/python .venv/Scripts/python.exe; do
+    [ -x "$candidate" ] && PYTHON="$candidate" && break
+  done
+fi
+[ -n "$PYTHON" ] && [ -x "$PYTHON" ] || PYTHON="python3"
 
 failures=0
 step() { printf '\n\033[1m== %s\033[0m\n' "$1"; }

@@ -20,7 +20,7 @@ class TestLevelData:
         ]
 
     def test_schema_version_defaults_to_the_pinned_version(self):
-        assert schema.LevelData().schema_version == schema.SCHEMA_VERSION == 5
+        assert schema.LevelData().schema_version == schema.SCHEMA_VERSION == 6
 
     def test_an_object_is_a_bare_component_array(self):
         """The whole of schema v5, in one assertion. An object has no keys of its own, so there is

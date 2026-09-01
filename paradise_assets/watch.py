@@ -48,6 +48,10 @@ __all__ = [
 #: Live watchers, by absolute project root. At most one per root -- see the module docstring.
 _WATCHERS: dict[str, subprocess.Popen] = {}
 
+#: Why a watcher stopped, by project root: (exit code, last thing its log said). Kept only until
+#: the next start, so it describes the most recent failure rather than accumulating history.
+_EXITS: dict[str, tuple[int, str | None]] = {}
+
 
 def log_path(project_root: str) -> str:
     """Where one project's watcher writes.
@@ -75,11 +79,19 @@ def is_running(project_root: str) -> bool:
     process = _WATCHERS.get(key)
     if process is None:
         return False
-    if process.poll() is not None:
+    if (code := process.poll()) is not None:
         # Reaped here rather than in a timer: nothing polls on a schedule, and a dead entry left
         # in the table would make `start` a no-op forever after the first crash.
+        #
+        # WHY IT DIED IS REMEMBERED. A watcher that starts and then stops used to leave the panel
+        # saying "Not watching" -- identical to never having started one, and impossible to act
+        # on. The exit code and whatever the log last said are kept so the panel can say what
+        # happened instead of what is no longer true.
         _WATCHERS.pop(key, None)
+        _EXITS[key] = (code, last_error(project_root) or _last_line(project_root))
         return False
+
+    _EXITS.pop(key, None)
     return True
 
 
@@ -221,10 +233,40 @@ def _is_summary(lowered: str) -> bool:
     return "build failed with" in lowered
 
 
+def _last_line(project_root: str) -> str | None:
+    """The final non-empty line of the log, whatever it says.
+
+    The fallback when a watcher exits without anything that looks like an error: a process that
+    stopped for a reason it did not phrase as one still left its last words, and those are more
+    use than an exit code alone.
+    """
+    try:
+        with open(log_path(project_root), encoding="utf-8", errors="replace") as handle:
+            lines = [line.strip() for line in handle.readlines()[-40:] if line.strip()]
+    except OSError:
+        return None
+    return lines[-1][:200] if lines else None
+
+
+def exit_reason(project_root: str) -> str | None:
+    """Why this project's watcher stopped, or ``None`` if it never started or is still running.
+
+    Exists because "Not watching" is what a panel showed for BOTH "you never started one" and
+    "the one you started died a second later", and an author cannot tell those apart or act on
+    either.
+    """
+    entry = _EXITS.get(_normalize(project_root))
+    if entry is None:
+        return None
+    code, detail = entry
+    return f"stopped (exit {code}): {detail}" if detail else f"stopped (exit {code})"
+
+
 def status_line(project_root: str) -> str:
     """One line for a panel: whether it is watching, and the last thing that went wrong."""
     if not is_running(project_root):
-        return "Not watching."
+        reason = exit_reason(project_root)
+        return f"Watcher {reason}" if reason else "Not watching."
     problem = last_error(project_root)
     return f"Watching — last error: {problem}" if problem else "Watching."
 

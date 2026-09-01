@@ -148,6 +148,15 @@ def _draw_watch(layout, context) -> None:
         box.alert = True
         box.label(text="Last rebuild reported:", icon="ERROR")
         box.label(text=problem[:70])
+    elif not running and (reason := watch.exit_reason(root)) is not None:
+        # A watcher that started and then STOPPED used to be indistinguishable here from one that
+        # was never started, which is the difference between "click Start" and "something is
+        # wrong". Whatever it said on the way out is the only clue an author has.
+        box = layout.box()
+        box.alert = True
+        box.label(text="The watcher stopped on its own.", icon="ERROR")
+        for line in _wrap(reason, 44)[:3]:
+            box.label(text=line)
 
 
 class PARADISE_ASSETS_PT_object(_AssetsPanel, Panel):
@@ -302,3 +311,18 @@ classes = (
     PARADISE_ASSETS_PT_play,
     PARADISE_ASSETS_PT_object,
 )
+
+
+def _wrap(text: str, width: int) -> list[str]:
+    """Panel labels do not wrap, so a message longer than a row has to be broken by hand."""
+    words, lines, current = text.split(), [], ""
+    for word in words:
+        candidate = f"{current} {word}".strip()
+        if len(candidate) > width and current:
+            lines.append(current)
+            current = word
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    return lines

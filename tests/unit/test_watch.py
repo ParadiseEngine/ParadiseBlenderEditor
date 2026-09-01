@@ -49,6 +49,10 @@ def _register(root: str) -> FakeProcess:
 
 def teardown_function(_function):
     watch._WATCHERS.clear()
+    # The exit table deliberately OUTLIVES a stopped watcher -- that is the whole point of it, so
+    # a panel can say why one died -- which means a test that kills one leaks its reason into the
+    # next unless this clears too.
+    watch._EXITS.clear()
 
 
 def test_nothing_is_running_to_begin_with():

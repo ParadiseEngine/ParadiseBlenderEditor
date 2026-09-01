@@ -15,7 +15,7 @@ import bpy
 from bpy.props import StringProperty
 from bpy.types import Operator
 
-from . import catalogue
+from . import catalogue, watch
 from .document import project
 from .document.prefab import PrefabDocumentError, loads
 from .materialize import instancing, load, save, store, workfile
@@ -82,6 +82,14 @@ class PARADISE_ASSETS_OT_open_prefab(Operator):
         written = workfile.save(layout, path)
         if written is None:
             self.report({"WARNING"}, "could not write the working file under .editor/blend")
+
+        # After the document is open, not before: a watcher for a project whose document failed
+        # to load is a rebuild nobody asked for. Reported as a WARNING rather than failing the
+        # open -- the document is loaded and usable, and "no CLI installed" is a setup gap rather
+        # than a reason to refuse the file.
+        problem = watch.start_for(layout.root)
+        if problem is not None:
+            self.report({"WARNING"}, problem)
 
         self.report(
             {"INFO"},
@@ -159,11 +167,46 @@ class PARADISE_ASSETS_OT_save_prefab(Operator):
             changes.append(f"{result.added} added")
         if result.removed:
             changes.append(f"{result.removed} removed")
+        if result.edited:
+            changes.append(f"{result.edited} field(s) edited")
         self.report(
             {"INFO"},
             f"Saved {result.written} object(s)"
             + (f" ({', '.join(changes)})" if changes else " (no placement changes)"),
         )
+        return {"FINISHED"}
+
+
+class PARADISE_ASSETS_OT_toggle_watch(Operator):
+    """Start or stop the asset watcher for this document's project"""
+
+    bl_idname = "paradise_assets.toggle_watch"
+    bl_label = "Toggle Asset Watch"
+
+    @classmethod
+    def poll(cls, context):
+        return store.read_state(context.scene) is not None
+
+    def execute(self, context):
+        state = store.read_state(context.scene)
+        layout = project.locate(state.path)
+        if layout is None:
+            self.report({"ERROR"}, "No asset project for the open document")
+            return {"CANCELLED"}
+
+        if watch.is_running(layout.root):
+            watch.stop(layout.root)
+            self.report({"INFO"}, "Asset watch stopped")
+            return {"FINISHED"}
+
+        # `start`, not `start_for`: this button is an explicit request, and an author who turned
+        # the automatic behaviour off may still want one for this session. A button that silently
+        # did nothing because of a preference is the worst of both.
+        problem = watch.start(layout.root)
+        if problem is not None:
+            self.report({"ERROR"}, problem)
+            return {"CANCELLED"}
+        self.report({"INFO"}, "Asset watch started")
         return {"FINISHED"}
 
 
@@ -320,6 +363,7 @@ classes = (
     PARADISE_ASSETS_OT_open_prefab,
     PARADISE_ASSETS_OT_reload_prefab,
     PARADISE_ASSETS_OT_save_prefab,
+    PARADISE_ASSETS_OT_toggle_watch,
     PARADISE_ASSETS_OT_add_prefab_instance,
     PARADISE_ASSETS_OT_refresh_catalogue,
     PARADISE_ASSETS_FH_prefab,

@@ -22,7 +22,8 @@ import os
 import bpy
 from bpy.types import Panel
 
-from . import component_ops, edits
+from . import component_ops, edits, watch
+from .document import project
 from .materialize import store, sync
 
 __all__ = ["classes"]
@@ -109,11 +110,44 @@ class PARADISE_ASSETS_PT_play(_AssetsPanel, Panel):
 
         layout.operator("paradise_assets.play", icon="PLAY")
 
+        # The watcher has no console anyone is looking at, so this row is where a failed rebuild
+        # surfaces at all. Until a tray icon exists (ParadiseEngine#192) it is the only place.
+        _draw_watch(layout, context)
+
         row = layout.row(align=True)
         row.operator("paradise_assets.build", icon="MOD_BUILD")
         row.operator("paradise_assets.verify", icon="CHECKMARK")
         # Off on its own: the only button here that deletes anything.
         layout.operator("paradise_assets.clean", icon="TRASH")
+
+
+def _draw_watch(layout, context) -> None:
+    """Whether a watcher is running for this project, and the last thing it complained about."""
+    state = store.read_state(context.scene)
+    if state is None:
+        return
+    # locate can fail even with a document open -- the project may have been moved or deleted out
+    # from under the session -- and a panel that raised would take the whole sidebar with it.
+    layout_ = project.locate(state.path)
+    if layout_ is None:
+        return
+    root = layout_.root
+
+    running = watch.is_running(root)
+    row = layout.row(align=True)
+    row.label(
+        text="Watching assets" if running else "Not watching",
+        icon="RADIOBUT_ON" if running else "RADIOBUT_OFF")
+    row.operator(
+        "paradise_assets.toggle_watch",
+        text="Stop" if running else "Start",
+        icon="PAUSE" if running else "PLAY")
+
+    if running and (problem := watch.last_error(root)) is not None:
+        box = layout.box()
+        box.alert = True
+        box.label(text="Last rebuild reported:", icon="ERROR")
+        box.label(text=problem[:70])
 
 
 class PARADISE_ASSETS_PT_object(_AssetsPanel, Panel):

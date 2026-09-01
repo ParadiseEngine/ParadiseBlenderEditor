@@ -14,7 +14,7 @@ teammate someone else's directory layout.
 from __future__ import annotations
 
 import bpy
-from bpy.props import StringProperty
+from bpy.props import BoolProperty, StringProperty
 from bpy.types import AddonPreferences
 
 __all__ = ["PACKAGE", "ParadiseAssetsPreferences", "classes", "get_preferences"]
@@ -82,6 +82,16 @@ class ParadiseAssetsPreferences(AddonPreferences):
         default="",
     )
 
+    auto_watch: BoolProperty(  # type: ignore[valid-type]
+        name="Watch While a Document Is Open",
+        description=(
+            "Start `paradise assets watch` for the project when a document is opened, so edits "
+            "reach the build without starting one by hand. One watcher per project, stopped when "
+            "Blender quits or opens another file. Turn this off if you run your own"
+        ),
+        default=True,
+    )
+
     def draw(self, _context) -> None:
         layout = self.layout
 
@@ -90,6 +100,7 @@ class ParadiseAssetsPreferences(AddonPreferences):
         box.prop(self, "cli")
         box.prop(self, "build_profile")
         box.prop(self, "ktx_path")
+        box.prop(self, "auto_watch")
 
         box = layout.box()
         box.label(text="Play", icon="PLAY")

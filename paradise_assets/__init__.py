@@ -29,7 +29,7 @@ _REGISTERED: list = []
 def register() -> None:
     import bpy
 
-    from . import browser, component_ops, dropped, ops, prefs, ui
+    from . import browser, component_ops, dropped, ops, prefs, ui, watch
     from .materialize import sync
     from .play import ops as play_ops
 
@@ -51,6 +51,7 @@ def register() -> None:
     # Blender's own save writes the document too: the .blend is a disposable cache, so saving only
     # the cache is how a day's work goes missing. See paradise_assets.materialize.sync.
     sync.register_handler()
+    watch.register_handler()
 
     # After the classes: the menu draws the operator, so it must exist by the time anyone opens it.
     browser.register_menu()
@@ -65,6 +66,7 @@ def unregister() -> None:
     browser.unregister_menu()
     dropped.unregister_handler()
     sync.unregister_handler()
+    watch.unregister_handler()
 
     # Reverse order: a child panel registered against a parent's bl_idname must go first, or
     # Blender warns about an unregistered parent while tearing the tab down.

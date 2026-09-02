@@ -1,13 +1,17 @@
 """Content-addressed cache for KTX2 transcodes and navmesh bakes, under
-``<project>/.paradise-cache/<kind>/<key><ext>``. On ShiningPie (87 GLBs, 64 textures, 36.5 s of
+``<project>/.editor/cache/<kind>/<key><ext>``. On ShiningPie (87 GLBs, 64 textures, 36.5 s of
 transcoding per export) an unchanged re-export went from 44.4 s to 3.6 s, byte-identical.
 
 The one rule: a key must be the COMPLETE input of the step it skips (image bytes plus the encode
 argv, so a flag change invalidates by construction; the whole bridge payload for a navmesh).
 Mesh GLBs are deliberately NOT cached: their input is a transitive closure over the depsgraph,
 and a key that misses an input ships last week's asset and reports success, which an
-``export_tangents`` fix already demonstrated once by leaving every mesh dark. The engine's C#
-``ArtifactCache`` shares the digest scheme but lives at ``.editor/cache`` (ParadiseEngine#204).
+``export_tangents`` fix already demonstrated once by leaving every mesh dark.
+
+The directory, the digest and the ``<kind>/<key><ext>`` layout are shared with the engine's C#
+``ArtifactCache`` (``Paradise.Assets.Project``), so an artifact either tool made serves the
+other and one ``clean`` clears both. A checkout may still carry the retired ``.paradise-cache/``
+beside it; it is gitignored by its own marker and safe to delete.
 """
 
 from __future__ import annotations
@@ -23,7 +27,7 @@ from ..paths import ExportPaths
 
 __all__ = ["DIRECTORY_NAME", "ArtifactCache", "artifact_cache", "digest"]
 
-DIRECTORY_NAME = ".paradise-cache"
+DIRECTORY_NAME = os.path.join(".editor", "cache")
 
 #: Overrides the location, or disables caching when set to a falsey word (CI, bisecting).
 LOCATION_ENV = "PARADISE_EXPORT_CACHE"
@@ -120,8 +124,8 @@ class ArtifactCache:
 
 
 def artifact_cache(paths: ExportPaths) -> ArtifactCache:
-    """The project's cache, from :data:`LOCATION_ENV` or beside ``data/``. Project-local so it
-    goes with the checkout that produced it."""
+    """The project's cache, from :data:`LOCATION_ENV` or ``.editor/cache`` beside ``data/``.
+    Project-local so it goes with the checkout that produced it."""
     configured = os.environ.get(LOCATION_ENV, "").strip()
     if configured.lower() in _DISABLED_VALUES:
         return ArtifactCache(None)

@@ -104,6 +104,11 @@ class TestLocation:
         cache = artifact_cache(paths)
         assert cache.root == str(tmp_path / "project" / cache_module.DIRECTORY_NAME)
 
+    def test_the_directory_is_the_engines(self):
+        # A cross-tool contract: the engine's ArtifactCache reads and writes this very directory
+        # (AssetProjectLayout.EditorCache), so a rename here silently splits one cache into two.
+        assert os.path.join(".editor", "cache") == cache_module.DIRECTORY_NAME
+
     def test_env_override(self, tmp_path, monkeypatch):
         monkeypatch.setenv(cache_module.LOCATION_ENV, str(tmp_path / "elsewhere"))
         cache = artifact_cache(ExportPaths(str(tmp_path / "project" / "data")))

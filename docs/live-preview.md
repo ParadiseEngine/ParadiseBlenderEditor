@@ -23,8 +23,8 @@ game. The current `ShiningPie.Launcher` and `paradise-runtime` (the engine sampl
 `--live` listener; adding one is a separate change in the host repository. Against either, the
 button waits 60 s and reports the absence.
 
-Two protocol gaps on this side are tracked in #34: the client never reads the runtime's `ready`
-or `error` reply after `hello`, and the 60 s wait sleeps on Blender's main thread.
+The wait runs from the operator's modal timer, so Blender stays responsive; the client reads the
+runtime's `ready` or `error` reply to `hello` before streaming, and answers a `resync` request.
 
 `tools/mock_runtime.py` remains the executable spec and is what
 `tests/integration/test_live_preview.py` drives, so the Blender side stays testable with no game
@@ -80,9 +80,10 @@ arrives as a remove plus an add.
 
 **Sequence numbers exist so the runtime can detect a gap.** The sender's queue is bounded and
 drops the oldest pending messages when the runtime stops keeping up (see below), so a gap is a
-real possibility. On noticing one, the runtime should ask for a resync rather than render a
-scene that has silently diverged — but note the client currently sends only and never reads a
-reply, so a resync request would be ignored until #34 lands.
+real possibility. On noticing one, the runtime sends `{"type": "resync"}` rather than render a
+scene that has silently diverged, and the client answers with the next `scene/full`. The client
+also reads the reply to `hello`: `ready` opens the stream, `error` (protocol mismatch) ends the
+session with the runtime's reason.
 
 ### Full resync vs patch
 

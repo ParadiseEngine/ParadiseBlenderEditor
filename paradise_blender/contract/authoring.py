@@ -155,7 +155,7 @@ HOST_CAMERA = "camera"
 #: exporter infers from the object having mesh data.
 HOST_MESH = "mesh"
 HOST_SPRITE = "sprite"
-#: Baked as the target's GUID (see #27 for the split with ``meta.Guid``).
+#: Baked as the target's identity, the same value its ``meta.Guid`` carries.
 HOST_ENTITY = "entity"
 #: A file browser over ``data/``, filtered by the field's declared extensions.
 HOST_ASSET = "asset"

@@ -3,7 +3,7 @@
 A timer polls the source stamp and, once it settles (a half-written save must not build a
 half-built schema), runs ``dotnet build`` detached and lets the panel's hot-reload pick up the
 dump. Never blocks the main thread. ``bpy`` is imported inside functions so the pure helpers
-stay importable under pytest. KNOWN GAP (#33): the build is launched without the PATH fix
+stay importable under pytest. The build runs in :func:`.dotnet.subprocess_environment`
 ``play/host.py`` applies, so it fails in a Dock-launched macOS Blender.
 """
 
@@ -12,12 +12,12 @@ from __future__ import annotations
 import contextlib
 import os
 import re
-import shutil
 import subprocess
 import tempfile
 import time
 
 from .. import log
+from . import dotnet
 
 __all__ = [
     "dotnet_executable",
@@ -107,17 +107,7 @@ def is_schema_stale(project_dir: str | list[str], schema_path: str) -> bool:
 
 
 def dotnet_executable() -> str | None:
-    """PATH first, then the places a GUI-launched Blender's PATH misses."""
-    found = shutil.which("dotnet")
-    if found:
-        return found
-    candidates = [
-        "/usr/local/share/dotnet/dotnet",
-        "/opt/homebrew/bin/dotnet",
-        os.path.expanduser("~/.dotnet/dotnet"),
-        r"C:\Program Files\dotnet\dotnet.exe",
-    ]
-    return next((c for c in candidates if os.path.exists(c)), None)
+    return dotnet.executable()
 
 
 _timer_registered = False
@@ -210,8 +200,8 @@ def start_build(project: str, reason: str) -> bool:
 
     if _build is not None:
         return False
-    dotnet = dotnet_executable()
-    if dotnet is None:
+    executable = dotnet.executable()
+    if executable is None:
         log.warn(
             "Cannot rebuild the game project: no `dotnet` CLI found on PATH or in the usual "
             "install locations. Build manually and the schema will hot-reload.")
@@ -220,10 +210,11 @@ def start_build(project: str, reason: str) -> bool:
     _discard_failure_log()
     handle, _build_log_path = tempfile.mkstemp(prefix="paradise_schema_build_", suffix=".log")
     _build = subprocess.Popen(
-        [dotnet, "build", project],
+        [executable, "build", project],
         stdout=handle,
         stderr=subprocess.STDOUT,
         cwd=os.path.dirname(project),
+        env=dotnet.subprocess_environment(),
     )
     os.close(handle)
     _build_started = time.monotonic()

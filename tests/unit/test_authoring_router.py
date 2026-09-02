@@ -126,8 +126,7 @@ class TestRefusals:
         and a game's own. There is no longer any id the router treats SPECIALLY beyond clamping,
         which is what makes this a one-liner rather than a table of destinations."""
         for component_id in (component_ids.RENDERABLE, component_ids.COLLIDER, component_ids.LIGHT,
-                             component_ids.SPRITE_ANIMATION, component_ids.NAME,
-                             component_ids.TRANSFORM, component_ids.ENVIRONMENT,
+                             component_ids.SPRITE_ANIMATION, component_ids.ENVIRONMENT,
                              "7b1e0d4a-2c95-4f88-b3e6-05a9d1c7e264"):
             original = {"anything": [1, 2, 3]}
             assert authoring_router.normalize(component_id, original) is original

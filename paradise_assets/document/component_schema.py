@@ -31,8 +31,6 @@ __all__ = [
     "describe",
     "field_caption",
     "format_value",
-    "has_slider",
-    "id_subtype",
     "infer",
     "is_asset_field",
     "is_asset_ref",
@@ -41,7 +39,6 @@ __all__ = [
     "is_host_locked",
     "join_path",
     "load",
-    "numeric_widget_options",
 ]
 
 _CANDIDATES = ("build/authoring-schema.json", "data/authoring-schema.json")
@@ -193,56 +190,20 @@ def is_asset_field(field: FieldSchema, value=None) -> bool:
     return is_asset_ref(value)
 
 
-#: Schema ``unit`` -> ID-property subtype. Kilograms is absent (no MASS subtype), so the
-#: caption carries ``kg``.
-_SUBTYPE_FOR_UNIT = {
-    "meters": "DISTANCE",
-    "radians": "ANGLE",
-    "seconds": "TIME",
-    "unit01": "FACTOR",
-}
+#: Units a Blender widget displays itself (distance, angle, time, factor); the caption carries
+#: the rest, kilograms included since there is no MASS subtype.
+_WIDGET_UNITS = frozenset({"meters", "radians", "seconds", "unit01"})
 
 _SHORT_UNIT = {
     "kilograms": "kg",
 }
 
 
-def id_subtype(unit: str | None) -> str | None:
-    """Blender ID-property subtype for a schema unit, or None when the widget cannot carry it."""
-    return _SUBTYPE_FOR_UNIT.get(unit) if unit else None
-
-
 def field_caption(name: str, unit: str | None) -> str:
     """The label for a number field: units the widget already displays stay off it."""
-    if not unit or unit in _SUBTYPE_FOR_UNIT:
+    if not unit or unit in _WIDGET_UNITS:
         return name
     return f"{name} ({_SHORT_UNIT.get(unit, unit)})"
-
-
-def has_slider(minimum, maximum, unit: str | None = None) -> bool:
-    """Whether Blender can draw a capped slider; ``unit01`` always qualifies."""
-    if unit == "unit01":
-        return True
-    return isinstance(minimum, (int, float)) and isinstance(maximum, (int, float))
-
-
-def numeric_widget_options(field: FieldSchema) -> dict:
-    """ID-property UI metadata for a float/int: range plus the unit's subtype."""
-    if field.type not in ("float", "int"):
-        return {}
-    options: dict = {}
-    if isinstance(field.minimum, (int, float)):
-        options["min"] = field.minimum
-    if isinstance(field.maximum, (int, float)):
-        options["max"] = field.maximum
-    subtype = id_subtype(field.unit)
-    if subtype:
-        options["subtype"] = subtype
-    if field.unit == "unit01":
-        options.setdefault("min", 0.0)
-        options.setdefault("max", 1.0)
-        options["subtype"] = "FACTOR"
-    return options
 
 
 def _is_visible(field: FieldSchema, siblings) -> bool:
@@ -370,12 +331,23 @@ class Vocabulary:
         return describe(component, self)
 
 
+#: project root -> (dump path, mtime_ns, size, vocabulary). The panel asks on every redraw, and
+#: re-parsing a schema per frame was the redraw's cost; a rebuild changes the stamp.
+_CACHE: dict[str, tuple[str, int, int, Vocabulary]] = {}
+
+
 def load(project_root: str) -> Vocabulary:
-    """Read the game's dump, or return an empty vocabulary when there is none."""
+    """Read the game's dump, or return an empty vocabulary when there is none. Cached on the
+    dump's ``(mtime, size)``, so a rebuild still shows up without reopening."""
     for candidate in _CANDIDATES:
         path = os.path.join(project_root, candidate.replace("/", os.sep))
-        if not os.path.isfile(path):
+        try:
+            stat = os.stat(path)
+        except OSError:
             continue
+        cached = _CACHE.get(project_root)
+        if cached is not None and cached[:3] == (path, stat.st_mtime_ns, stat.st_size):
+            return cached[3]
         try:
             with open(path, "rb") as handle:
                 document = json.load(handle)
@@ -393,8 +365,11 @@ def load(project_root: str) -> Vocabulary:
                 continue
             components[component.id.lower()] = component
 
-        return Vocabulary(components, path)
+        vocabulary = Vocabulary(components, path)
+        _CACHE[project_root] = (path, stat.st_mtime_ns, stat.st_size, vocabulary)
+        return vocabulary
 
+    _CACHE.pop(project_root, None)
     return Vocabulary({}, None)
 
 

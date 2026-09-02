@@ -12,25 +12,29 @@ relative, fine as a position and fatal as text because ``repr`` of a value moved
 is a different string, so an untouched scene would otherwise rewrite every transform. See
 :func:`_unchanged`.
 
-KNOWN GAP (#26): override carriers (``meta.Target``) have no Blender object, so :func:`_merge`
-counts them "removed" and the first save drops them.
+Override carriers (``meta.Target``) have no Blender object of their own: the load folds them into
+the derived children it displays. They are document-owned data, like payloads, and travel
+through :func:`_merge` untouched as long as the instance they belong to is still in the scene.
+The edit they cannot express -- moving a derived child -- is refused rather than silently lost.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
 
 import bpy
+from mathutils import Quaternion
 
 from .. import edits as component_edits
-from ..document import axes, well_known
+from ..document import axes, canonical_toml, well_known
 from ..document import prefab as prefab_document
 from ..document.asset_reference import AssetReference
-from ..document.prefab import PrefabComponent, PrefabDocument, PrefabObject
+from ..document.prefab import PrefabComponent, PrefabDocument, PrefabDocumentError, PrefabObject
 from . import store
 
-__all__ = ["SaveError", "SaveResult", "save_prefab"]
+__all__ = ["SaveError", "SaveResult", "document_trs", "save_prefab"]
 
 #: How close a Blender TRS has to be to the document's to count as untouched, relative to the
 #: value's own magnitude. Round-tripping the rebase costs ~4e-8; float32 itself is ~1.2e-7. A
@@ -74,9 +78,20 @@ def save_prefab(scene: bpy.types.Scene) -> SaveResult:
 
     _refuse_duplicate_identities(scene)
     _refuse_foreign_parents(scene)
+    _refuse_moved_derived(scene)
 
     result = SaveResult()
     merged = _merge(scene, base, result)
+
+    # What the reader will check, checked here: deleting the root (Blender unparents its
+    # children) otherwise wrote a multi-root document that reported success and never loaded.
+    try:
+        merged.validate(state.path)
+    except PrefabDocumentError as error:
+        raise SaveError(
+            f"{error}\n\nA document has exactly one root object. Parent the others beneath it, "
+            "or reload to put the deleted root back."
+        ) from error
 
     _write_atomic(state.path, prefab_document.dumps(merged))
     store.write_state(scene, state.path)
@@ -145,38 +160,59 @@ def _refuse_foreign_parents(scene: bpy.types.Scene) -> None:
     )
 
 
+def _refuse_moved_derived(scene: bpy.types.Scene) -> None:
+    """Refuse when a prefab-resolved child no longer sits where its prefab put it. The document
+    has no way to say "this instance's child is elsewhere" short of editing the prefab, so a save
+    that went ahead would report success and the next load would put the child back."""
+    moved = []
+    for obj in scene.collection.all_objects:
+        if store.guid_of(obj) is None or not store.is_derived(obj):
+            continue
+        stored = next(
+            (c.get("data") for c in store.component_json(obj)
+             if isinstance(c, dict) and str(c.get("id", "")).lower() == well_known.TRANSFORM_ID),
+            None,
+        )
+        if not _unchanged(stored if isinstance(stored, dict) else {}, _document_trs(obj)):
+            moved.append(f"  '{obj.name}'")
+
+    if not moved:
+        return
+
+    raise SaveError(
+        "a prefab's child was moved, which this document cannot express:\n"
+        + "\n".join(moved)
+        + "\n\nMove the instance instead, or edit the prefab itself. Reload to put it back."
+    )
+
+
 def _merge(scene: bpy.types.Scene, base: PrefabDocument, result: SaveResult) -> PrefabDocument:
-    """The document as Blender now has it, over the document as the file now has it."""
-    by_guid = base.by_guid()
-    objects = _document_objects(scene)
-    present = {store.guid_of(obj) for obj in objects}
+    """The document as Blender now has it, over the document as the file now has it. File order
+    is kept: Blender guarantees no iteration order, and following it would reshuffle the file on
+    every save. New objects follow, in name order."""
+    objects = {store.guid_of(obj): obj for obj in _document_objects(scene)}
+    present = frozenset(objects)
 
     merged = PrefabDocument()
-    seen: set[str] = set()
-
-    # File order is kept: Blender guarantees no iteration order, and following it would
-    # reshuffle the file on every save.
     for entry in base.objects:
-        if entry.guid not in present:
+        if entry.target is not None:
+            # A carrier is the instance's data; it goes where the instance goes.
+            if entry.parent in present:
+                merged.objects.append(entry)
+            else:
+                result.removed += 1
+            continue
+        obj = objects.pop(entry.guid, None)
+        if obj is None:
             result.removed += 1
             continue
-        seen.add(entry.guid)
+        merged.objects.append(_object_entry(obj, entry, result))
 
-    for obj in objects:
-        guid = store.guid_of(obj)
-        original = by_guid.get(guid)
-        if original is None:
-            result.added += 1
-        merged.objects.append(_object_entry(obj, original, result))
+    for obj in sorted(objects.values(), key=lambda o: o.name):
+        result.added += 1
+        merged.objects.append(_object_entry(obj, None, result))
 
-    merged.objects.sort(key=_document_order(base))
     return merged
-
-
-def _document_order(base: PrefabDocument):
-    """Sort key keeping the file's existing order, with new objects appended in Blender order."""
-    order = {entry.guid: index for index, entry in enumerate(base.objects)}
-    return lambda entry: (order.get(entry.guid, len(order)), entry.name or "")
 
 
 def _object_entry(obj: bpy.types.Object, original: PrefabObject | None, result: SaveResult) -> PrefabObject:
@@ -194,7 +230,7 @@ def _object_entry(obj: bpy.types.Object, original: PrefabObject | None, result: 
 
     parent_guid = store.guid_of(obj.parent) if obj.parent is not None else None
 
-    _write_meta(entry, guid, obj.name, parent_guid)
+    _write_meta(entry, guid, store.document_name(obj), parent_guid)
     _write_transform(entry, obj, original, result)
 
     # Last, so an overlay edit could never win against the meta/transform writes above.
@@ -244,7 +280,7 @@ def _apply_structure(obj: bpy.types.Object, entry: PrefabObject, result: SaveRes
         entry.components.append(PrefabComponent(
             component_id,
             spec.get("type"),
-            dict(data) if isinstance(data, dict) else {},
+            canonical_toml.restore_inline_tables(dict(data)) if isinstance(data, dict) else {},
         ))
         present.add(component_id.lower())
         result.edited += 1
@@ -268,17 +304,21 @@ def _refresh_snapshots(scene: bpy.types.Scene, merged: PrefabDocument) -> None:
                 for component in entry.components
             ],
         )
+        store.tag_name(obj, entry.name)
 
 
-def _write_meta(entry: PrefabObject, guid: str, name: str, parent: str | None) -> None:
-    """Update identity, name and parent in place, leaving any other meta field alone."""
+def _write_meta(entry: PrefabObject, guid: str, name: str | None, parent: str | None) -> None:
+    """Update identity, name and parent in place, leaving any other meta field alone. ``None``
+    for the name means "the author did not touch it": an authored name stays, and an object
+    that never had one gains none."""
     component = entry.component(well_known.META_ID)
     if component is None:
         component = PrefabComponent(well_known.META_ID, well_known.META_TYPE, {})
         entry.components.insert(0, component)
 
     component.data[well_known.GUID] = guid
-    component.data[well_known.NAME] = name
+    if name is not None:
+        component.data[well_known.NAME] = name
     if parent is None:
         component.data.pop(well_known.PARENT, None)
     else:
@@ -288,7 +328,7 @@ def _write_meta(entry: PrefabObject, guid: str, name: str, parent: str | None) -
 def _write_transform(
     entry: PrefabObject, obj: bpy.types.Object, original: PrefabObject | None, result: SaveResult
 ) -> None:
-    position, rotation, scale = axes.from_blender_trs(*_blender_trs(obj))
+    position, rotation, scale = _document_trs(obj)
 
     stored = original.component(well_known.TRANSFORM_ID) if original is not None else None
     if stored is not None:
@@ -310,12 +350,31 @@ def _write_transform(
     component.data[well_known.SCALE] = [float(v) for v in scale]
 
 
+def document_trs(obj: bpy.types.Object):
+    """Where ``obj`` stands, in the document's axes -- the one conversion the save writes and
+    the panel shows."""
+    return axes.from_blender_trs(*_blender_trs(obj))
+
+
+_document_trs = document_trs
+
+
 def _blender_trs(obj: bpy.types.Object):
-    """Local TRS from the channels, not ``matrix_basis``: a matrix decomposition is lossy."""
-    if obj.rotation_mode == "QUATERNION":
-        w, x, y, z = obj.rotation_quaternion
+    """Local TRS from the channels, not ``matrix_basis``: a matrix decomposition is lossy. The
+    rotation is read from whichever channel the mode makes live; an ``AXIS_ANGLE`` object read
+    through ``rotation_euler`` saved a rotation the viewport never showed (#37). ``w >= 0``,
+    since q and -q are one rotation and the file should spell it one way."""
+    mode = obj.rotation_mode
+    if mode == "QUATERNION":
+        rotation = obj.rotation_quaternion.copy()
+    elif mode == "AXIS_ANGLE":
+        angle, x, y, z = obj.rotation_axis_angle
+        rotation = Quaternion((x, y, z), angle)
     else:
-        w, x, y, z = obj.rotation_euler.to_quaternion()
+        rotation = obj.rotation_euler.to_quaternion()
+    if rotation.w < 0.0:
+        rotation.negate()
+    w, x, y, z = rotation
     return (
         tuple(float(v) for v in obj.location),
         (float(x), float(y), float(z), float(w)),
@@ -364,7 +423,8 @@ def _document_objects(scene: bpy.types.Scene) -> list[bpy.types.Object]:
 
 def _write_atomic(path: str, text: str) -> None:
     """Temp file in the SAME directory then replace: ``os.replace`` is atomic only within one
-    filesystem. The temp is mode 0600, which the document inherits (#37)."""
+    filesystem. The temp is created mode 0600, so the document's own mode is copied onto it
+    first, or every save turned a 0644 file private."""
     directory = os.path.dirname(path)
     handle = None
     try:
@@ -372,9 +432,10 @@ def _write_atomic(path: str, text: str) -> None:
             mode="w", encoding="utf-8", newline="", dir=directory, delete=False, suffix=".tmp"
         ) as handle:
             handle.write(text)
+        if os.path.exists(path):
+            shutil.copymode(path, handle.name)
         os.replace(handle.name, path)
     except BaseException:
-        with_suppress = getattr(os, "unlink", None)
-        if handle is not None and with_suppress is not None and os.path.exists(handle.name):
+        if handle is not None and os.path.exists(handle.name):
             os.unlink(handle.name)
         raise

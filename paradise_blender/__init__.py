@@ -26,7 +26,6 @@ def _collect():
     from .authoring import authored_components, config_store, material_props, world_props
     from .authoring import collider as authoring_collider
     from .authoring import entity as authoring_entity
-    from .authoring import guid as authoring_guid
     from .authoring import model_preview as authoring_model_preview
     from .authoring import ops as authoring_ops
     from .export import ops as export_ops
@@ -59,7 +58,7 @@ def _collect():
         prefs,
     ]
 
-    handler_modules = [authoring_guid, export_ops, schema_build]
+    handler_modules = [export_ops, schema_build]
 
     return classes, pointer_modules, handler_modules
 

@@ -15,6 +15,7 @@ a save that rewrote every float it touched.
 from __future__ import annotations
 
 import glob
+import math
 import os
 import shutil
 import sys
@@ -26,7 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from paradise_assets.document import prefab as prefab_document
 from paradise_assets.document import project, well_known
-from paradise_assets.materialize import load, save, store
+from paradise_assets.materialize import instancing, load, save, store
 
 DEFAULT_PROJECT = r"C:\proj\paradise-workspace\shiningpie"
 
@@ -63,9 +64,7 @@ def main() -> int:
 
     # Recursive, because authoring documents are no longer confined to one `scenes/` directory:
     # they are `*.prefab` anywhere under assets/, and shiningpie keeps levels and props in separate
-    # folders. The extension is spelled out here rather than taken from `project.SCENE_SUFFIX` --
-    # that constant still says ".scene" and nothing else reads it, so trusting it would silently
-    # find zero documents and pass every check below by vacuum. Same glob `catalogue.build` uses.
+    # folders. Same glob `catalogue.build` uses.
     documents = sorted(glob.glob(os.path.join(layout.assets, "**", "*.prefab"), recursive=True))
     check(bool(documents), f"found {len(documents)} document(s) under {layout.assets}")
     if not documents:
@@ -303,6 +302,234 @@ def main() -> int:
         # here and lost the instance for good.
         with open(scene_path, "rb") as handle:
             check(handle.read() == original, "the instance is written back unflattened")
+
+    print("\n== an override carrier survives a save (#26) ==")
+    with tempfile.TemporaryDirectory() as work:
+        assets = os.path.join(work, "assets")
+        prefabs = os.path.join(assets, "prefabs")
+        scenes_dir = os.path.join(assets, "scenes")
+        os.makedirs(prefabs)
+        os.makedirs(scenes_dir)
+        with open(os.path.join(assets, "project.toml"), "w", encoding="utf-8", newline="") as handle:
+            handle.write('name = "probe"\nschema_version = 1\n')
+
+        root_local = "aaaaaaaa-0000-4000-8000-000000000001"
+        child_local = "aaaaaaaa-0000-4000-8000-000000000002"
+        instance_guid = "410f381b-fc6e-5a66-a70a-698972a199b5"
+        second_instance = "510f381b-fc6e-5a66-a70a-698972a199b5"
+        materials_id = "bdc4fc87-d7b4-41f1-bc90-fc827005adfc"
+
+        def meta(body: str) -> str:
+            return f'\n[[objects.components]]\nid = "{well_known.META_ID}"\ntype = "meta"\n' + body
+
+        def transform() -> str:
+            return (
+                f'\n[[objects.components]]\nid = "{well_known.TRANSFORM_ID}"\ntype = "transform"\n'
+                "Position = [0.0, 0.0, 0.0]\nRotation = [0.0, 0.0, 0.0, 1.0]\nScale = [1.0, 1.0, 1.0]\n"
+            )
+
+        with open(os.path.join(prefabs, "lamp.prefab"), "w", encoding="utf-8", newline="") as handle:
+            handle.write(
+                "schema_version = 1\n\n[[objects]]\n"
+                + meta(f'Guid = "{root_local}"\nName = "Post"\n') + transform()
+                + "\n[[objects]]\n"
+                + meta(f'Guid = "{child_local}"\nName = "Bulb"\nParent = "{root_local}"\n') + transform()
+                + f'\n[[objects.components]]\nid = "{materials_id}"\ntype = "Materials"\nSlots = [{{}}]\n'
+            )
+
+        # Two instances; the first carries an override on its child, the second a Dropped one.
+        reference = (
+            'prefab = { guid = "5f2a1111-2222-4333-8444-555555555555", path = "prefabs/lamp.prefab" }\n'
+        )
+        scene_text = (
+            "schema_version = 1\n"
+            "\n[[objects]]\n" + reference
+            + meta(f'Guid = "{instance_guid}"\nName = "Lamp_03"\n') + transform()
+            + "\n[[objects]]\n"
+            + meta(f'Parent = "{instance_guid}"\nTarget = "{child_local}"\n')
+            + f'\n[[objects.components]]\nid = "{materials_id}"\nSlots = [{{}}, {{}}]\n'
+            + "\n[[objects]]\n" + reference
+            + meta(f'Guid = "{second_instance}"\nName = "Lamp_04"\nParent = "{instance_guid}"\n')
+            + transform()
+            + "\n[[objects]]\n"
+            + meta(f'Parent = "{second_instance}"\nTarget = "{child_local}"\nDropped = true\n')
+        )
+        scene_path = os.path.join(scenes_dir, "lit.prefab")
+        with open(scene_path, "w", encoding="utf-8", newline="") as handle:
+            handle.write(scene_text)
+        with open(scene_path, "rb") as handle:
+            original = handle.read()
+
+        probe_layout = project.locate(scene_path)
+        with open(scene_path, encoding="utf-8") as handle:
+            document = prefab_document.loads(handle.read(), scene_path)
+        result = load.load_document(fresh_scene(), document, scene_path, probe_layout)
+        # The probe project has no dumped schema, which the load says once; anything else is real.
+        problems = [w for w in result.warnings if "authoring-schema.json" not in w]
+        check(problems == [], f"the carriers resolve cleanly: {problems}")
+        check(result.objects == 3, f"two instances and one overridden child materialize ({result.objects})")
+
+        overridden = next(o for o in bpy.context.scene.collection.all_objects if store.is_derived(o))
+        shown = next(c for c in store.component_json(overridden) if c["id"] == materials_id)
+        slots = shown["data"]["Slots"]
+        check(slots == [{}, {}], "the carrier's override reaches the displayed child")
+
+        saved = save.save_prefab(bpy.context.scene)
+        with open(scene_path, "rb") as handle:
+            check(handle.read() == original, "both carriers are written back verbatim")
+        check(saved.removed == 0, f"nothing is reported removed ({saved.removed})")
+
+        # Deleting an instance takes its carrier with it; the other carrier stays.
+        bpy.data.objects.remove(store.object_with_guid(bpy.context.scene, second_instance), do_unlink=True)
+        saved = save.save_prefab(bpy.context.scene)
+        with open(scene_path, encoding="utf-8") as handle:
+            after = prefab_document.loads(handle.read(), scene_path)
+        check(saved.removed == 2, f"the instance and its carrier count as removed ({saved.removed})")
+        check(
+            [o.target for o in after.objects] == [None, child_local],
+            "the surviving instance keeps its carrier and the deleted one's is gone",
+        )
+
+        # A derived child cannot be moved: the document has no way to say so.
+        overridden = next(o for o in bpy.context.scene.collection.all_objects if store.is_derived(o))
+        overridden.location.x += 1.0
+        try:
+            save.save_prefab(bpy.context.scene)
+            check(False, "moving a prefab's child is refused at save")
+        except save.SaveError as error:
+            check("cannot express" in str(error), f"the refusal says why: {error}")
+
+    print("\n== an instance whose prefab is missing does not take the load down ==")
+    with tempfile.TemporaryDirectory() as work:
+        assets = os.path.join(work, "assets")
+        levels = os.path.join(assets, "levels")
+        os.makedirs(levels)
+        with open(os.path.join(assets, "project.toml"), "w", encoding="utf-8", newline="") as handle:
+            handle.write('name = "probe"\nschema_version = 1\n')
+
+        root_guid = "dddddddd-0000-4000-8000-000000000001"
+        broken = "dddddddd-0000-4000-8000-000000000002"
+        orphan = "dddddddd-0000-4000-8000-000000000003"
+
+        def meta(body: str) -> str:
+            return f'\n[[objects.components]]\nid = "{well_known.META_ID}"\ntype = "meta"\n' + body
+
+        text = (
+            "schema_version = 1\n\n[[objects]]\n" + meta(f'Guid = "{root_guid}"\nName = "Level"\n')
+            + "\n[[objects]]\n"
+            'prefab = { guid = "5f2a1111-2222-4333-8444-555555555555", path = "prefabs/gone.prefab" }\n'
+            + meta(f'Guid = "{broken}"\nName = "Ghost"\nParent = "{root_guid}"\n')
+            + "\n[[objects]]\n" + meta(f'Guid = "{orphan}"\nName = "Lantern"\nParent = "{broken}"\n')
+        )
+        scene_path = os.path.join(levels, "haunted.prefab")
+        with open(scene_path, "w", encoding="utf-8", newline="") as handle:
+            handle.write(text)
+
+        probe_layout = project.locate(scene_path)
+        with open(scene_path, encoding="utf-8") as handle:
+            document = prefab_document.loads(handle.read(), scene_path)
+        try:
+            result = load.load_document(fresh_scene(), document, scene_path, probe_layout)
+        except KeyError as error:
+            check(False, f"a child of an unreadable instance raised KeyError {error}")
+        else:
+            check(any("could not be read" in w for w in result.warnings),
+                  "the missing prefab is warned about")
+            check(any("unparented" in w for w in result.warnings), "the orphaned child is warned about")
+            lantern = store.object_with_guid(bpy.context.scene, orphan)
+            check(lantern is not None and lantern.parent is None, "the child is shown, unparented")
+
+    print("\n== names, rotation modes and file modes survive a save (#32, #37) ==")
+    with tempfile.TemporaryDirectory() as work:
+        assets = os.path.join(work, "assets")
+        levels = os.path.join(assets, "levels")
+        os.makedirs(levels)
+        with open(os.path.join(assets, "project.toml"), "w", encoding="utf-8", newline="") as handle:
+            handle.write('name = "probe"\nschema_version = 1\n')
+
+        root_guid = "bbbbbbbb-0000-4000-8000-000000000001"
+        wall_a = "bbbbbbbb-0000-4000-8000-000000000002"
+        wall_b = "bbbbbbbb-0000-4000-8000-000000000003"
+        nameless = "bbbbbbbb-0000-4000-8000-000000000004"
+
+        def meta(body: str) -> str:
+            return f'\n[[objects.components]]\nid = "{well_known.META_ID}"\ntype = "meta"\n' + body
+
+        def transform() -> str:
+            return (
+                f'\n[[objects.components]]\nid = "{well_known.TRANSFORM_ID}"\ntype = "transform"\n'
+                "Position = [0.0, 0.0, 0.0]\nRotation = [0.0, 0.0, 0.0, 1.0]\nScale = [1.0, 1.0, 1.0]\n"
+            )
+
+        # Two children share the name "Wall" (the format allows it); one object has no name.
+        text = (
+            "schema_version = 1\n\n[[objects]]\n"
+            + meta(f'Guid = "{root_guid}"\nName = "Level"\n') + transform()
+            + "\n[[objects]]\n"
+            + meta(f'Guid = "{wall_a}"\nName = "Wall"\nParent = "{root_guid}"\n') + transform()
+            + "\n[[objects]]\n"
+            + meta(f'Guid = "{wall_b}"\nName = "Wall"\nParent = "{root_guid}"\n') + transform()
+            + "\n[[objects]]\n" + meta(f'Guid = "{nameless}"\nParent = "{root_guid}"\n') + transform()
+        )
+        scene_path = os.path.join(levels, "walls.prefab")
+        with open(scene_path, "w", encoding="utf-8", newline="") as handle:
+            handle.write(text)
+        os.chmod(scene_path, 0o644)
+
+        # A prop to place, with the sidecar that gives it an identity to reference.
+        prop_path = os.path.join(levels, "prop.prefab")
+        with open(prop_path, "w", encoding="utf-8", newline="") as handle:
+            handle.write("schema_version = 1\n\n[[objects]]\n" + meta(f'Guid = "{wall_a}"\nName = "Prop"\n'))
+        with open(prop_path + ".meta", "w", encoding="utf-8", newline="") as handle:
+            handle.write('guid = "cccccccc-0000-4000-8000-000000000001"\n')
+        with open(scene_path, "rb") as handle:
+            original = handle.read()
+
+        probe_layout = project.locate(scene_path)
+        with open(scene_path, encoding="utf-8") as handle:
+            document = prefab_document.loads(handle.read(), scene_path)
+        load.load_document(fresh_scene(), document, scene_path, probe_layout)
+
+        second_wall = store.object_with_guid(bpy.context.scene, wall_b)
+        check(second_wall.name != "Wall", f"Blender uniquified the second Wall to '{second_wall.name}'")
+
+        save.save_prefab(bpy.context.scene)
+        with open(scene_path, "rb") as handle:
+            check(handle.read() == original,
+                  "Blender's .001 suffix and the missing name are not written into the document")
+        check((os.stat(scene_path).st_mode & 0o777) == 0o644, "the document keeps its file mode")
+
+        # A rename by the author IS written.
+        second_wall.name = "EastWall"
+        save.save_prefab(bpy.context.scene)
+        with open(scene_path, encoding="utf-8") as handle:
+            renamed = prefab_document.loads(handle.read(), scene_path)
+        check(renamed.by_guid()[wall_b].name == "EastWall", "an author's rename reaches meta.Name")
+
+        # AXIS_ANGLE is a rotation mode the viewport shows; the save used to read the euler.
+        first_wall = store.object_with_guid(bpy.context.scene, wall_a)
+        first_wall.rotation_mode = "AXIS_ANGLE"
+        first_wall.rotation_axis_angle = (math.pi / 2, 0.0, 0.0, 1.0)
+        saved = save.save_prefab(bpy.context.scene)
+        with open(scene_path, encoding="utf-8") as handle:
+            rotated = prefab_document.loads(handle.read(), scene_path)
+        rotation = rotated.by_guid()[wall_a].component(well_known.TRANSFORM_ID).data["Rotation"]
+        check(saved.moved == 1 and abs(abs(rotation[3]) - math.cos(math.pi / 4)) < 1e-6
+              and rotation[3] >= 0.0,
+              f"an AXIS_ANGLE rotation is saved as the viewport shows it, w >= 0: {rotation}")
+
+        # Deleting the root unparents its children; the save must refuse, not write two roots.
+        bpy.data.objects.remove(store.object_with_guid(bpy.context.scene, root_guid), do_unlink=True)
+        try:
+            save.save_prefab(bpy.context.scene)
+            check(False, "a multi-root scene is refused at save")
+        except save.SaveError as error:
+            check("root" in str(error), f"the refusal names the root rule: {str(error)[:80]}")
+        try:
+            instancing.add_instance(bpy.context.scene, prop_path, probe_layout)
+            check(False, "placing an instance with no single root is refused")
+        except instancing.InstanceError as error:
+            check("root" in str(error), f"the instance refusal names the root rule: {error}")
 
     print(f"\n{len(failures)} failure(s)")
     for label in failures:

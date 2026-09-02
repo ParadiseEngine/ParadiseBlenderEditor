@@ -83,12 +83,21 @@ def load_document(
     result.instances = expansion.expanded
     document = expansion.document
 
-    # Second pass: a parent may appear later in the file.
+    # Second pass: a parent may appear later in the file. An instance whose prefab could not be
+    # read is not in the expansion at all, so a child hanging off it stays a root here, with the
+    # resolver's warning already saying why.
     for entry in document.objects:
         if entry.parent is None:
             continue
         child = created[entry.guid]
-        child.parent = created[entry.parent]
+        parent = created.get(entry.parent)
+        if parent is None:
+            result.warn(
+                f"{entry.name or entry.guid}: its parent {entry.parent} could not be materialized, "
+                "so it is shown unparented"
+            )
+            continue
+        child.parent = parent
         # Identity, so the stored local TRS IS Blender's; the default parent inverse would
         # silently offset every child.
         child.matrix_parent_inverse.identity()
@@ -112,6 +121,7 @@ def _create_object(
     scene.collection.objects.link(obj)
 
     store.tag_object(obj, entry.guid, _components_payload(entry))
+    store.tag_name(obj, entry.name)
     _apply_transform(obj, entry)
 
     reference = _mesh_reference(entry, mesh_fields)
@@ -236,7 +246,8 @@ def _mesh_reference(entry: PrefabObject, mesh_fields: schema.MeshFields) -> str 
 
 def _clear_previous(scene: bpy.types.Scene) -> None:
     """Remove a previous load's objects (by GUID marker, so the user's own survive), keeping
-    the mesh library so reload does not re-import every GLB. Drops pending edits too (#31)."""
+    the mesh library so reload does not re-import every GLB. Drops pending edits too, which is
+    why ``workfile.refresh_from_document`` refuses to run this over unsaved work."""
     doomed = [obj for obj in scene.collection.all_objects if store.guid_of(obj) is not None]
     for obj in doomed:
         bpy.data.objects.remove(obj, do_unlink=True)

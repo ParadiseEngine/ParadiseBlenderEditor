@@ -7,7 +7,6 @@ import bpy
 from bpy.types import Operator
 
 from .. import log
-from . import guid
 from .collider import is_collider
 from .entity import entity_objects, is_entity
 
@@ -31,8 +30,6 @@ class PARADISE_OT_make_entity(Operator):
             if not obj.paradise.is_entity:
                 obj.paradise.is_entity = True
                 marked += 1
-            # Mint now: an entity created during a live preview needs a GUID right away.
-            guid.ensure_entity_guid(obj)
 
         log.info(f"Marked {marked} object(s) as Paradise entities.", self)
         return {"FINISHED"}
@@ -171,19 +168,6 @@ class PARADISE_OT_select_entities(Operator):
         return {"FINISHED"}
 
 
-class PARADISE_OT_repair_guids(Operator):
-    """Mint missing entity GUIDs and re-mint duplicates"""
-
-    bl_idname = "paradise.repair_guids"
-    bl_label = "Repair Entity GUIDs"
-    bl_options = {"REGISTER", "UNDO"}
-
-    def execute(self, context):
-        changed = guid.ensure_unique_guids(context.scene)
-        log.info(f"Repaired {changed} entity GUID(s).", self)
-        return {"FINISHED"}
-
-
 classes = (
     PARADISE_OT_make_entity,
     PARADISE_OT_clear_entity,
@@ -191,5 +175,4 @@ classes = (
     PARADISE_OT_assign_colliders,
     PARADISE_OT_remove_collider,
     PARADISE_OT_select_entities,
-    PARADISE_OT_repair_guids,
 )

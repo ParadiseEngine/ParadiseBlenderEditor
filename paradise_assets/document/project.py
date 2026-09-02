@@ -15,10 +15,6 @@ EDITOR_DIR = ".editor"
 BUILD_DIR = "build"
 MANIFEST_NAME = "project.toml"
 
-#: Pre-rename suffix, no longer what documents end in (every document is ``*.prefab`` now) and
-#: unused outside tests; removal is #37.
-SCENE_SUFFIX = ".scene"
-
 
 @dataclass(frozen=True)
 class ProjectLayout:

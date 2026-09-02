@@ -228,7 +228,7 @@ def sync(context, obj, rows: list[tuple[str, object, object]]) -> None:
     """Keep WM slots matched to *obj*'s plan. Rebuilt only when the path set changes (a rebuild
     mid-drag steals the slider); values refresh only when the overlay changes (an enum rewritten
     every frame refused a second choice). After Reload the fingerprint is unchanged, so values
-    go stale until the selection changes (#37)."""
+    go stale until the selection changes."""
     wm = context.window_manager
     fingerprint = _fingerprint(obj, rows)
     overlay_fp = json.dumps(edits.read(obj), sort_keys=True)
@@ -386,13 +386,17 @@ class PARADISE_ASSETS_OT_pick_asset(Operator):
             edits.set_field(obj, self.component_id, self.field_name, {})
         else:
             path = self.current_path
-            for ident, label, _ in _PICK_CACHE:
+            guid = self.asset
+            for ident, label, sidecar_guid in _PICK_CACHE:
                 if ident == self.asset:
                     path = "" if label.endswith(" (missing)") else label
+                    # The sidecar's spelling, not the enum identifier: the identifier is
+                    # lowercased for matching only.
+                    guid = sidecar_guid or guid
                     break
             edits.set_field(
                 obj, self.component_id, self.field_name,
-                {"guid": self.asset, "path": path},
+                {"guid": guid, "path": path},
             )
         _redraw(context)
         return {"FINISHED"}

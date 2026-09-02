@@ -69,15 +69,6 @@ class ParadiseEntityProperties(PropertyGroup):
     #: Every host reference on this object, for every component (see HostReference).
     host_refs: CollectionProperty(type=HostReference)  # type: ignore[valid-type]
 
-    entity_guid: StringProperty(  # type: ignore[valid-type]
-        name="Entity GUID",
-        description=(
-            "Stable per-placement identity, minted on save. Empty until minted. "
-            "Duplicating an object clears it so the copy gets its own"
-        ),
-        default="",
-    )
-
 
 def is_entity(obj: Object) -> bool:
     """Whether the object is marked for export (tolerating a pre-addon object with no group)."""

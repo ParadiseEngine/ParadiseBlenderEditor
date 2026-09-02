@@ -131,6 +131,13 @@ class TestSingleObject:
         assert transform.data[well_known.SCALE] == [1.0, 0.08, 4.0]
         assert well_known.POSITION in transform.data
 
+    def test_an_instance_may_override_the_name_to_empty(self):
+        # C# coalesces on null, not on emptiness: "" is the instance's answer.
+        overriding = PrefabObject.with_meta(INSTANCE_GUID, "")
+        overriding.prefab = PREFAB_REF
+        result = expand(single_object_prefab(), overriding)
+        assert result.document.objects[0].name == ""
+
     def test_a_component_only_the_instance_has_is_added(self):
         obj = instance(PrefabComponent(MATERIALS_ID, "Materials", {"Slots": ["materials/red.toml"]}))
 
@@ -198,6 +205,13 @@ class TestMultipleObjects:
         # .NET's Guid.ToByteArray is mixed-endian and Python's UUID.bytes is big-endian, so
         # hashing raw bytes would give two different answers and nothing would catch it.
         assert resolve.mint_child_guid(INSTANCE_GUID, CHILD_LOCAL) == "6a8f7f6a-5cf4-59f3-ae75-6717b3ae43e3"
+
+    def test_minting_hashes_the_canonical_text_whatever_the_file_spelled(self):
+        # C# hashes DocumentGuid.Format(prefabLocal); hashing the raw text minted a different
+        # child for an uppercase spelling of the same identity (#30).
+        minted = "6a8f7f6a-5cf4-59f3-ae75-6717b3ae43e3"
+        assert resolve.mint_child_guid(INSTANCE_GUID.upper(), CHILD_LOCAL.upper()) == minted
+        assert resolve.mint_child_guid(INSTANCE_GUID, CHILD_LOCAL.replace("-", "")) == minted
 
     def test_a_carrier_overrides_a_child_and_occupies_no_slot(self):
         carrier = PrefabObject(

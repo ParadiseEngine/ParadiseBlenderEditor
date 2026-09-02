@@ -13,6 +13,7 @@ import tomllib
 from dataclasses import dataclass, field
 
 from . import asset_reference, canonical_toml, well_known
+from . import guid as document_guid
 from .asset_reference import AssetReference
 
 __all__ = [
@@ -104,20 +105,26 @@ class PrefabObject:
         return self.meta is not None and self.meta.data.get(well_known.DROPPED) is True
 
     def _meta_field(self, key: str) -> str | None:
+        """A meta string as C# reads it: ``Name = ""`` IS a name (an instance may override one
+        away), and an identity comes back in its canonical spelling whatever the file said."""
         meta = self.meta
         if meta is None:
             return None
         value = meta.data.get(key)
-        return value if isinstance(value, str) and value else None
+        if not isinstance(value, str):
+            return None
+        if key == well_known.NAME:
+            return value
+        return document_guid.canonical(value) if document_guid.parse(value) is not None else value
 
     @staticmethod
     def with_meta(guid: str, name: str | None = None, parent: str | None = None) -> PrefabObject:
         """An object carrying just a meta component -- the shape every caller needs."""
-        data: dict = {well_known.GUID: guid}
+        data: dict = {well_known.GUID: document_guid.canonical(guid)}
         if name is not None:
             data[well_known.NAME] = name
         if parent is not None:
-            data[well_known.PARENT] = parent
+            data[well_known.PARENT] = document_guid.canonical(parent)
         return PrefabObject(components=[PrefabComponent(well_known.META_ID, well_known.META_TYPE, data)])
 
 
@@ -180,12 +187,11 @@ def loads(text: str, source: str = "<document>") -> PrefabDocument:
         return PrefabDocumentError(source, problem)
 
     try:
-        root = tomllib.loads(text)
+        root = canonical_toml.loads(text)
     except tomllib.TOMLDecodeError as error:
         raise fail(f"is not valid TOML ({error})") from error
-
-    # tomllib erases the inline/header form; without this every reference moves under a header.
-    root = canonical_toml.restore_inline_tables(root)
+    except ValueError as error:   # a table nested inside an inline element
+        raise fail(str(error)) from error
 
     _reject_unknown(root, _DOCUMENT_KEYS, "at the document root", fail)
 
@@ -227,13 +233,14 @@ def loads(text: str, source: str = "<document>") -> PrefabDocument:
 
 
 def dumps(document: PrefabDocument) -> str:
-    """Render a document as canonical TOML. Overlay edits hold references as plain dicts (JSON
-    cannot carry ``InlineTable``); restoring them here is what stopped a Materials edit raising
-    ``TypeError`` at save. Non-reference records in a list still raise (#29)."""
+    """Render a document as canonical TOML. Form is the model's (:mod:`canonical_toml`): a value
+    that entered the model from JSON -- the edit overlay -- must have been restored at the door
+    (:func:`canonical_toml.restore_inline_tables`), since here a plain ``dict`` in a list is an
+    array of tables read from ``[[header]]`` blocks and is written back as such."""
     root: dict = {"schema_version": SUPPORTED_SCHEMA_VERSION}
     if document.objects:
         root["objects"] = [_object_table(o) for o in document.objects]
-    return canonical_toml.dumps(canonical_toml.restore_inline_tables(root))
+    return canonical_toml.dumps(root)
 
 
 def _read_object(table: dict, index: int, fail) -> PrefabObject:
@@ -261,8 +268,11 @@ def _read_component(table: dict, object_context: str, fail) -> PrefabComponent:
     context = f"on a component {object_context}"
 
     identity = table.get(ID_KEY)
-    if not isinstance(identity, str) or not identity:
+    if not isinstance(identity, str):
         raise fail(f"needs a string '{ID_KEY}' {context}")
+    if not document_guid.is_text(identity):
+        raise fail(f"holds '{identity}' where '{ID_KEY}' {context} must be a non-empty UUID")
+    identity = document_guid.canonical(identity)
 
     type_name = table.get(TYPE_KEY)
     if type_name is not None and not isinstance(type_name, str):
@@ -282,7 +292,20 @@ def _read_component(table: dict, object_context: str, fail) -> PrefabComponent:
     if problem is not None:
         raise fail(f"{problem} {context}")
 
+    _normalise_meta_guids(component)
     return component
+
+
+def _normalise_meta_guids(component: PrefabComponent) -> None:
+    """Canonical spelling for every identity the meta payload carries, once, at the boundary, so
+    the resolver's minting and every ``==`` in between compare values; already validated as
+    guid text by :func:`well_known.payload_problem`."""
+    if component.id != well_known.META_ID:
+        return
+    for key in (well_known.GUID, well_known.PARENT, well_known.TARGET):
+        value = component.data.get(key)
+        if isinstance(value, str):
+            component.data[key] = document_guid.canonical(value)
 
 
 def _object_table(obj: PrefabObject) -> dict:
@@ -300,11 +323,15 @@ def _component_table(component: PrefabComponent) -> dict:
     if problem is not None:
         raise ValueError(f"this document {problem}, so it cannot be written")
 
-    table: dict = {ID_KEY: component.id}
+    if not document_guid.is_text(component.id):
+        raise ValueError(f"component id '{component.id}' is not a non-empty UUID, so it cannot be written")
+
+    table: dict = {ID_KEY: document_guid.canonical(component.id)}
     if component.type is not None:
         table[TYPE_KEY] = component.type
     if component.removed:
         table[REMOVED_KEY] = True
+    _normalise_meta_guids(component)
     for key in component.data:
         # Guards payloads mutated after construction; without it `update` swallows the collision.
         if key in RESERVED_KEYS:

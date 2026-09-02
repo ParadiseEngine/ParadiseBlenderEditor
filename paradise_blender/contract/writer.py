@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import os
+import stat
 import struct
 import tempfile
 from typing import Any
@@ -148,7 +149,9 @@ def write_json_document(output_path: str, document: JsonValue) -> None:
 
 
 def write_text_atomically(output_path: str, text: str) -> None:
-    """Sibling temp file + ``os.replace``, so a reader never sees a truncated document."""
+    """Sibling temp file + ``os.replace``, so a reader never sees a truncated document. The
+    temp is created mode 0600, which the document would otherwise inherit on every export: an
+    existing file keeps its mode, a new one gets the ordinary umask default."""
     directory = os.path.dirname(os.path.abspath(output_path)) or "."
     os.makedirs(directory, exist_ok=True)
 
@@ -158,9 +161,21 @@ def write_text_atomically(output_path: str, text: str) -> None:
     try:
         with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as stream:
             stream.write(text)
+        os.chmod(temp_path, _target_mode(output_path))
         os.replace(temp_path, output_path)
     except BaseException:
         # Leaving a stray dotfile in data/ would confuse the asset pipeline's directory scans.
         if os.path.exists(temp_path):
             os.unlink(temp_path)
         raise
+
+
+def _target_mode(output_path: str) -> int:
+    """The mode the written file should carry: the existing file's, else what ``open`` would
+    have given a fresh one."""
+    try:
+        return stat.S_IMODE(os.stat(output_path).st_mode)
+    except OSError:
+        umask = os.umask(0)
+        os.umask(umask)
+        return 0o666 & ~umask

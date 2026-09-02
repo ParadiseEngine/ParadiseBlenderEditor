@@ -15,6 +15,7 @@ from ..authoring.entity import entity_objects, is_entity
 from ..contract import authoring as contract_authoring
 from ..contract import component_ids, config_document
 from ..export import navmesh_preview
+from ..export.placement import identity
 from ..export.scene import resolve_scene_name
 from ..live import session as live_session
 from ..play.host import resolve_runtime_command
@@ -88,7 +89,6 @@ class PARADISE_PT_scene(_ParadisePanel, Panel):
         count = len(entity_objects(context.scene))
         row = layout.row()
         row.operator("paradise.select_entities", text=f"{count} Entity/Entities", icon="RESTRICT_SELECT_OFF")
-        row.operator("paradise.repair_guids", text="", icon="FILE_REFRESH")
 
         referenced = len(model_preview.scene_preview_entities(context.scene))
         if referenced:
@@ -441,10 +441,11 @@ class PARADISE_PT_entity(_ParadisePanel, Panel):
                     icon="INFO",
                 )
 
-        if props.entity_guid:
-            row = layout.row()
-            row.enabled = False
-            row.label(text=props.entity_guid, icon="KEYINGSET")
+        # The identity the export writes, derived from the name; shown so a reference in an
+        # exported document can be traced back to an object.
+        row = layout.row()
+        row.enabled = False
+        row.label(text=identity(obj.name), icon="KEYINGSET")
 
 
 class PARADISE_PT_entity_components(_ParadisePanel, Panel):

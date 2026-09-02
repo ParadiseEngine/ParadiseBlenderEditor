@@ -100,9 +100,11 @@ class TestTables:
         text = ct.dumps({"a": {"x": 1}, "b": {"y": 2}})
         assert text == "[a]\nx = 1\n\n[b]\ny = 2\n"
 
-    def test_an_empty_table_still_gets_its_header(self):
-        # Presence is meaning: the key exists, and dropping the header would delete it.
-        assert ct.dumps({"empty": {}}) == "[empty]\n"
+    def test_an_empty_table_is_written_as_braces(self):
+        # Rule 10 (ParadiseEngine#199): a header with nothing under it has no content for the
+        # reader to restore the form from, so the only empty table is the inline one.
+        assert ct.dumps({"empty": {}}) == "empty = {}\n"
+        assert ct.dumps({"outer": {"empty": {}, "n": 1}}) == "[outer]\nempty = {}\nn = 1\n"
 
     def test_nested_tables_use_dotted_headers(self):
         assert ct.dumps({"a": {"b": {"c": 1}}}) == "[a]\n\n[a.b]\nc = 1\n"
@@ -214,11 +216,38 @@ class TestReferenceShape:
         text = "[t]\na = 1\n"
         assert ct.dumps(ct.restore_inline_tables(tomllib.loads(text))) == text
 
-    def test_restore_leaves_an_array_of_tables_alone(self):
-        import tomllib
-
+    def test_restore_keeps_a_header_array_as_headers(self):
+        # tomllib cannot tell `[[items]]` from `items = [{…}]`; the reader reads the `[[` off
+        # the text, as Tomlyn's TomlTableArray does for C#.
         text = "[[items]]\nn = 1\n\n[[items]]\nn = 2\n"
-        assert ct.dumps(ct.restore_inline_tables(tomllib.loads(text))) == text
+        assert ct.dumps(ct.loads(text)) == text
+
+    def test_a_table_inside_an_inline_array_is_inline_regardless_of_content(self):
+        # THE #29 case: the CLI writes a list of records inline, and it must stay that way here.
+        text = "x = [{ a = 1 }]\n"
+        assert ct.dumps(ct.loads(text)) == text
+
+    def test_a_record_row_and_a_null_row_mix(self):
+        text = "rows = [{ shape = \"box\", size = [1.0, 2.0] }, {}]\n"
+        assert ct.dumps(ct.loads(text)) == text
+
+    def test_a_plain_dict_inside_a_list_restores_to_an_inline_element(self):
+        # The edit overlay comes back from JSON as plain dicts; before this it either raised
+        # TypeError (mixed rows) or emitted [[headers]] that drop the null row.
+        assert ct.dumps(ct.restore_inline_tables({"rows": [{"a": 1}, {}]})) == "rows = [{ a = 1 }, {}]\n"
+
+    def test_a_table_nested_inside_an_inline_element_is_refused(self):
+        try:
+            ct.loads("x = [{ a = { b = 1 } }]\n")
+        except ValueError as error:
+            assert "nests a table" in str(error)
+            return
+        raise AssertionError("expected the nested table to be refused")
+
+    def test_header_array_paths_decode_quoted_segments(self):
+        text = '[a]\n\n[[a."b.c"]]\nn = 1\n\n["x y"]\n\n[["x y".z]]\nn = 2\n\n[plain]\nk = 1\n'
+        assert ct.header_array_paths(text) == frozenset({("a", "b.c"), ("x y", "z")})
+        assert ct.dumps(ct.loads(text)) == text
 
 
 class TestEncoding:

@@ -9,8 +9,9 @@ reachability is computed from string VALUES rather than known keys, because a ke
 goes stale the day a component gains an asset field and the cost of stale is deleting a live
 asset. Ambiguity keeps the file. Off by default; the only destructive step in an export.
 
-KNOWN GAP (#28): since v5 nothing in the document names ``scenes/<scene>.navmesh.bin``, so
-with pruning on every export deletes the navmesh it just baked.
+The one artifact no document names is the navmesh: since v5 the bake writes
+``scenes/<scene>.navmesh.bin`` beside ``<scene>.json`` and the document says nothing about it,
+so every root marks its own bake live by that naming rule (:func:`_collect_navmeshes`).
 """
 
 from __future__ import annotations
@@ -65,6 +66,7 @@ def prune_orphans(paths: ExportPaths, dry_run: bool = False) -> list[str]:
 
     owned = _owned_files(paths)
     _walk_documents(paths, seeds, live)
+    _collect_navmeshes(paths, scene_documents, live)
     _collect_sidecars(paths, live)
     _collect_transcode_targets(paths, owned, live)
 
@@ -176,6 +178,19 @@ def _as_existing_field(reference: str, paths: ExportPaths) -> str | None:
     if field is None:
         return None
     return field if os.path.isfile(paths.output_path_for_field(field)) else None
+
+
+def _collect_navmeshes(
+    paths: ExportPaths, scene_documents: list[tuple[str, dict]], live: dict[str, str]
+) -> None:
+    """Keep each scene's bake, named by the rule ``export/navmesh.py`` writes it under: the
+    document carries no reference to it, so by strings alone it is an orphan the moment it is
+    baked."""
+    for path, _document in scene_documents:
+        stem = os.path.splitext(os.path.basename(path))[0]
+        navmesh = _as_existing_field(paths.nav_mesh_output_path(stem), paths)
+        if navmesh is not None:
+            live[_normalized(navmesh)] = navmesh
 
 
 def _collect_sidecars(paths: ExportPaths, live: dict[str, str]) -> None:

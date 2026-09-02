@@ -3,9 +3,9 @@
 ONE watcher per project root, as a correctness rule: the engine's ``AssetWatcher.Drain`` drives
 the sidecar maintainer outside its lock with an unsynchronized quarantine, and two drainers lose
 the identity a move depends on. The watcher is a child (not detached like the runtime) so it can
-be terminated; a SIGKILLed Blender leaves it running, which ``atexit`` and ``load_pre`` cannot
-cover. Output goes to a log the panel reads the last error from, since a Blender-started watch
-has no console (ParadiseEngine#192 is the tray that will replace this).
+be terminated; a SIGKILLed Blender leaves it running, which ``atexit`` cannot cover. Output
+goes to a log the panel reads the last error from, since a Blender-started watch has no
+console (ParadiseEngine#192 is the tray that will replace this).
 """
 
 from __future__ import annotations
@@ -22,11 +22,9 @@ __all__ = [
     "last_error",
     "log_path",
     "start",
-    "status_line",
     "stop",
     "stop_all",
     "watch_command",
-    "watched_roots",
 ]
 
 _WATCHERS: dict[str, subprocess.Popen] = {}
@@ -39,8 +37,9 @@ def log_path(project_root: str) -> str:
     """Per-root log path; two checkouts of one game must not share a log."""
     name = os.path.basename(os.path.normpath(project_root)) or "project"
     # hashlib, NOT hash(): str hashing is salted per process, so a later Blender would read a
-    # path nothing wrote to and report no errors for a watcher reporting plenty.
-    digest = hashlib.sha1(os.path.normcase(project_root).encode("utf-8")).hexdigest()[:6]
+    # path nothing wrote to and report no errors for a watcher reporting plenty. Normalised the
+    # same way as the watcher table, so a relative spelling finds the log an absolute one wrote.
+    digest = hashlib.sha1(_normalize(project_root).encode("utf-8")).hexdigest()[:6]
     return os.path.join(tempfile.gettempdir(), f"paradise_assets_watch_{name}_{digest}.log")
 
 
@@ -63,11 +62,6 @@ def is_running(project_root: str) -> bool:
 
     _EXITS.pop(key, None)
     return True
-
-
-def watched_roots() -> list[str]:
-    """Every project with a live watcher, for a panel or a diagnostic to report."""
-    return [root for root in list(_WATCHERS) if is_running(root)]
 
 
 def watch_command(cli_argv: list[str], project_root: str) -> list[str]:
@@ -104,6 +98,8 @@ def start(project_root: str) -> str | None:
         return f"Could not open the watch log: {error}"
 
     argv = watch_command(command, project_root)
+    # No console window per watcher on Windows; a GUI Blender would otherwise pop one.
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     try:
         process = subprocess.Popen(  # argv is built from resolved paths
             argv,
@@ -112,6 +108,7 @@ def start(project_root: str) -> str | None:
             stdout=handle,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
+            creationflags=flags,
         )
     except (OSError, subprocess.SubprocessError) as error:
         handle.close()
@@ -136,7 +133,9 @@ def start_for(project_root: str) -> str | None:
 
 def stop(project_root: str) -> None:
     """Terminate, wait briefly so the CLI can finish a write, then kill; Blender must not
-    block on it. On Windows ``terminate()`` is already a kill (#36)."""
+    block on it. On POSIX the CLI handles SIGTERM and finishes its write; on Windows
+    ``terminate()`` IS ``TerminateProcess``, so the grace period only covers a write already in
+    the kernel."""
     key = _normalize(project_root)
     process = _WATCHERS.pop(key, None)
     if process is None or process.poll() is not None:
@@ -153,9 +152,31 @@ def stop(project_root: str) -> None:
 
 
 def stop_all() -> None:
-    """Stop every watcher. Registered with ``atexit`` and called on ``load_pre``."""
+    """Stop every watcher. Registered with ``atexit`` and called on unregister."""
     for root in list(_WATCHERS):
         stop(root)
+
+
+#: log path -> ((mtime_ns, size), answer). The panel asks per redraw; the log only matters
+#: when it grew.
+_LAST_ERRORS: dict[str, tuple[tuple[int, int], str | None]] = {}
+
+#: Enough for the last rebuild's diagnostics; the tally line and the file naming the error are
+#: within a few hundred lines of the end.
+_TAIL_BYTES = 64 * 1024
+
+
+def _tail_lines(path: str, count: int) -> list[str] | None:
+    """The last *count* lines, reading only the file's tail; ``None`` when it cannot be read."""
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - _TAIL_BYTES))
+            tail = handle.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    return tail.splitlines()[-count:]
 
 
 def last_error(project_root: str) -> str | None:
@@ -163,9 +184,22 @@ def last_error(project_root: str) -> str | None:
     this log grows all session and the interesting rebuild is the latest."""
     path = log_path(project_root)
     try:
-        with open(path, encoding="utf-8", errors="replace") as handle:
-            lines = handle.readlines()[-200:]
+        stat = os.stat(path)
     except OSError:
+        return None
+    stamp = (stat.st_mtime_ns, stat.st_size)
+    cached = _LAST_ERRORS.get(path)
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
+
+    answer = _scan_for_error(path)
+    _LAST_ERRORS[path] = (stamp, answer)
+    return answer
+
+
+def _scan_for_error(path: str) -> str | None:
+    lines = _tail_lines(path, 200)
+    if lines is None:
         return None
 
     summary = None
@@ -194,11 +228,10 @@ def _is_summary(lowered: str) -> bool:
 
 def _last_line(project_root: str) -> str | None:
     """The final non-empty log line, for a watcher that exited without a recognisable error."""
-    try:
-        with open(log_path(project_root), encoding="utf-8", errors="replace") as handle:
-            lines = [line.strip() for line in handle.readlines()[-40:] if line.strip()]
-    except OSError:
+    tail = _tail_lines(log_path(project_root), 40)
+    if tail is None:
         return None
+    lines = [line.strip() for line in tail if line.strip()]
     return lines[-1][:200] if lines else None
 
 
@@ -209,20 +242,6 @@ def exit_reason(project_root: str) -> str | None:
         return None
     code, detail = entry
     return f"stopped (exit {code}): {detail}" if detail else f"stopped (exit {code})"
-
-
-def status_line(project_root: str) -> str:
-    """One line for a panel: whether it is watching, and the last thing that went wrong."""
-    if not is_running(project_root):
-        reason = exit_reason(project_root)
-        return f"Watcher {reason}" if reason else "Not watching."
-    problem = last_error(project_root)
-    return f"Watching — last error: {problem}" if problem else "Watching."
-
-
-def _on_load_pre(*_args) -> None:
-    """``load_pre``, because after the load the old project is unreachable from the handler."""
-    stop_all()
 
 
 #: Nested adopt is a real case -- rematerialize imports GLBs, and an importer that loaded a
@@ -263,6 +282,12 @@ def adopt_loaded_file(*_args) -> None:
             watch_problem = start_for(located.root)
             if watch_problem:
                 print(f"[paradise_assets] {watch_problem}")
+
+        # The old file's projects, no longer open, lose their watcher; a shared one survives.
+        wanted = {_normalize(root) for root in seen}
+        for root in list(_WATCHERS):
+            if root not in wanted:
+                stop(root)
     finally:
         _adopting = False
 
@@ -273,14 +298,11 @@ def _on_load_post(*_args) -> None:
 
 
 def register_handler() -> None:
-    """Register the load handlers. ``@persistent`` or Blender drops them on the first file load,
+    """Register the load handler. ``@persistent`` or Blender drops it on the first file load,
     and watchers silently accumulate for the rest of the session."""
     import bpy
 
-    handlers = (
-        (_on_load_pre, bpy.app.handlers.load_pre),
-        (_on_load_post, bpy.app.handlers.load_post),
-    )
+    handlers = ((_on_load_post, bpy.app.handlers.load_post),)
     stored: list = []
     for function, collection in handlers:
         function.__dict__.setdefault("_bpy_persistent", True)

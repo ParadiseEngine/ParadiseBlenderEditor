@@ -1,9 +1,8 @@
 """Component operators: add/remove components and rows, revert edits, reveal objects.
 
-``PARADISE_ASSETS_OT_edit_field`` and its helpers are dead since the panel moved to
-``field_widgets`` (#37). Values must never be written back from an ID property: ID properties
-normalize types (``int`` -> ``float``, tuple -> list) and the document's numbers are a
-cross-language contract, so edits go through :mod:`.edits` in the schema's declared shape.
+Values must never be written back from an ID property: ID properties normalize types (``int``
+-> ``float``, tuple -> list) and the document's numbers are a cross-language contract, so edits
+go through :mod:`.edits` in the schema's declared shape.
 """
 
 from __future__ import annotations
@@ -11,14 +10,7 @@ from __future__ import annotations
 import copy
 
 import bpy
-from bpy.props import (
-    BoolProperty,
-    EnumProperty,
-    FloatProperty,
-    FloatVectorProperty,
-    IntProperty,
-    StringProperty,
-)
+from bpy.props import EnumProperty, IntProperty, StringProperty
 from bpy.types import Operator
 
 from . import edits
@@ -29,8 +21,8 @@ __all__ = ["classes", "components_of", "merged_data", "schema_for", "vocabulary_
 
 
 def vocabulary_for(context) -> component_schema.Vocabulary:
-    """The game's component vocabulary, re-read on demand so a rebuild shows up without
-    reopening. Read at draw time (#36); the fix is an mtime cache, not a copy taken at load."""
+    """The game's component vocabulary, asked for at draw time so a rebuild shows up without
+    reopening; ``component_schema.load`` caches on the dump's stamp, so a redraw costs a stat."""
     state = store.read_state(context.scene)
     if state is None:
         return component_schema.Vocabulary({}, None)
@@ -61,101 +53,6 @@ def merged_data(obj, component_id: str, data: dict) -> dict:
     for path, value in edits.edited_fields(obj, component_id).items():
         edits.write_path(merged, path, copy.deepcopy(value))
     return merged
-
-
-def _enum_values(self, context):
-    """Enum items, kept referenced on the operator: Blender does not retain a callback's
-    strings, and fresh tuples each call give garbage-collected labels."""
-    return getattr(self, "_enum_items", None) or [("NONE", "—", "")]
-
-
-class PARADISE_ASSETS_OT_edit_field(Operator):
-    """Change one field of one component on the active object."""
-
-    bl_idname = "paradise_assets.edit_component_field"
-    bl_label = "Edit Field"
-    bl_options = {"REGISTER", "UNDO", "INTERNAL"}
-
-    component_id: StringProperty(name="Component")
-    field_name: StringProperty(name="Field")
-
-    value_bool: BoolProperty(name="Value")
-    value_int: IntProperty(name="Value")
-    value_float: FloatProperty(name="Value")
-    value_string: StringProperty(name="Value")
-    value_enum: EnumProperty(name="Value", items=_enum_values)
-    value_vector2: FloatVectorProperty(name="Value", size=2)
-    value_vector: FloatVectorProperty(name="Value", size=3)
-    value_quaternion: FloatVectorProperty(name="Value", size=4, subtype="QUATERNION")
-    value_color: FloatVectorProperty(name="Value", size=4, subtype="COLOR", min=0.0, max=1.0)
-
-    #: Which of the properties above this invocation is using.
-    _slot = "value_string"
-    _enum_items = None
-    _field = None
-
-    def invoke(self, context, event):
-        obj = context.active_object
-        schema = schema_for(context, obj, self.component_id)
-        field = schema.resolve(self.field_name) if schema is not None else None
-        if field is None or not field.editable:
-            self.report({"ERROR"}, f"{self.field_name} is not an editable field")
-            return {"CANCELLED"}
-
-        self._field = field
-        self._slot = _SLOTS.get(field.type, "value_string")
-        current = _current_value(obj, self.component_id, self.field_name, field)
-
-        if field.type == "enum":
-            # Blender rejects an empty enum identifier; a string keeps the field editable.
-            items = [(value, value, "") for value in field.values if value]
-            if not items:
-                self._slot = "value_string"
-                self.value_string = str(current or "")
-            else:
-                type(self)._enum_items = items
-                self.value_enum = current if current in field.values else items[0][0]
-        else:
-            setattr(self, self._slot, _coerce(current, field))
-
-        return context.window_manager.invoke_props_dialog(self, width=320)
-
-    def draw(self, context):
-        layout = self.layout
-        field = self._field
-        if field is not None and field.doc:
-            column = layout.column(align=True)
-            for line in _wrap(field.doc, 46):
-                column.label(text=line)
-        label = self.field_name if field is None else (
-            field.name if "/" not in self.field_name else self.field_name
-        )
-        if field is not None and field.unit:
-            label = component_schema.field_caption(label, field.unit)
-        layout.prop(self, self._slot, text=label)
-
-    def execute(self, context):
-        obj = context.active_object
-        field = self._field
-        value = getattr(self, self._slot)
-
-        if self._slot in ("value_vector", "value_vector2", "value_quaternion", "value_color"):
-            value = [float(component) for component in value]
-        elif self._slot == "value_float":
-            value = float(value)
-        elif self._slot == "value_int":
-            value = int(value)
-        elif self._slot == "value_bool":
-            value = bool(value)
-        else:
-            value = str(value)
-
-        if field is not None:
-            value = field.clamp(value)
-
-        edits.set_field(obj, self.component_id, self.field_name, value)
-        self.report({"INFO"}, f"{self.field_name} edited — save the document to write it")
-        return {"FINISHED"}
 
 
 class PARADISE_ASSETS_OT_revert_field(Operator):
@@ -292,90 +189,6 @@ def _array_value(obj, component_id: str, path: str) -> list:
     return copy.deepcopy(value) if isinstance(value, list) else []
 
 
-#: Which typed property each schema type is edited through.
-_SLOTS = {
-    "bool": "value_bool",
-    "int": "value_int",
-    "float": "value_float",
-    "string": "value_string",
-    "enum": "value_enum",
-    "vector2": "value_vector2",
-    "vector3": "value_vector",
-    "quaternion": "value_quaternion",
-    "color": "value_color",
-}
-
-
-def _current_value(obj, component_id: str, field_name: str, field):
-    """What this field is right now: the pending overlay over the document, else the default."""
-    data = {}
-    for component in components_of(obj):
-        if str(component.get("id", "")).lower() == component_id.lower():
-            raw = component.get("data")
-            data = raw if isinstance(raw, dict) else {}
-            break
-    value = edits.read_path(merged_data(obj, component_id, data), field_name)
-    return field.default_value() if value is None else value
-
-
-def _coerce(value, field):
-    """*value* as its widget's type, tolerating what the document holds: refusing would leave
-    uneditable exactly the values most in need of a fix."""
-    if field.type == "bool":
-        return bool(value) if isinstance(value, (bool, int, float)) else False
-    if field.type in ("int", "float"):
-        try:
-            return int(value) if field.type == "int" else float(value)
-        except (TypeError, ValueError):
-            return 0
-    if field.type == "vector2":
-        return _numbers(value, 2, 0.0)
-    if field.type == "vector3":
-        return _numbers(value, 3, 0.0)
-    if field.type == "quaternion":
-        numbers = _numbers(value, 4, 0.0)
-        return [0.0, 0.0, 0.0, 1.0] if numbers == [0.0, 0.0, 0.0, 0.0] else numbers
-    if field.type == "color":
-        return _color(value)
-    return str(value) if value is not None else ""
-
-
-def _numbers(value, count: int, fill: float) -> list[float]:
-    if isinstance(value, (list, tuple)):
-        out = [float(v) if isinstance(v, (int, float)) else fill for v in value[:count]]
-        return out + [fill] * (count - len(out))
-    return [fill] * count
-
-
-def _color(value) -> list[float]:
-    """RGBA floats from either contract spelling: ``"#RRGGBBAA"`` (engine 0.32.0+) or the
-    older ``{r, g, b, a}``."""
-    if isinstance(value, str) and value.startswith("#") and len(value) in (7, 9):
-        try:
-            raw = [int(value[i:i + 2], 16) / 255.0 for i in range(1, len(value) - 1, 2)]
-        except ValueError:
-            return [1.0, 1.0, 1.0, 1.0]
-        return raw + [1.0] * (4 - len(raw))
-    if isinstance(value, dict):
-        return [float(value.get(key, 1.0)) for key in ("r", "g", "b", "a")]
-    return _numbers(value, 4, 1.0) if isinstance(value, (list, tuple)) else [1.0, 1.0, 1.0, 1.0]
-
-
-def _wrap(text: str, width: int) -> list[str]:
-    """A doc string as panel-width lines. Blender labels do not wrap."""
-    words, lines, current = text.split(), [], ""
-    for word in words:
-        candidate = f"{current} {word}".strip()
-        if len(candidate) > width and current:
-            lines.append(current)
-            current = word
-        else:
-            current = candidate
-    if current:
-        lines.append(current)
-    return lines[:4]
-
-
 _ADDABLE_CACHE: list[tuple[str, str, str]] = []
 
 
@@ -466,7 +279,6 @@ def _redraw(context) -> None:
 
 
 classes = (
-    PARADISE_ASSETS_OT_edit_field,
     PARADISE_ASSETS_OT_revert_field,
     PARADISE_ASSETS_OT_add_array_row,
     PARADISE_ASSETS_OT_remove_array_row,

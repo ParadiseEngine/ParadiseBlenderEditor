@@ -25,34 +25,34 @@ The spec, normative (numbering follows the C# doc so the two can be read side by
    why this module is short. See :func:`format_float`.
 8. Booleans ``true`` / ``false``.
 9. Arrays are one line: ``[1, 2, 3]`` -- ``", "`` between elements, no trailing comma, empty is
-   ``[]``. Arrays hold scalars, nested arrays, or inline tables (rule 11). A list of generic
-   ``dict`` is an array of tables, rule 10.
-10. Every nested table is a ``[dotted.path]`` header; every array of tables is one
+   ``[]``. Arrays hold scalars, nested arrays, or inline tables (rule 11): a table that is an
+   array ELEMENT is inline by rule (ParadiseEngine#187), which is what keeps a null slot ``{}``
+   expressible. A list of generic ``dict`` in the model is a different thing -- an array of
+   tables, rule 10 -- and the two never mix in one value.
+10. Every non-empty nested table is a ``[dotted.path]`` header; every array of tables is one
     ``[[dotted.path]]`` header per element, in element order. One blank line precedes every
-    header except at the start of the document. Never dotted keys.
+    header except at the start of the document. Never dotted keys. An EMPTY generic table is
+    written ``key = {}`` and an empty array of tables ``key = []``, at value position: a header
+    with nothing under it has no content for the reader to restore the form from, so the only
+    empty table these documents can hold is the inline one, a reference to nothing
+    (ParadiseEngine#199).
 11. An :class:`InlineTable` is written on one line as ``{ key = value, … }`` -- ``", "`` between
     pairs, in model order, keys by rule 4 and values by rules 5-9. An empty one is ``{}``, which
     is how a null element inside an array is spelled. Inline tables never nest another table.
 
     WRITING picks the form by TYPE, so a caller that builds a model controls what comes out.
-    READING restores it from CONTENT, not from the parse, because ``tomllib`` erases the
-    inline/header distinction and a rule only the C# side can compute is no rule at all: both
-    readers must rebuild the same model from the same bytes. The rule (ParadiseEngine#187) is
-    that a table is inline iff it is an asset reference -- empty, or exactly the two string keys
-    ``guid`` and ``path`` (:func:`is_written_inline`), a shape therefore RESERVED for references
-    -- OR it sits inside an array, where TOML permits only the inline form. Exact rather than
-    vague ("all its values are scalars"), because two implementations agreeing until the first
-    document that splits them surfaces as a byte failure with nothing pointing at formatting.
+    READING must rebuild the same model from the same bytes on both sides of the fence, and the
+    rule is :func:`restore_inline_tables`, the mirror of C# ``TomlDocumentReader``:
 
-    KNOWN GAP (#29): :func:`restore_inline_tables` implements only the reference half. A
-    non-reference table inside an array is restored as a generic ``dict`` and re-emitted as
-    ``[[header]]`` blocks, which C# does not do, and a list mixing a record row with a null
-    ``{}`` row cannot be written at all. Any document holding a list of records flips form on
-    the first save here until that lands.
-
-    One consequence for rule 10: an empty table is written ``{}`` rather than under a header,
-    because in these documents the only empty table that occurs is a reference to nothing.
-    (The C# writer currently disagrees and emits a header; ParadiseEngine#199.)
+    - A table at VALUE position is inline iff it is an asset reference -- empty, or exactly the
+      two string keys ``guid`` and ``path`` (:func:`is_written_inline`, ParadiseEngine#187) -- a
+      shape therefore RESERVED for references. Content, not syntax, because ``tomllib`` erases
+      the inline/header distinction and both readers must agree on every byte.
+    - A table inside an ARRAY is inline regardless of content, unless the array was spelled as
+      ``[[header]]`` blocks, which stay an array of tables. ``tomllib`` erases that distinction
+      too, but a ``[[`` header can only ever stand at the start of a line (rule 5 forbids the
+      multi-line strings that could fake one), so :func:`header_array_paths` reads it straight
+      off the text. The C# side gets the same fact from Tomlyn's ``TomlTableArray``.
 
 The document model is plain Python: ``dict`` (insertion-ordered, which is what makes rule 3
 expressible at all), ``list``, ``str``, ``bool``, ``int``, ``float``.
@@ -64,6 +64,7 @@ from __future__ import annotations
 
 import math
 import re
+import tomllib
 
 __all__ = [
     "InlineTable",
@@ -72,7 +73,9 @@ __all__ = [
     "format_float",
     "format_key",
     "format_value",
+    "header_array_paths",
     "is_written_inline",
+    "loads",
     "restore_inline_tables",
 ]
 
@@ -105,27 +108,75 @@ def is_written_inline(table) -> bool:
     )
 
 
-def restore_inline_tables(value):
-    """Rebuild :class:`InlineTable` values after ``tomllib``, which returns a plain ``dict``
-    for both forms; without this a read-and-write moves every reference under a header."""
+def loads(text: str) -> dict:
+    """Parse canonical TOML into the document model, forms restored (rules 10 and 11).
+    Raises ``tomllib.TOMLDecodeError`` as ``tomllib`` does."""
+    return restore_inline_tables(tomllib.loads(text), header_array_paths(text))
+
+
+_HEADER_ARRAY = re.compile(r"^\s*\[\[(.*)\]\]\s*$")
+
+
+def header_array_paths(text: str) -> frozenset[tuple[str, ...]]:
+    """The key paths spelled as ``[[header]]`` blocks in *text*, the one fact about form the
+    reader needs that ``tomllib`` does not keep. Quoted segments are decoded by ``tomllib``
+    itself rather than by a second unescaper that could disagree with it."""
+    paths: set[tuple[str, ...]] = set()
+    for line in text.splitlines():
+        match = _HEADER_ARRAY.match(line)
+        if match is None:
+            continue
+        try:
+            parsed = tomllib.loads(f"{match.group(1)} = 0")
+        except tomllib.TOMLDecodeError:
+            continue  # tomllib.loads on the whole text raises the real error
+        path: list[str] = []
+        node = parsed
+        while isinstance(node, dict):
+            key, node = next(iter(node.items()))
+            path.append(key)
+        paths.add(tuple(path))
+    return frozenset(paths)
+
+
+def restore_inline_tables(value, header_arrays: frozenset[tuple[str, ...]] = frozenset(), path=()):
+    """Rebuild :class:`InlineTable` values after ``tomllib``, which returns a plain ``dict`` for
+    both forms; without this a read-and-write moves every reference under a header. Also the
+    way a model built from JSON (the edit overlay) is made writable: a plain ``dict`` inside a
+    list becomes the inline element it must be written as. *header_arrays* names the arrays
+    that were spelled as ``[[header]]`` blocks (:func:`header_array_paths`)."""
     if isinstance(value, list):
-        return [restore_inline_tables(element) for element in value]
+        return [_restore_element(element, header_arrays, path) for element in value]
     if not isinstance(value, dict):
         return value
 
-    restored = {key: restore_inline_tables(member) for key, member in value.items()}
+    restored = {
+        key: restore_inline_tables(member, header_arrays, (*path, key)) for key, member in value.items()
+    }
 
     # A nested table means structural, never a reference -- an inline table may not contain one.
-    if any(isinstance(member, dict) and not isinstance(member, InlineTable) for member in restored.values()):
-        return restored
-    if any(isinstance(member, list) and _holds_tables(member) for member in restored.values()):
+    if any(_is_table(member) or _is_table_array(member) for member in restored.values()):
         return restored
 
     return InlineTable(restored) if is_written_inline(restored) else restored
 
 
-def _holds_tables(elements) -> bool:
-    return any(isinstance(e, dict) and not isinstance(e, InlineTable) for e in elements)
+def _restore_element(element, header_arrays, path):
+    if not isinstance(element, dict):
+        return restore_inline_tables(element, header_arrays, path)
+    if path in header_arrays:
+        return {
+            key: restore_inline_tables(member, header_arrays, (*path, key))
+            for key, member in element.items()
+        }
+
+    inline = InlineTable()
+    for key, member in element.items():
+        if _is_table(member) or _is_table_array(member):
+            raise ValueError(f"nests a table inside an inline table at '{key}'")
+        inline[key] = restore_inline_tables(member, header_arrays, (*path, key))
+    return inline
+
 
 # Rule 5's named escapes. Everything else in the control range goes to \uXXXX.
 _ESCAPES = {
@@ -177,8 +228,10 @@ def _write_header(out: list[str], header: str) -> None:
 
 
 def _is_table(value: object) -> bool:
-    """A sub-table, written under a header. An InlineTable is a VALUE and excluded."""
-    return isinstance(value, dict) and not isinstance(value, InlineTable)
+    """A non-empty sub-table, written under a header. An InlineTable is a VALUE and excluded, and
+    so is an empty dict: it is written ``{}`` (rule 10), since no reader could restore a header
+    with nothing under it."""
+    return isinstance(value, dict) and not isinstance(value, InlineTable) and len(value) > 0
 
 
 def _is_table_array(value: object) -> bool:
@@ -201,9 +254,10 @@ def format_value(value: object) -> str:
     # and the document silently changes type.
     if isinstance(value, bool):
         return "true" if value else "false"
-    # InlineTable before any mapping test: it is a dict subclass.
-    if isinstance(value, InlineTable):
-        return format_inline_table(value)
+    # InlineTable before any mapping test: it is a dict subclass. A plain empty dict is the same
+    # bytes (rule 10).
+    if isinstance(value, dict) and (isinstance(value, InlineTable) or not value):
+        return format_inline_table(InlineTable(value))
     if isinstance(value, int):
         return str(value)
     if isinstance(value, float):

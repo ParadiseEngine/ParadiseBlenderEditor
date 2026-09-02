@@ -1,8 +1,8 @@
 """Prefab resolution, mirroring C# ``PrefabResolver``. Order and identity are NORMATIVE (both
 resolvers must produce the same document): children follow their instance in prefab order;
 components in prefab order then instance additions; child identity is ``uuid5(instance guid,
-prefab-local guid AS TEXT)``, text because .NET's ``Guid.ToByteArray`` is mixed-endian. KNOWN
-GAP (#30): C# hashes the canonical lowercase text; this hashes the raw text.
+prefab-local guid AS CANONICAL TEXT)``, text because .NET's ``Guid.ToByteArray`` is mixed-endian
+and canonical because the file's spelling is not part of the identity (#30).
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 
+from . import guid as document_guid
 from . import well_known
 from .prefab import PrefabComponent, PrefabDocument, PrefabObject
 
@@ -203,7 +204,10 @@ def _rewrite_meta(merged, prefab_object, is_root, instance_guid, minted, overrid
 
     data: dict = {well_known.GUID: instance_guid if is_root else minted[prefab_object.guid]}
 
-    name = (existing.data.get(well_known.NAME) if existing else None) or prefab_object.name
+    # `is None`, not `or`: an instance that overrides the name to "" means "", as in C#.
+    name = existing.data.get(well_known.NAME) if existing is not None else None
+    if not isinstance(name, str):
+        name = prefab_object.name
     if name is not None:
         data[well_known.NAME] = name
 
@@ -239,5 +243,7 @@ def _merge_data(prefab_data: dict, override_data: dict) -> dict:
 
 
 def mint_child_guid(instance: str, prefab_local: str) -> str:
-    """``uuid5(instance, prefab-local guid as text)``: deterministic, and distinct per instance."""
-    return str(uuid.uuid5(uuid.UUID(instance), prefab_local))
+    """``uuid5(instance, prefab-local guid as canonical text)``: deterministic, distinct per
+    instance, and the same value C# ``PrefabResolver.MintChildGuid`` produces -- which hashes
+    ``DocumentGuid.Format(prefabLocal)``, never the spelling a file happened to use."""
+    return str(uuid.uuid5(document_guid.parse(instance), document_guid.canonical(prefab_local)))

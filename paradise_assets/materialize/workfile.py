@@ -11,6 +11,7 @@ import os
 
 import bpy
 
+from .. import edits
 from ..document import project
 from . import store, sync
 
@@ -39,7 +40,10 @@ def save(layout: project.ProjectLayout, document_path: str) -> str | None:
 
 def refresh_from_document(scene: bpy.types.Scene) -> str | None:
     """Rebuild ``scene`` from its document; an error string means the cached objects were left
-    alone. Always re-reads: a nested prefab or GLB can change without the document's stamp."""
+    alone. Always re-reads: a nested prefab or GLB can change without the document's stamp.
+    Except when the workfile holds work the document does not: a refused save, or pending
+    edits. Rebuilding then would discard exactly what the panel promised was safe (#31); the
+    stale banner stays up and the author decides."""
     from ..document.prefab import PrefabDocumentError, loads
     from . import load
 
@@ -48,6 +52,8 @@ def refresh_from_document(scene: bpy.types.Scene) -> str | None:
         return None
     if not os.path.isfile(state.path):
         return f"document is missing: {state.path}"
+    if (kept := unsaved_work(scene)) is not None:
+        return f"kept the working file's objects: {kept}"
 
     located = project.locate(state.path)
     if located is None:
@@ -60,6 +66,17 @@ def refresh_from_document(scene: bpy.types.Scene) -> str | None:
         return str(error)
 
     load.load_document(scene, document, state.path, located)
+    return None
+
+
+def unsaved_work(scene: bpy.types.Scene) -> str | None:
+    """Why this scene must not be rebuilt from its document, or ``None``."""
+    refused = sync.refusal(scene)
+    if refused is not None:
+        return f"the last save did not reach the document ({refused[:60]})"
+    pending = sum(edits.count(obj) for obj in scene.collection.all_objects if store.guid_of(obj))
+    if pending:
+        return f"{pending} unsaved component edit(s)"
     return None
 
 

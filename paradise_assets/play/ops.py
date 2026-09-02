@@ -22,6 +22,7 @@ from .host import (
     resolve_cli_command,
     resolve_runtime_command,
     run_cli,
+    start_cli,
 )
 
 __all__ = ["classes"]
@@ -59,21 +60,79 @@ def _profile() -> str:
     return _preference("build_profile", "dev")
 
 
-def _run(operator, layout, arguments: list[str], verb: str) -> bool:
-    """Run one CLI verb, reporting its own words rather than a generic failure."""
-    if resolve_cli_command() is None:
-        operator.report({"ERROR"}, CLI_MISSING)
-        return False
+def _modal_possible(context) -> bool:
+    """Whether a modal timer can drive this operator. ``bpy.app.background``, NOT
+    ``context.window is None``: 5.2 hands a background run a window, and a scripted operator
+    would never return FINISHED."""
+    return not bpy.app.background and context.window is not None
 
-    result = run_cli(arguments, cwd=layout.root)
-    if result is None:
-        operator.report({"ERROR"}, CLI_MISSING)
-        return False
 
-    if not result.ok:
-        operator.report({"ERROR"}, f"{verb} failed — {result.summary()}")
-        return False
-    return True
+class _CliOperator:
+    """A CLI verb run from a modal timer so the UI stays live (#36). Subclasses set ``verb``
+    and ``arguments`` and implement ``finished``; ``execute`` falls back to the blocking run
+    when there is no event loop."""
+
+    verb = ""
+    _job = None
+    _timer = None
+    _layout = None
+
+    def cli_arguments(self) -> list[str]:
+        raise NotImplementedError
+
+    def finished(self, context, result) -> set[str]:
+        """The CLI ran; ``result.ok`` says how. Return the operator's own status."""
+        raise NotImplementedError
+
+    def execute(self, context):
+        found = _project(self)
+        if found is None:
+            return {"CANCELLED"}
+        self._layout, self._document_path = found
+
+        if resolve_cli_command() is None:
+            self.report({"ERROR"}, CLI_MISSING)
+            return {"CANCELLED"}
+
+        if not _modal_possible(context):
+            result = run_cli(self.cli_arguments(), cwd=self._layout.root)
+            if result is None:
+                self.report({"ERROR"}, CLI_MISSING)
+                return {"CANCELLED"}
+            return self.finished(context, result)
+
+        self._job = start_cli(self.cli_arguments(), cwd=self._layout.root)
+        if self._job is None:
+            self.report({"ERROR"}, CLI_MISSING)
+            return {"CANCELLED"}
+
+        window_manager = context.window_manager
+        self._timer = window_manager.event_timer_add(POLL_INTERVAL, window=context.window)
+        window_manager.modal_handler_add(self)
+        return {"RUNNING_MODAL"}
+
+    def modal(self, context, event):
+        if event.type != "TIMER":
+            return {"PASS_THROUGH"}
+        result = self._job.poll()
+        if result is None:
+            return {"PASS_THROUGH"}
+        self._drop_timer(context)
+        return self.finished(context, result)
+
+    def cancel(self, context) -> None:
+        if self._job is not None:
+            self._job.cancel()
+        self._drop_timer(context)
+
+    def _drop_timer(self, context) -> None:
+        if self._timer is not None:
+            context.window_manager.event_timer_remove(self._timer)
+            self._timer = None
+
+    def _report_failure(self, result) -> set[str]:
+        self.report({"ERROR"}, f"{self.verb} failed — {result.summary()}")
+        return {"CANCELLED"}
 
 
 def _built_scene(layout, document_path: str) -> str:
@@ -102,30 +161,34 @@ def _derived_config(play_root: str) -> list[str]:
     return []
 
 
-class PARADISE_ASSETS_OT_play(Operator):
+class PARADISE_ASSETS_OT_play(_CliOperator, Operator):
     """Build this project into .editor/play and launch the game on the open document"""
 
     bl_idname = "paradise_assets.play"
     bl_label = "Build & Play"
     bl_options = {"REGISTER"}
+    verb = "Build"
 
     # Plain attributes, not RNA properties: watch state must not reach the redo panel or a keymap.
     _process = None
-    _timer = None
     _deadline = 0.0
 
     @classmethod
     def poll(cls, context) -> bool:
         return store.read_state(context.scene) is not None
 
-    def execute(self, context):
-        found = _project(self)
-        if found is None:
-            return {"CANCELLED"}
-        layout, document_path = found
+    def cli_arguments(self) -> list[str]:
+        return ["assets", "build", "--profile", _profile(), "--editor"]
 
-        if not _run(self, layout, ["assets", "build", "--profile", _profile(), "--editor"], "Build"):
-            return {"CANCELLED"}
+    def modal(self, context, event):
+        if self._process is None:
+            return _CliOperator.modal(self, context, event)
+        return self._watch_runtime(context, event)
+
+    def finished(self, context, result) -> set[str]:
+        if not result.ok:
+            return self._report_failure(result)
+        layout, document_path = self._layout, self._document_path
 
         scene_path = _built_scene(layout, document_path)
         if not os.path.isfile(scene_path):
@@ -148,20 +211,18 @@ class PARADISE_ASSETS_OT_play(Operator):
         self.report({"INFO"}, f"Launched {os.path.basename(document_path)} (pid {process.pid})")
 
         # Background Blender has no event loop, so a modal would sit in RUNNING_MODAL forever.
-        # `bpy.app.background`, NOT `context.window is None`: 5.2 hands a background run a
-        # window, and a scripted play() would never return FINISHED.
-        if bpy.app.background or context.window is None:
+        if not _modal_possible(context):
             return {"FINISHED"}
 
-        # A detached runtime's death would otherwise show up as a pid and nothing else.
+        # A detached runtime's death would otherwise show up as a pid and nothing else. The
+        # build's modal handler is still registered; it now watches the runtime instead.
         self._process = process
         self._deadline = time.monotonic() + WATCH_SECONDS
         window_manager = context.window_manager
         self._timer = window_manager.event_timer_add(POLL_INTERVAL, window=context.window)
-        window_manager.modal_handler_add(self)
         return {"RUNNING_MODAL"}
 
-    def modal(self, context, event):
+    def _watch_runtime(self, context, event):
         if event.type != "TIMER":
             return {"PASS_THROUGH"}
 
@@ -184,67 +245,53 @@ class PARADISE_ASSETS_OT_play(Operator):
         return {"CANCELLED"}
 
     def cancel(self, context) -> None:
-        self._release(context)
+        _CliOperator.cancel(self, context)
 
     def _release(self, context) -> set[str]:
         """Drop the timer. Safe to call twice -- cancel also runs on a modal that finished."""
-        if self._timer is not None:
-            context.window_manager.event_timer_remove(self._timer)
-            self._timer = None
+        self._drop_timer(context)
         return {"FINISHED"}
 
 
-class PARADISE_ASSETS_OT_build(Operator):
+class PARADISE_ASSETS_OT_build(_CliOperator, Operator):
     """Compile assets/ into build/ with the configured profile"""
 
     bl_idname = "paradise_assets.build"
     bl_label = "Build"
     bl_options = {"REGISTER"}
+    verb = "Build"
 
     @classmethod
     def poll(cls, context) -> bool:
         return store.read_state(context.scene) is not None
 
-    def execute(self, context):
-        found = _project(self)
-        if found is None:
-            return {"CANCELLED"}
-        layout, _ = found
+    def cli_arguments(self) -> list[str]:
+        return ["assets", "build", "--profile", _profile()]
 
-        profile = _profile()
-        if not _run(self, layout, ["assets", "build", "--profile", profile], "Build"):
-            return {"CANCELLED"}
-
-        self.report({"INFO"}, f"Built '{profile}' into {os.path.join(layout.root, 'build')}")
+    def finished(self, context, result) -> set[str]:
+        if not result.ok:
+            return self._report_failure(result)
+        self.report(
+            {"INFO"}, f"Built '{_profile()}' into {os.path.join(self._layout.root, 'build')}")
         return {"FINISHED"}
 
 
-class PARADISE_ASSETS_OT_verify(Operator):
+class PARADISE_ASSETS_OT_verify(_CliOperator, Operator):
     """Check the assets tree: sidecars, identities, document validity"""
 
     bl_idname = "paradise_assets.verify"
     bl_label = "Verify"
     bl_options = {"REGISTER"}
+    verb = "Verify"
 
     @classmethod
     def poll(cls, context) -> bool:
         return store.read_state(context.scene) is not None
 
-    def execute(self, context):
-        found = _project(self)
-        if found is None:
-            return {"CANCELLED"}
-        layout, _ = found
+    def cli_arguments(self) -> list[str]:
+        return ["assets", "verify"]
 
-        if resolve_cli_command() is None:
-            self.report({"ERROR"}, CLI_MISSING)
-            return {"CANCELLED"}
-
-        result = run_cli(["assets", "verify"], cwd=layout.root)
-        if result is None:
-            self.report({"ERROR"}, CLI_MISSING)
-            return {"CANCELLED"}
-
+    def finished(self, context, result) -> set[str]:
         # A non-zero exit means the TREE has errors, not that the tool failed.
         findings = [
             line.strip() for line in result.stdout.splitlines()
@@ -261,12 +308,13 @@ class PARADISE_ASSETS_OT_verify(Operator):
         return {"FINISHED"}
 
 
-class PARADISE_ASSETS_OT_clean(Operator):
+class PARADISE_ASSETS_OT_clean(_CliOperator, Operator):
     """Delete derived output. Keeps .editor/ unless you ask otherwise"""
 
     bl_idname = "paradise_assets.clean"
     bl_label = "Clean"
     bl_options = {"REGISTER"}
+    verb = "Clean"
 
     #: Off by default: regenerable, but the next open re-imports every GLB and re-renders every
     #: thumbnail.
@@ -293,16 +341,12 @@ class PARADISE_ASSETS_OT_clean(Operator):
         if self.editor_too:
             layout.label(text="The catalogue, thumbnails and working files go too.", icon="ERROR")
 
-    def execute(self, context):
-        found = _project(self)
-        if found is None:
-            return {"CANCELLED"}
-        layout, _ = found
+    def cli_arguments(self) -> list[str]:
+        return ["assets", "clean"] + ([] if self.editor_too else ["--keep-editor"])
 
-        arguments = ["assets", "clean"] + ([] if self.editor_too else ["--keep-editor"])
-        if not _run(self, layout, arguments, "Clean"):
-            return {"CANCELLED"}
-
+    def finished(self, context, result) -> set[str]:
+        if not result.ok:
+            return self._report_failure(result)
         self.report({"INFO"}, "Cleaned build/" + (" and .editor/" if self.editor_too else ""))
         return {"FINISHED"}
 

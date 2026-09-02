@@ -69,7 +69,7 @@ def _sync(scene: bpy.types.Scene) -> None:
         save.save_prefab(scene)
     except save.SaveError as error:
         # The document changed on disk. The .blend still saves, so the edit lives in the
-        # workfile (but see #31: a reopen rematerializes and drops it).
+        # workfile, which a reopen leaves alone while the refusal stands.
         scene[REFUSAL_KEY] = str(error)
         print(f"[paradise_assets] save did not reach the document: {error}")
     except Exception as error:

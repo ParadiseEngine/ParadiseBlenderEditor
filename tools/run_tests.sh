@@ -37,42 +37,42 @@ check $? "unit tests"
 
 if command -v "$BLENDER" >/dev/null 2>&1; then
   step "Integration: axis parity vs Blender's glTF exporter"
-  "$BLENDER" --background --factory-startup --python tests/integration/test_axis_parity.py 2>&1 \
+  "$BLENDER" --background --factory-startup --python-exit-code 1 --python tests/integration/test_axis_parity.py 2>&1 \
     | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2})' | tail -20
   check "${PIPESTATUS[0]}" "axis parity"
 
   step "Integration: live preview against the mock runtime"
-  "$BLENDER" --background --factory-startup --python tests/integration/test_live_preview.py 2>&1 \
+  "$BLENDER" --background --factory-startup --python-exit-code 1 --python tests/integration/test_live_preview.py 2>&1 \
     | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2})' | tail -25
   check "${PIPESTATUS[0]}" "live preview"
 
   step "Integration: GLB texture externalization (KTX2 sidecars)"
-  "$BLENDER" --background --factory-startup --python tests/integration/test_glb_textures.py 2>&1 \
+  "$BLENDER" --background --factory-startup --python-exit-code 1 --python tests/integration/test_glb_textures.py 2>&1 \
     | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2})' | tail -20
   check "${PIPESTATUS[0]}" "glb textures"
 
   step "Integration: KTX2 transcoder dialects"
-  "$BLENDER" --background --factory-startup --python tests/integration/test_ktx_pipeline.py 2>&1 \
+  "$BLENDER" --background --factory-startup --python-exit-code 1 --python tests/integration/test_ktx_pipeline.py 2>&1 \
     | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2})' | tail -20
   check "${PIPESTATUS[0]}" "ktx pipeline"
 
   step "Integration: play failure diagnostics"
-  "$BLENDER" --background --factory-startup --python tests/integration/test_play_diagnostics.py 2>&1 \
+  "$BLENDER" --background --factory-startup --python-exit-code 1 --python tests/integration/test_play_diagnostics.py 2>&1 \
     | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2})' | tail -20
   check "${PIPESTATUS[0]}" "play diagnostics"
 
   step "Integration: authored components (schema-driven)"
-  "$BLENDER" --background --factory-startup --python tests/integration/test_authored_components.py 2>&1 \
+  "$BLENDER" --background --factory-startup --python-exit-code 1 --python tests/integration/test_authored_components.py 2>&1 \
     | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2})' | tail -30
   check "${PIPESTATUS[0]}" "authored components"
 
   step "Integration: config documents (file-backed authored components)"
-  "$BLENDER" --background --factory-startup --python tests/integration/test_config_documents.py 2>&1 \
+  "$BLENDER" --background --factory-startup --python-exit-code 1 --python tests/integration/test_config_documents.py 2>&1 \
     | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2})' | tail -30
   check "${PIPESTATUS[0]}" "config documents"
 
   step "Integration: full scene export"
-  "$BLENDER" --background --factory-startup --python tests/integration/test_export_scene.py 2>&1 \
+  "$BLENDER" --background --factory-startup --python-exit-code 1 --python tests/integration/test_export_scene.py 2>&1 \
     | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2})' | tail -30
   check "${PIPESTATUS[0]}" "scene export"
 
@@ -80,7 +80,7 @@ if command -v "$BLENDER" >/dev/null 2>&1; then
   # to data/. Its gate is a byte-exact round trip through Blender, so it needs a real asset
   # project -- it skips cleanly when PARADISE_ASSETS_PROJECT names nothing.
   step "Integration: open and save an asset-project scene"
-  "$BLENDER" --background --factory-startup --python tests/integration/test_open_scene.py -- \
+  "$BLENDER" --background --factory-startup --python-exit-code 1 --python tests/integration/test_open_scene.py -- \
     "${PARADISE_ASSETS_PROJECT:-../shiningpie}" 2>&1 \
     | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2})' | tail -30
   check "${PIPESTATUS[0]}" "open scene"
@@ -88,32 +88,32 @@ if command -v "$BLENDER" >/dev/null 2>&1; then
   # Asset Browser thumbnails. Renders, so it wants the same real project -- and its load-bearing
   # check is that the catalogue came out with no geometry in it.
   step "Integration: prefab thumbnails and the catalogue's weight"
-  "$BLENDER" --background --factory-startup --python tests/integration/test_prefab_thumbnails.py -- \
+  "$BLENDER" --background --factory-startup --python-exit-code 1 --python tests/integration/test_prefab_thumbnails.py -- \
     "${PARADISE_ASSETS_PROJECT:-../shiningpie}" 2>&1 \
     | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2}|.*\| Saved:)' | tail -30
   check "${PIPESTATUS[0]}" "prefab thumbnails"
 
   step "Integration: the Asset Browser context menu and its sidecar"
-  "$BLENDER" --background --factory-startup --python tests/integration/test_asset_browser_menu.py -- \
+  "$BLENDER" --background --factory-startup --python-exit-code 1 --python tests/integration/test_asset_browser_menu.py -- \
     "${PARADISE_ASSETS_PROJECT:-../shiningpie}" 2>&1 \
     | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2}|.*\| (Saved|Read blend):)' | tail -30
   check "${PIPESTATUS[0]}" "asset browser menu"
 
   # Build & Play, against FAKE tools -- it needs no project, no CLI and no game.
   step "Integration: build and play, up to the process"
-  "$BLENDER" --background --factory-startup --python tests/integration/test_play.py 2>&1 \
+  "$BLENDER" --background --factory-startup --python-exit-code 1 --python tests/integration/test_play.py 2>&1 \
     | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2})' | tail -30
   check "${PIPESTATUS[0]}" "build and play"
 
   # Blender's own save writing the document. Its own throwaway project -- every check writes.
   step "Integration: Ctrl+S writes the prefab document"
-  "$BLENDER" --background --factory-startup --python tests/integration/test_save_on_save.py 2>&1 \
+  "$BLENDER" --background --factory-startup --python-exit-code 1 --python tests/integration/test_save_on_save.py 2>&1 \
     | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2}|Info: Saved)' | tail -30
   check "${PIPESTATUS[0]}" "save on save"
 
   # Opening a cached .blend must rematerialize from assets/ and start the watcher. Own project.
   step "Integration: opening a cached .blend refreshes from assets"
-  "$BLENDER" --background --factory-startup --python tests/integration/test_open_workfile.py 2>&1 \
+  "$BLENDER" --background --factory-startup --python-exit-code 1 --python tests/integration/test_open_workfile.py 2>&1 \
     | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2}|Info: Saved|.*Read blend)' | tail -30
   check "${PIPESTATUS[0]}" "open workfile"
 else

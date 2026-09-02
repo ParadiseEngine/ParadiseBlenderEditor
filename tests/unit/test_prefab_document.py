@@ -7,6 +7,7 @@ into a document that loads and is quietly wrong.
 
 from __future__ import annotations
 
+from paradise_assets import edits
 from paradise_assets.document import prefab, well_known
 
 CRATE = "3f2a1b4c-5d6e-4f70-8192-a3b4c5d6e7f8"
@@ -90,12 +91,13 @@ class TestRoundTrip:
     def test_a_plain_dict_asset_slot_dumps_as_an_inline_table(self):
         # The overlay records ``{guid, path}`` as a JSON object, which loads back a plain dict.
         # Writing that next to an InlineTable in the same list used to TypeError (mixed array)
-        # or, if every row was a dict, emit [[Slots]] headers that drop empty elements.
+        # or, if every row was a dict, emit [[Slots]] headers that drop empty elements. The
+        # overlay is applied through edits.apply_to, which restores the form at the door.
         document = prefab.loads(CANONICAL, "x.scene")
-        document.objects[0].component(RENDERABLE).data["Slots"] = [
+        edits.apply_to(document.objects[0], {RENDERABLE: {"Slots": [
             {"guid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "path": "materials/a.toml"},
             {},
-        ]
+        ]}})
 
         text = prefab.dumps(document)
 
@@ -299,3 +301,109 @@ class TestWellKnownShapes:
             assert "reserved" in str(error)
         else:
             raise AssertionError("expected the component to be refused")
+
+
+MINTED_CHILD = "6a8f7f6a-5cf4-59f3-ae75-6717b3ae43e3"
+
+
+def component(component_id: str, body: str = "") -> str:
+    return f'\n[[objects.components]]\nid = "{component_id}"\n' + body
+
+
+def with_prefab(reference: str) -> str:
+    """A one-object document whose object instantiates *reference* (the inline-table text)."""
+    body = obj(CRATE).split("[[objects]]\n", 1)[1]
+    return "schema_version = 1\n\n[[objects]]\nprefab = " + reference + "\n" + body
+
+
+class TestIdentityText:
+    """Mirrors C#: a component id is a UUID, every identity is compared by value and written in
+    the canonical spelling, and ``Name = ""`` is a name (#30)."""
+
+    def test_a_component_id_that_is_not_a_uuid_is_refused(self):
+        message = rejects("schema_version = 1\n" + obj(CRATE, extra=component("not-a-guid")))
+        assert "must be a non-empty UUID" in message
+
+    def test_the_empty_guid_is_refused_as_a_component_id(self):
+        zero = "00000000-0000-0000-0000-000000000000"
+        assert "non-empty UUID" in rejects("schema_version = 1\n" + obj(CRATE, extra=component(zero)))
+
+    def test_an_uppercase_component_id_reads_and_writes_canonical(self):
+        text = "schema_version = 1\n" + obj(CRATE, extra=component(RENDERABLE.upper()))
+        document = prefab.loads(text, "x.scene")
+
+        assert document.objects[0].component(RENDERABLE) is not None
+        written = prefab.dumps(document)
+        assert RENDERABLE in written and RENDERABLE.upper() not in written
+
+    def test_uppercase_and_undashed_identities_compare_by_value(self):
+        text = (
+            "schema_version = 1\n"
+            + obj(CRATE.upper(), "crate")
+            + obj(LID.replace("-", ""), "lid", extra=f'Parent = "{CRATE}"\n')
+        )
+        document = prefab.loads(text, "x.scene")
+
+        assert [o.guid for o in document.objects] == [CRATE, LID]
+        assert document.objects[1].parent == CRATE
+        assert CRATE.upper() not in prefab.dumps(document)
+
+    def test_a_target_carrier_is_normalised_too(self):
+        carrier = component(META, f'type = "meta"\nParent = "{CRATE.upper()}"\nTarget = "{LID.upper()}"\n')
+        text = "schema_version = 1\n" + obj(CRATE, "crate") + "\n[[objects]]\n" + carrier
+        loaded = prefab.loads(text, "x.scene").objects[1]
+
+        assert (loaded.parent, loaded.target) == (CRATE, LID)
+
+    def test_an_empty_name_is_a_name(self):
+        document = prefab.loads("schema_version = 1\n" + obj(CRATE, ""), "x.scene")
+        assert document.objects[0].name == ""
+
+    def test_with_meta_normalises(self):
+        made = prefab.PrefabObject.with_meta(CRATE.upper(), "x", LID.upper())
+        assert (made.guid, made.parent) == (CRATE, LID)
+
+
+class TestAssetReferences:
+    def test_a_reference_with_an_extra_key_is_refused(self):
+        # C# refuses; accepting it here dropped the key on the next write.
+        text = with_prefab(f'{{ guid = "{LID}", path = "p.prefab", extra = 1 }}')
+        assert "asset reference" in rejects(text)
+
+    def test_a_reference_guid_must_be_a_uuid(self):
+        text = with_prefab('{ guid = "nope", path = "p.prefab" }')
+        assert "must be a non-empty UUID" in rejects(text)
+
+    def test_a_reference_guid_is_normalised(self):
+        document = prefab.loads(with_prefab(f'{{ guid = "{LID.upper()}", path = "p.prefab" }}'), "x.scene")
+
+        assert document.objects[0].prefab.guid == LID
+        assert f'prefab = {{ guid = "{LID}", path = "p.prefab" }}' in prefab.dumps(document)
+
+
+class TestRecordLists:
+    ROWS = 'Shapes = [{ shape = "box", size = [1.0, 2.0, 3.0] }, {}]\n'
+
+    def test_a_list_of_records_stays_inline_through_a_round_trip(self):
+        # #29: the CLI writes record rows inline; a save here used to flip them to [[headers]].
+        text = "schema_version = 1\n" + obj(CRATE, extra=component(RENDERABLE, self.ROWS))
+        assert prefab.dumps(prefab.loads(text, "x.scene")) == text
+
+    def test_a_record_row_added_as_a_plain_dict_is_written_inline(self):
+        # component_ops.add_array_row appends the schema default, a plain dict, beside `{}`;
+        # the overlay reaches the document through edits.apply_to.
+        text = "schema_version = 1\n" + obj(CRATE, extra=component(RENDERABLE))
+        document = prefab.loads(text, "x.scene")
+        edits.apply_to(document.objects[0], {RENDERABLE: {"Shapes": [{"shape": "box"}, {}]}})
+
+        assert 'Shapes = [{ shape = "box" }, {}]' in prefab.dumps(document)
+
+    def test_a_header_array_read_from_the_file_is_written_back_as_headers(self):
+        # ShiningPie's levels spell collider lists as [[objects.components.Shapes]] blocks, which
+        # C# reads as an array of tables and writes back the same way; so must this side.
+        rows = (
+            '\n[[objects.components.Shapes]]\nshape = "box"\n'
+            '\n[[objects.components.Shapes]]\nshape = "sphere"\n'
+        )
+        text = "schema_version = 1\n" + obj(CRATE, extra=component(RENDERABLE, 'Layer = "default"\n' + rows))
+        assert prefab.dumps(prefab.loads(text, "x.scene")) == text

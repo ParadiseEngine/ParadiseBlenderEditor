@@ -10,8 +10,8 @@ Legend: **✔** full parity · **≈** parity with a documented difference · **
 | contract area | Godot host | Blender host | notes |
 |---|---|---|---|
 | Entity transforms | ✔ verbatim | ≈ | Blender is Z-up, so transforms are rebased (`CONVENTIONS.md` §1). Pinned against Blender's glTF exporter. |
-| Object identity | ✖ | ✖ | Schema v5 removed `EntityGuid` from the document; nothing exports one. `object.paradise.entity_guid` survives as host bookkeeping. What identifies an object on the wire is its `Name` component, which is for DIAGNOSTICS and is not unique. |
-| Parent/child | ✖ | ✖ | The parent link went with the entity record. An object's placement is stated in world space, once. |
+| Object identity | ✔ stored | ≈ derived | Since v6 every object carries `meta.Guid`. Godot stores a minted GUID in node metadata; this host derives `uuid5(namespace, object name)` (`CONVENTIONS.md` §4) so an export never mutates the LFS-locked `.blend`. Every host reference bakes the same value. |
+| Parent/child | ✔ | ✔ | `meta.Parent` plus a LOCAL `transform`. The parent is the nearest EXPORTED ancestor, so an empty that authors nothing does not break the chain. |
 | Entity order | tree order | sorted by name | Blender guarantees no iteration order; sorting keeps exports diff-stable. |
 | Mesh reference | ✔ shared GLB, derived | ≈ AUTHORED | The Godot host still derives a `Renderable` from the node's mesh. This host does not: what an object draws is a component an author attaches, pointing at the object whose geometry to export (`authoredBy: mesh`). Still exported per mesh datablock and deduplicated. |
 | Materials | ✔ `BaseMaterial3D` | ≈ | Principled BSDF. Colour space is inverted (§2) — Blender is already linear. |

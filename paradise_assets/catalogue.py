@@ -15,7 +15,7 @@ import os
 import bpy
 
 from . import thumbnail
-from .document import project
+from .document import assets, project
 from .document.prefab import PrefabDocumentError
 from .document.prefab import loads as parse_document
 
@@ -156,16 +156,7 @@ def _write_index(project_root: str, index: dict) -> None:
 
 def _sidecar_guid(prefab_path: str) -> str | None:
     """The prefab's identity, from its sidecar -- the only place identity lives."""
-    sidecar = prefab_path + ".meta"
-    if not os.path.isfile(sidecar):
-        return None
-
-    with open(sidecar, encoding="utf-8") as handle:
-        for line in handle:
-            key, _, value = line.partition("=")
-            if key.strip() == "guid":
-                return value.strip().strip('"') or None
-    return None
+    return assets.read_sidecar_guid(prefab_path + ".meta")
 
 
 def _apply_preview(obj, png: str | None) -> bool:

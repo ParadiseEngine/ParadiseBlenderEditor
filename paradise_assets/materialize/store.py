@@ -1,7 +1,8 @@
 """What the ``.blend`` (a cache) carries about its document. Component payloads are stored as a
 JSON string for DISPLAY ONLY and never written back: ID property groups normalize types
 (``int`` -> ``float``, tuple -> list), and "nearly the same value" is a bug in data promised
-verbatim. The stamp is an undo-tracked ID property, which is #31.
+verbatim. The stamp lives in the scene for the workfile's sake and in :data:`_STAMPS` for this
+process's, since the scene copy is undo-tracked.
 """
 
 from __future__ import annotations
@@ -11,15 +12,19 @@ import os
 
 import bpy
 
+from ..document import guid as document_guid
+
 __all__ = [
     "DocumentState",
     "clear_object",
     "component_json",
+    "document_name",
     "guid_of",
     "object_with_guid",
     "prefab_of",
     "read_state",
     "stamp_of",
+    "tag_name",
     "tag_object",
     "tag_prefab",
     "write_state",
@@ -37,9 +42,21 @@ COMPONENTS_KEY = "paradise_components"
 #: the file, but a new one has no entry to carry it from.
 PREFAB_KEY = "paradise_prefab"
 
+#: The document's ``meta.Name`` (absent when it has none) and the name Blender gave the object
+#: when it was materialized. Blender uniquifies (``Wall.001``) and truncates in one namespace
+#: shared with every imported GLB node, so ``obj.name`` alone cannot say whether the AUTHOR
+#: renamed anything (#32).
+NAME_KEY = "paradise_name"
+SHOWN_NAME_KEY = "paradise_shown_name"
+
 SCENE_PATH_KEY = "paradise_scene_path"
 
 STAMP_KEY = "paradise_scene_stamp"
+
+#: Stamps of documents written by THIS process, keyed by normalised path. The scene property
+#: is undo-tracked, so Ctrl+Z after a save resurrected the pre-save stamp and the next save was
+#: refused as "changed on disk" by the session's own write (#31). This table is not undone.
+_STAMPS: dict[str, str] = {}
 
 
 class DocumentState:
@@ -69,21 +86,46 @@ def write_state(scene: bpy.types.Scene, path: str) -> DocumentState:
     state = DocumentState(os.path.abspath(path), stamp_of(path))
     scene[SCENE_PATH_KEY] = state.path
     scene[STAMP_KEY] = state.stamp
+    _STAMPS[os.path.normcase(state.path)] = state.stamp
     return state
 
 
 def read_state(scene: bpy.types.Scene) -> DocumentState | None:
-    """The document this scene was materialized from, or ``None`` if it was not."""
+    """The document this scene was materialized from, or ``None`` if it was not. The stamp
+    is the last one this process recorded for the path where there is one (undo cannot roll
+    that back), else the workfile's."""
     path = scene.get(SCENE_PATH_KEY)
     if not isinstance(path, str) or not path:
         return None
-    return DocumentState(path, scene.get(STAMP_KEY, ""))
+    stamp = _STAMPS.get(os.path.normcase(os.path.abspath(path)), scene.get(STAMP_KEY, ""))
+    return DocumentState(path, stamp)
 
 
 def tag_object(obj: bpy.types.Object, guid: str, components: list) -> None:
     """Mark ``obj`` as standing for the document object ``guid``."""
     obj[GUID_KEY] = guid
     obj[COMPONENTS_KEY] = json.dumps(components, ensure_ascii=False)
+
+
+def tag_name(obj: bpy.types.Object, authored: str | None) -> None:
+    """Record the document's name for ``obj`` and the name Blender is showing for it now."""
+    if authored is None:
+        if NAME_KEY in obj:
+            del obj[NAME_KEY]
+    else:
+        obj[NAME_KEY] = authored
+    obj[SHOWN_NAME_KEY] = obj.name
+
+
+def document_name(obj: bpy.types.Object) -> str | None:
+    """What ``meta.Name`` should say: the author's rename when there was one, else the authored
+    name untouched -- ``Wall.001`` is Blender's, not the author's, and the format allows two
+    objects one name."""
+    shown = obj.get(SHOWN_NAME_KEY)
+    if isinstance(shown, str) and shown == obj.name:
+        authored = obj.get(NAME_KEY)
+        return authored if isinstance(authored, str) else None
+    return obj.name
 
 
 def tag_prefab(obj: bpy.types.Object, guid: str, path: str) -> None:
@@ -106,15 +148,19 @@ def prefab_of(obj: bpy.types.Object):
 
 def clear_object(obj: bpy.types.Object) -> None:
     """Detach an object from the document -- it becomes ordinary Blender content."""
-    for key in (GUID_KEY, COMPONENTS_KEY, PREFAB_KEY):
+    for key in (GUID_KEY, COMPONENTS_KEY, PREFAB_KEY, NAME_KEY, SHOWN_NAME_KEY):
         if key in obj:
             del obj[key]
 
 
 def guid_of(obj: bpy.types.Object) -> str | None:
-    """The document identity of ``obj``, or ``None`` if it is not a document object."""
+    """The document identity of ``obj``, or ``None`` if it is not a document object. Canonical
+    spelling, so it compares by value against a document's own identities (#30); a marker that
+    is not a guid at all is returned as stored, for the save to refuse by name."""
     guid = obj.get(GUID_KEY)
-    return guid if isinstance(guid, str) and guid else None
+    if not isinstance(guid, str) or not guid:
+        return None
+    return document_guid.canonical(guid) if document_guid.parse(guid) is not None else guid
 
 
 def object_with_guid(scene: bpy.types.Scene, guid: str | None):

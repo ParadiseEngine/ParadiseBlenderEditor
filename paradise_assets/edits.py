@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
+from .document import canonical_toml
+
 if TYPE_CHECKING:
     import bpy
 
@@ -240,7 +242,11 @@ def apply_to(entry, edits: dict[str, dict[str, object]]) -> int:
         if component is None:
             continue
         for path, value in fields.items():
-            write_path(component.data, path, value)
+            # JSON carries no table form; a table inside an array is inline by rule, and a
+            # reference-shaped one anywhere is too (canonical_toml). Restored here, at the door,
+            # because the writer picks form by TYPE and would otherwise emit [[headers]] that
+            # cannot hold the null row `{}`.
+            write_path(component.data, path, canonical_toml.restore_inline_tables(value))
             written += 1
     return written
 

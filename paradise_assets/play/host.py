@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 
 __all__ = [
+    "CliJob",
     "CliResult",
     "ensure_cli_built",
     "first_error_line",
@@ -23,6 +24,7 @@ __all__ = [
     "resolve_cli_command",
     "resolve_runtime_command",
     "run_cli",
+    "start_cli",
     "subprocess_environment",
 ]
 
@@ -112,9 +114,16 @@ def resolve_runtime_command() -> list[str] | None:
 
 
 def subprocess_environment() -> dict[str, str]:
-    """Child environment with the MSBuild server off: two ``dotnet run`` sharing one die on
-    MSB0001, which is what Play looked like beside a live watcher."""
+    """Child environment with the dotnet directory on PATH (a Dock-launched Blender has none,
+    and MSBuild's own ``dotnet exec`` steps need it) and the MSBuild server off: two ``dotnet
+    run`` sharing one die on MSB0001, which is what Play looked like beside a live watcher."""
     environment = dict(os.environ)
+    dotnet = shutil.which("dotnet") or _well_known_dotnet()
+    if dotnet is not None:
+        directory = os.path.dirname(os.path.realpath(dotnet))
+        current = environment.get("PATH", "")
+        if directory not in current.split(os.pathsep):
+            environment["PATH"] = directory + os.pathsep + current if current else directory
     environment["DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER"] = "1"
     ktx = _preference("ktx_path").strip()
     if ktx:
@@ -186,9 +195,89 @@ class CliResult:
         return best if len(best) <= limit else best[: limit - 3] + "..."
 
 
+class CliJob:
+    """A CLI run in progress, polled from a modal timer so a minutes-long build never freezes
+    the UI. When the CLI csproj has no build output yet, ``dotnet build`` runs first as a stage
+    of the same job."""
+
+    def __init__(self, stages: list[list[str]], cwd: str) -> None:
+        self._stages = stages
+        self._cwd = cwd
+        self._process: subprocess.Popen | None = None
+        self._output: list[str] = []
+        self.result: CliResult | None = None
+        self._advance()
+
+    def _advance(self) -> None:
+        argv = self._stages.pop(0)
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        try:
+            self._process = subprocess.Popen(  # argv is built from resolved paths
+                argv,
+                cwd=self._cwd,
+                env=subprocess_environment(),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                text=True,
+                creationflags=flags,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            self._process = None
+            self.result = CliResult(-1, "", f"error: could not run the Paradise CLI: {error}")
+
+    def poll(self) -> CliResult | None:
+        """The result once every stage has finished, else ``None``."""
+        if self.result is not None:
+            return self.result
+        if self._process is None or self._process.poll() is None:
+            return None
+        # Read after exit: a pipe read here cannot block, and the CLI's output is small.
+        output = self._process.stdout.read() if self._process.stdout else ""
+        self._process.stdout and self._process.stdout.close()
+        code = self._process.returncode
+        if code != 0 or not self._stages:
+            self.result = CliResult(code, output, "")
+            return self.result
+        self._advance()
+        return self.result
+
+    def cancel(self) -> None:
+        if self._process is not None and self._process.poll() is None:
+            self._process.terminate()
+
+
+def _build_stage() -> list[str] | None:
+    """The ``dotnet build`` the CLI needs before ``--no-build`` has anything to run, or ``None``."""
+    project = _cli_csproj()
+    if project is None:
+        return None
+    output = os.path.join(os.path.dirname(project), "bin", "Debug", "net10.0", "paradise.dll")
+    if os.path.isfile(output):
+        return None
+    dotnet = shutil.which("dotnet") or _well_known_dotnet()
+    if dotnet is None:
+        return None
+    return [dotnet, "build", project, "-v", "q", "--nologo"]
+
+
+def start_cli(arguments: list[str], cwd: str) -> CliJob | None:
+    """Start the CLI in ``cwd`` without waiting; ``None`` when there is no CLI to run."""
+    command = resolve_cli_command()
+    if command is None:
+        return None
+    stages = []
+    build = _build_stage()
+    if build is not None:
+        stages.append(build)
+    stages.append([*command, *arguments])
+    return CliJob(stages, cwd)
+
+
 def run_cli(arguments: list[str], cwd: str, timeout: float = 900.0) -> CliResult | None:
-    """Run the CLI to completion in ``cwd``; ``None`` when it could not start. Synchronous so a
-    failed build can stop the launch."""
+    """Run the CLI to completion in ``cwd``; ``None`` when it could not start. Synchronous, for
+    background Blender (no event loop for a modal) and scripts; the operators use
+    :func:`start_cli`."""
     command = resolve_cli_command()
     if command is None:
         return None
@@ -241,11 +330,8 @@ def launch_runtime(arguments: list[str], cwd: str) -> tuple[subprocess.Popen | N
                 creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
             )
         else:
-            # A GUI-launched Blender has no dotnet directory on PATH, which the child build
-            # steps need.
-            dotnet_dir = os.path.dirname(shutil.which("dotnet") or "/usr/local/share/dotnet/dotnet")
             quoted = " ".join(shlex.quote(a) for a in argv)
-            script = f'export PATH="{dotnet_dir}:$PATH"; exec {quoted} > {shlex.quote(log_path())} 2>&1'
+            script = f"exec {quoted} > {shlex.quote(log_path())} 2>&1"
             process = subprocess.Popen(
                 ["/bin/sh", "-c", script],
                 cwd=cwd,

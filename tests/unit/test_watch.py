@@ -59,14 +59,14 @@ def teardown_function(_function):
 
 def test_nothing_is_running_to_begin_with():
     assert not watch.is_running("/some/project")
-    assert watch.watched_roots() == []
+    assert not watch._WATCHERS
 
 
 def test_a_registered_watcher_reads_as_running():
     _register("/some/project")
 
     assert watch.is_running("/some/project")
-    assert len(watch.watched_roots()) == 1
+    assert len(watch._WATCHERS) == 1
 
 
 def test_the_same_project_is_recognised_through_path_spelling():
@@ -120,12 +120,12 @@ def test_stop_all_clears_every_project():
     watch.stop_all()
 
     assert first.terminated and second.terminated
-    assert watch.watched_roots() == []
+    assert not watch._WATCHERS
 
 
 def test_stopping_something_that_is_not_running_is_harmless():
     watch.stop("/never/started")   # must not raise
-    assert watch.watched_roots() == []
+    assert not watch._WATCHERS
 
 
 def test_the_log_path_is_stable_across_processes():
@@ -181,10 +181,6 @@ def test_log_paths_differ_per_project():
     assert "shiningpie" in os.path.basename(first)
 
 
-def test_status_line_reports_not_watching_when_it_is_not():
-    assert watch.status_line("/some/project") == "Not watching."
-
-
 def test_watch_command_rebuilds_play_mode(monkeypatch):
     from paradise_assets.play import host
 
@@ -224,3 +220,21 @@ def test_start_for_starts_when_auto_watch_is_on(monkeypatch):
 
     assert watch.start_for("/game") is None
     assert started == ["/game"]
+
+
+def test_last_error_reads_the_tail_and_caches_on_the_stamp(tmp_path, monkeypatch):
+    # The panel asks per redraw, and the log grows all session: read the tail once per change.
+    log = tmp_path / "watch.log"
+    monkeypatch.setattr(watch, "log_path", lambda root: str(log))
+    log.write_text("x\n" * 100_000 + "error: Models/a.glb is missing\nbuild FAILED with 1 error(s)\n")
+
+    assert watch.last_error("/p") == "error: Models/a.glb is missing"
+    calls = []
+    monkeypatch.setattr(watch, "_scan_for_error", lambda path: calls.append(path) or "scanned")
+    assert watch.last_error("/p") == "error: Models/a.glb is missing"   # cached, not rescanned
+    assert calls == []
+
+    with open(log, "a", encoding="utf-8") as handle:
+        handle.write("error: another\n")
+    assert watch.last_error("/p") == "scanned"
+    assert len(calls) == 1

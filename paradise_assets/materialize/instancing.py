@@ -11,7 +11,7 @@ import uuid
 import bpy
 from mathutils import Vector
 
-from ..document import project, resolve, schema
+from ..document import assets, project, resolve, schema
 from ..document.prefab import PrefabDocumentError
 from ..document.prefab import loads as parse_document
 from . import store
@@ -61,9 +61,14 @@ def add_instance(
     # A fresh uuid4: unlike a resolved child, there is nothing to derive it from.
     instance_guid = str(uuid.uuid4())
     store.tag_object(obj, instance_guid, _components(root))
+    store.tag_name(obj, obj.name)
     store.tag_prefab(obj, guid, relative)
 
-    _parent_to_document_root(obj, scene)
+    try:
+        _parent_to_document_root(obj, scene)
+    except InstanceError:
+        bpy.data.objects.remove(obj, do_unlink=True)
+        raise
     _show_prefab_mesh(obj, document, layout, prefab_path)
     return obj
 
@@ -89,6 +94,7 @@ def adopt_template(
         obj.name = root.name or os.path.splitext(os.path.basename(relative))[0]
 
     store.tag_object(obj, str(uuid.uuid4()), _components(root))
+    store.tag_name(obj, obj.name)
     store.tag_prefab(obj, prefab_guid, relative)
 
     _parent_to_document_root(obj, scene)
@@ -106,16 +112,7 @@ def _components(root) -> list:
 
 def _prefab_guid(prefab_path: str) -> str | None:
     """The prefab's identity, from its sidecar -- the only place identity lives."""
-    sidecar = prefab_path + ".meta"
-    if not os.path.isfile(sidecar):
-        return None
-
-    with open(sidecar, encoding="utf-8") as handle:
-        for line in handle:
-            key, _, value = line.partition("=")
-            if key.strip() == "guid":
-                return value.strip().strip('"') or None
-    return None
+    return assets.read_sidecar_guid(prefab_path + ".meta")
 
 
 def _assets_relative(path: str, layout: project.ProjectLayout) -> str | None:
@@ -132,8 +129,8 @@ def _assets_relative(path: str, layout: project.ProjectLayout) -> str | None:
 def _parent_to_document_root(obj: bpy.types.Object, scene: bpy.types.Scene) -> None:
     """Parent to the document root (an unparented object would be a second root, which the
     reader refuses) and move into the root's collection so the Outliner shows it inside the
-    level. Silently returns when there is not exactly one root, which then saves an unloadable
-    document (#32)."""
+    level. Refuses when there is not exactly one root: placing anyway would save a document the
+    next load rejects (#32)."""
     # `obj` itself has an identity and no parent yet; counting it would always find two roots.
     roots = [
         candidate for candidate in scene.collection.all_objects
@@ -143,7 +140,11 @@ def _parent_to_document_root(obj: bpy.types.Object, scene: bpy.types.Scene) -> N
         and candidate.parent is None
     ]
     if len(roots) != 1:
-        return
+        names = ", ".join(repr(root.name) for root in roots) or "none"
+        raise InstanceError(
+            f"the document must have exactly one root object to place under; it has "
+            f"{len(roots)} ({names}). Parent the extra roots first, or reload."
+        )
 
     root = roots[0]
     obj.parent = root

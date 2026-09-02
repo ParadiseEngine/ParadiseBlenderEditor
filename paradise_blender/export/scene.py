@@ -1,8 +1,8 @@
 """Scene walk -> ``data/scenes/<Scene>.json`` (port of ``SceneDataExporter.ExportRoot``).
 
-Emits every entity that authors something, every lamp as an object carrying a Light (the v5
-engine id; a v6 game that does not declare it makes this raise, #25), and one Environment
-object. Placement is a second pass over the surviving set (:mod:`.placement`). Objects are
+Emits every entity that authors something, every lamp as an object carrying a Light (an id the
+game must declare, or :func:`~..contract.component_ids.engine_type_name` raises), and one
+Environment object. Placement is a second pass over the surviving set (:mod:`.placement`). Objects are
 sorted by name because Blender guarantees no iteration order, and an unstable order makes every
 diff and live-preview patch noisy.
 """
@@ -50,7 +50,7 @@ def build_level_data(
     re-exporting every GLB per transform tweak would stall Blender."""
     document = LevelData()
 
-    materials = MaterialExporter()
+    materials = MaterialExporter(paths)
     meshes = MeshExporter(force)
 
     document.entities.append(_environment_object(scene, paths))

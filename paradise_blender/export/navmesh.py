@@ -71,7 +71,7 @@ def export_navmesh(
     scene: bpy.types.Scene, scene_name: str, paths: ExportPaths, force: bool = False
 ) -> None:
     """Bake ``<scene>.navmesh.bin`` beside the document. Nothing in the document names it since
-    v5, which is why prune cannot see it (#28)."""
+    v5; ``pipeline/prune.py`` keeps it by that naming rule."""
     bake_navmesh(scene, scene_name, paths, force=force)
 
 
@@ -96,6 +96,7 @@ def bake_navmesh(
         # ignore the log.
         return None
 
+    from ..pipeline import dotnet
     from ..pipeline.bridge import bridge_identity, resolve_bridge_command
 
     command = resolve_bridge_command()
@@ -108,7 +109,9 @@ def bake_navmesh(
         return None
 
     output_path = paths.nav_mesh_output_path(scene_name)
-    input_path = os.path.join(tempfile.gettempdir(), f"paradise_navmesh_{scene_name}.json")
+    # Unique per call: a fixed name let two Blender instances baking one scene race on it.
+    handle, input_path = tempfile.mkstemp(prefix=f"paradise_navmesh_{scene_name}_", suffix=".json")
+    os.close(handle)
     argv = [*command, "navmesh", "--input", input_path, "--output", output_path]
     if debug_json_path is not None:
         argv += ["--debug-json", debug_json_path]
@@ -137,6 +140,7 @@ def bake_navmesh(
             text=True,
             timeout=300,
             check=False,
+            env=dotnet.subprocess_environment(),
         )
 
         if result.returncode != 0:

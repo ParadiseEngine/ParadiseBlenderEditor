@@ -187,16 +187,17 @@ class TestNeverTouches:
 
         assert prune_orphans(data) == []
 
-    def test_the_navmesh_the_scene_names(self, data):
-        write(
-            field(data, "scenes/level.json"),
-            scene_document([entity("Models/Used.glb")], NavMeshFile="level.navmesh.bin"),
-        )
+    def test_the_navmesh_baked_beside_the_scene(self, data):
+        # Since v5 the document names no navmesh (the v4 `NavMeshFile` key is gone), so the
+        # bake is live by the naming rule alone; a sweep by strings deleted it right after the
+        # bake wrote it (#28).
+        write(field(data, "scenes/level.json"), scene_document([entity("Models/Used.glb")]))
         write(field(data, "Models/Used.glb"), glb())
         write(field(data, "scenes/level.navmesh.bin"), b"recast")
         write(field(data, "scenes/renamed.navmesh.bin"), b"stale")
 
         assert prune_orphans(data) == ["scenes/renamed.navmesh.bin"]
+        assert os.path.exists(field(data, "scenes/level.navmesh.bin"))
 
 
 class TestRefusesToRun:

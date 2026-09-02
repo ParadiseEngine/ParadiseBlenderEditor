@@ -86,23 +86,19 @@ difference).
 Note the contract is formally **value-based, not byte-based** — `5` and `5.0` are the same
 value — so `contract-check` compares semantically and treats byte parity as a bonus.
 
-## 4. Entity identity — Blender duplicates carry the GUID
+## 4. Entity identity — derived from the name, never stored
 
-`object.paradise.entity_guid` must be stable per placement and unique per scene. It is HOST
-bookkeeping only: schema v5 dropped `EntityGuid` from the document, so nothing exports it.
+An object's identity on the wire (`meta.Guid`, and every `HostId` / `HostEntity` / `HostParent`
+reference that must equal it) is `export/placement.py:identity(name)`: `uuid5` over a fixed
+namespace and the object's name. There is ONE function, and every bake calls it; a second
+minting anywhere is a reference no object answers to (#27).
 
-Godot stores it in node metadata and sweeps for collisions on editor save. Blender makes the
-uniqueness half harder: duplicating an object (`Shift+D`, `Alt+D`, copy/paste) deep-copies its
-property groups, GUID included, so a duplicate arrives **already colliding**, silently, and
-there is no per-object "was duplicated" callback to hook.
-
-So `authoring/guid.py` mints lazily and sweeps on `save_pre` and from the panel's button; the
-exporter does **not** sweep, so an unsaved .blend with a fresh duplicate exports two objects
-sharing one stored GUID. Collision resolution keeps the first object in a **stable name
-ordering** and re-mints the rest — without a deterministic order, which duplicate keeps the
-original GUID would vary between runs.
-
----
+Derived rather than stored because a stored GUID makes exporting MUTATE the `.blend` — and those
+files are Git LFS-locked in the game repos, so a read-only checkout could not export and every
+export would dirty an unmergeable binary. The cost is stated plainly: **renaming an object
+re-mints its identity**, the same exposure v5 had, where the name was the handle. Blender
+guarantees names are unique within a file, so the derivation is injective per scene, and
+duplicates (`Shift+D` gives `Cube.001`) get their own identity for free.
 
 ## Deliberate deviations from the Godot host
 

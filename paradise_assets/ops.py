@@ -36,7 +36,8 @@ class PARADISE_ASSETS_OT_open_prefab(Operator):
 
     bl_idname = "paradise_assets.open_prefab"
     bl_label = "Open Prefab Document"
-    bl_options = {"REGISTER", "UNDO"}
+    # No UNDO: this replaces the session with a file; an undo step over it is a lie.
+    bl_options = {"REGISTER"}
 
     filepath: StringProperty(subtype="FILE_PATH")  # type: ignore[valid-type]
     filter_glob: StringProperty(default="*.prefab", options={"HIDDEN"})  # type: ignore[valid-type]
@@ -107,7 +108,7 @@ class PARADISE_ASSETS_OT_reload_prefab(Operator):
 
     bl_idname = "paradise_assets.reload_prefab"
     bl_label = "Reload Prefab Document"
-    bl_options = {"REGISTER", "UNDO"}
+    bl_options = {"REGISTER"}
 
     @classmethod
     def poll(cls, context):
@@ -264,11 +265,25 @@ class PARADISE_ASSETS_OT_add_prefab_instance(Operator):
         return {"FINISHED"}
 
 
+#: The catalogue build, in its own Blender. ``__package__``, not a literal: an extension's
+#: module is ``bl_ext.<repo>.paradise_assets``. The root travels as an argument after ``--``
+#: rather than inside the expression, where a quote in the path would break the script.
+_CATALOGUE_SCRIPT = (
+    "import importlib, sys;"
+    "c=importlib.import_module('{package}.catalogue');"
+    "print('CATALOGUE', *c.build(sys.argv[sys.argv.index('--') + 1]))"
+)
+
+
 class PARADISE_ASSETS_OT_refresh_catalogue(Operator):
     """Regenerate the Asset Browser catalogue of this project's prefabs"""
 
     bl_idname = "paradise_assets.refresh_catalogue"
     bl_label = "Refresh Prefab Catalogue"
+
+    _process = None
+    _timer = None
+    _root = None
 
     @classmethod
     def poll(cls, context):
@@ -280,26 +295,60 @@ class PARADISE_ASSETS_OT_refresh_catalogue(Operator):
         if layout is None:
             self.report({"ERROR"}, "No asset project found for the open document")
             return {"CANCELLED"}
+        self._root = layout.root
 
-        # Own process: building the catalogue REPLACES the current file. __package__, not a
-        # literal: an extension's module is bl_ext.<repo>.paradise_assets. Blocks the UI (#36).
-        script = (
-            "import importlib;"
-            f"c=importlib.import_module('{__package__}.catalogue');"
-            f"print('CATALOGUE', *c.build(r'{layout.root}'))"
-        )
-        result = subprocess.run(
-            [bpy.app.binary_path, "--background", "--python-expr", script],
+        # Own process: building the catalogue REPLACES the current file.
+        argv = [
+            bpy.app.binary_path, "--background",
+            "--python-expr", _CATALOGUE_SCRIPT.format(package=__package__),
+            "--", layout.root,
+        ]
+        if bpy.app.background or context.window is None:
             # A cold cache renders ~0.5 s per prefab, so a large project's first build is minutes.
-            capture_output=True, text=True, timeout=1800,
-        )
+            result = subprocess.run(argv, capture_output=True, text=True, timeout=1800)
+            return self._finished(result.returncode, result.stdout, result.stderr)
 
-        if result.returncode != 0:
-            self.report({"ERROR"}, f"Catalogue build failed: {result.stderr.strip()[-300:]}")
+        # Polled from a timer: the build takes minutes and must not freeze the UI (#36).
+        try:
+            self._process = subprocess.Popen(
+                argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                stdin=subprocess.DEVNULL,
+            )
+        except OSError as error:
+            self.report({"ERROR"}, f"Could not start the catalogue build: {error}")
+            return {"CANCELLED"}
+        window_manager = context.window_manager
+        self._timer = window_manager.event_timer_add(0.5, window=context.window)
+        window_manager.modal_handler_add(self)
+        self.report({"INFO"}, "Rebuilding the prefab catalogue in the background…")
+        return {"RUNNING_MODAL"}
+
+    def modal(self, context, event):
+        if event.type != "TIMER":
+            return {"PASS_THROUGH"}
+        if self._process.poll() is None:
+            return {"PASS_THROUGH"}
+        self._drop_timer(context)
+        stdout, stderr = self._process.communicate()
+        return self._finished(self._process.returncode, stdout, stderr)
+
+    def cancel(self, context) -> None:
+        if self._process is not None and self._process.poll() is None:
+            self._process.terminate()
+        self._drop_timer(context)
+
+    def _drop_timer(self, context) -> None:
+        if self._timer is not None:
+            context.window_manager.event_timer_remove(self._timer)
+            self._timer = None
+
+    def _finished(self, returncode: int, stdout: str, stderr: str) -> set[str]:
+        if returncode != 0:
+            self.report({"ERROR"}, f"Catalogue build failed: {(stderr or '').strip()[-300:]}")
             return {"CANCELLED"}
 
         fields = next(
-            (line.split() for line in result.stdout.splitlines() if line.startswith("CATALOGUE")),
+            (line.split() for line in (stdout or "").splitlines() if line.startswith("CATALOGUE")),
             [],
         )
         made = fields[1] if len(fields) > 1 else "?"
@@ -307,7 +356,7 @@ class PARADISE_ASSETS_OT_refresh_catalogue(Operator):
 
         # Register HERE: a preferences change in the background Blender dies with it, and an
         # unregistered catalogue is a file nothing looks at (how it first shipped).
-        name, added = catalogue.ensure_library(layout.root)
+        name, added = catalogue.ensure_library(self._root)
         if added:
             bpy.ops.wm.save_userpref()
 

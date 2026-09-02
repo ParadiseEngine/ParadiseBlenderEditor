@@ -32,6 +32,7 @@ import paradise_blender  # noqa: E402
 from paradise_blender.authoring import authored_components as authored  # noqa: E402
 from paradise_blender.contract import authoring as contract_authoring  # noqa: E402
 from paradise_blender.contract import component_ids, well_known  # noqa: E402
+from paradise_blender.export.placement import identity  # noqa: E402
 from paradise_blender.export.scene import export_scene  # noqa: E402
 
 
@@ -91,21 +92,8 @@ ALL_GAME_IDS = GAME_IDS | {HOSTED_ID, BY_CAMERA_ID}
 SCHEMA = {
     "version": 3,
     "components": [
-        # The three every export writes for every object it emits. They are host-derived rather
-        # than authored in the panel, but they still have to be NAMEABLE: the exporter reads each
-        # engine component's CLR type name out of this document.
-        {
-            "id": component_ids.NAME,
-            "type": "Paradise.Export.Data.NameComponentData",
-            "displayName": "Name",
-            "fields": [{"name": "Value", "type": "string", "default": ""}],
-        },
-        {
-            "id": component_ids.TRANSFORM,
-            "type": "Paradise.Export.Data.TransformComponentData",
-            "displayName": "Transform",
-            "fields": [{"name": "World", "type": "matrix4x4"}],
-        },
+        # Host-derived rather than authored in the panel, but it still has to be NAMEABLE: the
+        # exporter reads each engine component's CLR type name out of this document.
         {
             "id": component_ids.ENVIRONMENT,
             "type": "Paradise.Export.Data.EnvironmentData",
@@ -761,10 +749,11 @@ def main() -> int:
         "a mesh reference bakes the data-relative GLB the referenced object exported to",
         f"payload={baked}",
     )
+    creature_meta = payload_for(exported_entities()["Creature"], well_known.META_ID)
     check(
-        baked is not None and baked["Target"] == bpy.data.objects["Creature"].paradise.entity_guid,
-        "an entity reference bakes the target's GUID, which is what every object carries",
-        f"payload={baked}",
+        baked is not None and baked["Target"] == identity("Creature") == creature_meta["Guid"],
+        "an entity reference bakes the target's meta.Guid -- the one identity function (#27)",
+        f"payload={baked} meta={creature_meta}",
     )
 
     leafy[authored.value_key(LEAFY_ID, "Target")] = "NoSuchObject"
@@ -789,11 +778,12 @@ def main() -> int:
     creature_obj[authored.value_key(BY_CAMERA_ID, contract_authoring.HOST_SOURCE_PATH)] = "ShotCamera"
     export_scene(bpy.context.scene)
     hosted_payload = payload_for(exported_entities()["Creature"], HOSTED_ID)
+    creature_meta = payload_for(exported_entities()["Creature"], well_known.META_ID)
     check(
         hosted_payload is not None
-        and hosted_payload["Ident"] == creature_obj.paradise.entity_guid
+        and hosted_payload["Ident"] == creature_meta["Guid"]
         and hosted_payload["Label"] == "Creature",
-        "self kinds bake this object's identity and name",
+        "self kinds bake this object's meta.Guid and name",
         f"payload={hosted_payload}",
     )
     check(

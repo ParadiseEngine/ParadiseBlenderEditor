@@ -6,10 +6,12 @@ export must stay diffable against a Godot one. Every field is emitted, nulls inc
 C# mistake of an unregistered converter emitting integers is not expressible here. Defaults
 match C# exactly. Floats are quantized to float32 by :func:`.writer.f32_repr`.
 
-Seven records no longer exist in C# (v6 engine declares no authored components):
-``NameComponentData``, ``TransformComponentData``, ``RenderableComponentData``,
-``AgentComponentData``, ``EntityInteractableComponentData``, ``SpriteAnimationComponentData``,
-``SSceneLightData``. Kept so v5 documents and tests still read; removal is #25.
+Since v6 the engine declares no authored components of its own, so a record here is not "the
+engine's": it is the shape this host DERIVES from Blender data (a collider list, a rigidbody, a
+lamp, the environment, material slots) for a game that declares a component under the same id.
+Identity and placement are the format's own ``meta`` / ``transform`` payloads (well_known.py),
+not records. The v5 records the engine dropped (name, world transform, renderable, agent,
+interactable, sprite animation) are gone with it (#25).
 
 No ``bpy`` import.
 """
@@ -20,32 +22,25 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .color import Color32
-from .matrix import flatten_column_major, quat_to_json, vec2_to_json, vec3_to_json
+from .matrix import quat_to_json, vec2_to_json, vec3_to_json
 
 __all__ = [
     "SCHEMA_VERSION",
-    "AgentComponentData",
     "AudioEmitterComponentData",
     "AuthoredComponentData",
     "ColliderComponentData",
     "ColliderShapeData",
     "EntityComponentsData",
-    "EntityInteractableComponentData",
     "EnvironmentData",
     "LevelData",
     "LevelMaterialData",
     "MaterialsComponentData",
-    "NameComponentData",
     "ParticleEmitterComponentData",
     "ParticleRenderKind",
     "PhysicsBodyType",
     "PhysicsShapeType",
-    "RenderableComponentData",
     "RigidbodyComponentData",
-    "SSceneLightData",
     "SceneLightData",
-    "SpriteAnimationComponentData",
-    "TransformComponentData",
 ]
 
 # LevelData.CurrentSchemaVersion; bump only in lockstep with the engine. v6: the engine declares
@@ -85,23 +80,6 @@ class ParticleRenderKind(str):
 
     SPRITE = "Sprite"
     VOXEL = "Voxel"
-
-
-def _matrix_json(m) -> list[float] | None:  # axes.Mat4 | None
-    return None if m is None else flatten_column_major(m)
-
-
-@dataclass
-class RenderableComponentData:
-    """v5 mesh reference (GLB path relative to ``data/``; textures must be KTX2). Material slots
-    live in :class:`MaterialsComponentData`: two objects sharing a GLB with different slots are
-    two variants of one mesh."""
-
-    mesh: str | None = None
-    mesh_node: str | None = None
-
-    def to_json(self) -> dict[str, Any]:
-        return {"Mesh": self.mesh, "MeshNode": self.mesh_node}
 
 
 @dataclass
@@ -165,69 +143,6 @@ class RigidbodyComponentData:
             "Friction": self.friction,
             "Layer": self.layer,
             "LayerName": self.layer_name,
-        }
-
-
-@dataclass
-class AgentComponentData:
-    move_speed: float = 1.4
-    acceleration: float = 40.0
-    idle_clip: str | None = None
-    walk_clip: str | None = None
-
-    def to_json(self) -> dict[str, Any]:
-        return {
-            "MoveSpeed": self.move_speed,
-            "Acceleration": self.acceleration,
-            "IdleClip": self.idle_clip,
-            "WalkClip": self.walk_clip,
-        }
-
-
-@dataclass
-class EntityInteractableComponentData:
-    display_name: str | None = None
-
-    def to_json(self) -> dict[str, Any]:
-        return {"DisplayName": self.display_name}
-
-
-@dataclass
-class SpriteAnimationComponentData:
-    sheet: str | None = None
-    columns: int = 1
-    rows: int = 1
-    frame_count: int = 0
-    fps: float = 10.0
-    loop: bool = True
-    quad_size: Vec2 = (1.0, 1.0)
-    billboard: bool = True
-
-    def validate_and_normalize(self) -> None:
-        """Port of ``SpriteAnimationComponentData.ValidateAndNormalize``; both hosts normalize
-        before writing so they cannot disagree on what ``FrameCount = 0`` means."""
-        self.columns = max(1, self.columns)
-        self.rows = max(1, self.rows)
-        cells = self.columns * self.rows
-        count = cells if self.frame_count <= 0 else self.frame_count
-        self.frame_count = min(max(count, 1), cells)
-        self.fps = self.fps if _finite(self.fps) and self.fps > 0.0 else 10.0
-        width, height = self.quad_size
-        self.quad_size = (
-            width if _finite(width) and width > 0.0 else 1.0,
-            height if _finite(height) and height > 0.0 else 1.0,
-        )
-
-    def to_json(self) -> dict[str, Any]:
-        return {
-            "Sheet": self.sheet,
-            "Columns": self.columns,
-            "Rows": self.rows,
-            "FrameCount": self.frame_count,
-            "Fps": self.fps,
-            "Loop": self.loop,
-            "QuadSize": vec2_to_json(self.quad_size),
-            "Billboard": self.billboard,
         }
 
 
@@ -386,16 +301,6 @@ class EntityComponentsData:
 
 
 @dataclass
-class NameComponentData:
-    """v5 display name, for diagnostics only: not an identity, and two objects may share one."""
-
-    value: str = ""
-
-    def to_json(self) -> dict[str, Any]:
-        return {"Value": self.value}
-
-
-@dataclass
 class MaterialsComponentData:
     """Material overrides, one per GLB primitive. A null entry keeps the GLB's own material;
     dropping one would shift every override after it onto the wrong primitive."""
@@ -404,16 +309,6 @@ class MaterialsComponentData:
 
     def to_json(self) -> dict[str, Any]:
         return {"Slots": list(self.slots)}
-
-
-@dataclass
-class TransformComponentData:
-    """v5 world placement, column-major, translation at 12/13/14."""
-
-    world: Any = None
-
-    def to_json(self) -> dict[str, Any]:
-        return {"World": _matrix_json(self.world)}
 
 
 @dataclass
@@ -466,11 +361,6 @@ class SceneLightData:
             "RenderingLayerMask": self.rendering_layer_mask,
             "Group": self.group,
         }
-
-
-# Historical alias guard: an early draft of this module exported the name with a typo. Kept so
-# a stale import fails loudly at the import site rather than silently shadowing.
-SSceneLightData = SceneLightData
 
 
 @dataclass

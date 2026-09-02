@@ -57,9 +57,9 @@ paradise_blender/
   live/           live-preview protocol, transport, session, sync
   ui/             the Paradise sidebar tab
 paradise_assets/
-  document/     ★ pure Python, imports no bpy — the *.scene format and the canonical TOML writer
+  document/     ★ pure Python, imports no bpy — the *.prefab format and the canonical TOML writer
   materialize/    document <-> Blender objects: load, save, mesh instancing, ID-property store
-  ops.py          open_scene / save_scene / reload_scene
+  ops.py          open_prefab / save_prefab / reload_prefab, add_prefab_instance, refresh_catalogue
   ui.py           the Paradise Assets sidebar tab
 tools/
   ParadiseBlenderBridge/   .NET CLI: navmesh bake + contract conformance check
@@ -86,7 +86,7 @@ position/rotation/scale separately: the basis change permutes axes, so Blender s
 authored through widgets documented as sRGB (recipe tints, fog); those call sites say so.
 
 **Blender handlers need `@bpy.app.handlers.persistent`.** Without it Blender drops them on file
-load, and the failure is invisible: export-on-save and GUID maintenance simply stop working
+load, and the failure is invisible: export-on-save and the schema watcher simply stop working
 after the user opens another .blend.
 
 **Never block the main thread in `live/`.** Blender's UI is single-threaded and the peer is a
@@ -94,7 +94,8 @@ game runtime that stalls for frames at a time. Sends go through a bounded queue 
 background thread.
 
 **An export reuses unchanged artifacts, and the rule for what may be cached is strict.**
-`pipeline/cache.py` stores KTX2 transcodes and navmesh bakes under `<project>/.paradise-cache/`,
+`pipeline/cache.py` stores KTX2 transcodes and navmesh bakes under `<project>/.editor/cache/`
+(the engine's `ArtifactCache` directory, digest and layout, so either tool's artifacts serve the other),
 keyed on a digest of the step's *complete* input — image bytes plus the encode's argv, or the
 geometry-and-settings payload plus the bridge's build output. On ShiningPie that takes a
 re-export from 44 s to 3.6 s. **Do not extend this to the mesh GLBs.** Their inputs are a
@@ -136,7 +137,7 @@ moved on every export, which churned the exported transforms and defeated any co
 reuse. `export/mesh.py:_capture_transform` saves the channels instead.
 
 **The entity property group holds HOST data only.** `ParadiseEntityProperties` is
-deliberately five members (`is_entity`, `entity_guid`, `model_path`, the two collider lists);
+deliberately four members (`is_entity`, `model_path`, the two collider lists);
 every component — the engine's identity/agent/rigidbody/audio/particles included — is authored
 through the schema in the Components panel and routed to its typed slot by
 `contract/authoring_router.py`. Do not add fixed fields back: the ~40-field mirror this

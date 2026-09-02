@@ -116,6 +116,12 @@ def _drain() -> float | None:
 
     scene = bpy.context.scene
 
+    # The runtime noticed a gap in the sequence numbers and asked; answered here, on the main
+    # thread, not on the socket thread that heard it.
+    if getattr(_session, "resync_requested", False):
+        _session.resync_requested = False
+        _needs_full_resync = True
+
     try:
         if _needs_full_resync:
             _session.send_full_scene(scene)
@@ -139,7 +145,7 @@ def _send_patch(scene: bpy.types.Scene) -> None:
 
     # Fresh per patch (they cache), and with asset writing off: re-exporting a GLB mid-drag
     # would stall Blender.
-    materials = MaterialExporter()
+    materials = MaterialExporter(paths)
     meshes = MeshExporter()
 
     global _needs_full_resync

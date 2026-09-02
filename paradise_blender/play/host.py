@@ -1,9 +1,10 @@
 """Locating and launching the standalone runtime (port of ``ParadiseExportPlugin.OnPlayDotnet``).
 
 Play never exports: ``data/`` is kept fresh by the save hook, and a Play that exported would
-silently rewrite assets. On POSIX the child is wrapped in a shell that fixes PATH (a GUI-launched
-Blender has no dotnet directory on it) and redirects to a log (a detached child's output would
-otherwise vanish, so a build error reads as "the window never appeared").
+silently rewrite assets. The child runs in :func:`..pipeline.dotnet.subprocess_environment` (a
+GUI-launched Blender has no dotnet directory on PATH); on POSIX it is also wrapped in a shell
+that redirects to a log, since a detached child's output would otherwise vanish and a build
+error would read as "the window never appeared".
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import subprocess
 import tempfile
 
 from .. import log
+from ..pipeline import dotnet
 
 __all__ = ["first_error_line", "launch_runtime", "log_path", "resolve_runtime_command"]
 
@@ -90,21 +92,23 @@ def launch_runtime(
         extra = []
 
     argv = [*command, *arguments, *extra]
+    environment = dotnet.subprocess_environment()
 
     try:
         if os.name == "nt":
             process = subprocess.Popen(  # argv is built from resolved paths
                 argv,
                 cwd=cwd,
+                env=environment,
                 creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
             )
         else:
-            dotnet_dir = os.path.dirname(shutil.which("dotnet") or "/usr/local/share/dotnet/dotnet")
             quoted = " ".join(shlex.quote(a) for a in argv)
-            script = f'export PATH="{dotnet_dir}:$PATH"; exec {quoted} > {shlex.quote(log_path())} 2>&1'
+            script = f"exec {quoted} > {shlex.quote(log_path())} 2>&1"
             process = subprocess.Popen(
                 ["/bin/sh", "-c", script],
                 cwd=cwd,
+                env=environment,
                 start_new_session=True,
             )
     except OSError as error:
@@ -153,19 +157,9 @@ def _dotnet_run(project: str, warn: bool = True) -> list[str] | None:
         if warn:
             log.warn(f"Configured runtime project '{project}' does not exist; auto-detecting.")
         return None
-    dotnet = shutil.which("dotnet") or _well_known_dotnet()
-    if dotnet is None:
+    executable = dotnet.executable()
+    if executable is None:
         if warn:
             log.warn("The configured runtime host is a .csproj but the .NET SDK was not found.")
         return None
-    return [dotnet, "run", "--project", project, "--"]
-
-
-def _well_known_dotnet() -> str | None:
-    candidates = [
-        "/usr/local/share/dotnet/dotnet",
-        "/opt/homebrew/bin/dotnet",
-        os.path.expanduser("~/.dotnet/dotnet"),
-        r"C:\Program Files\dotnet\dotnet.exe",
-    ]
-    return next((c for c in candidates if os.path.exists(c)), None)
+    return [executable, "run", "--project", project, "--"]

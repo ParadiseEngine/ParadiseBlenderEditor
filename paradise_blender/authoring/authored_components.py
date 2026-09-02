@@ -21,7 +21,6 @@ from .. import log
 from ..contract import authoring, component_ids, well_known
 from ..contract.authoring import schema_for_data_dir, schema_load_error
 from ..prefs import resolve_blender_data_dir
-from . import guid
 
 __all__ = [
     "apply_ui_metadata",
@@ -114,9 +113,6 @@ HOST_DERIVED_IDS = frozenset({
     component_ids.RENDERABLE,
     component_ids.LIGHT,
     component_ids.SPRITE_ANIMATION,
-    # v5 leftover ids, still transcribed, plus the v6 format pair Placement actually writes.
-    component_ids.NAME,
-    component_ids.TRANSFORM,
     well_known.META_ID,
     well_known.TRANSFORM_ID,
     component_ids.MATERIALS,
@@ -314,19 +310,21 @@ def bake_self_refs(
     values: dict,
 ) -> dict:
     """Fill each self kind from THIS object. Never from the store: a stored copy of a name or
-    pose can disagree with the object."""
+    pose can disagree with the object. Identity is :func:`.placement.identity`, the value
+    ``meta.Guid`` carries; the parent is left for :class:`.placement.Placement` to settle, since
+    only it knows which ancestor is exported."""
+    from ..export.placement import ParentIdentity, identity
     from ..export.transform import decompose_contract
 
     for host in authoring.flatten(component)[1]:
         if not host.is_authorable or host.kind not in authoring.HOST_SELF_KINDS:
             continue
         if host.kind == authoring.HOST_ID:
-            values[host.path] = str(guid.ensure_entity_guid(obj))
+            values[host.path] = identity(obj.name)
         elif host.kind == authoring.HOST_NAME:
             values[host.path] = obj.name
         elif host.kind == authoring.HOST_PARENT:
-            parent = obj.parent
-            values[host.path] = str(guid.ensure_entity_guid(parent)) if parent is not None else ""
+            values[host.path] = ParentIdentity()
         else:
             position, rotation, scale, _ = decompose_contract(obj.matrix_local)
             if host.kind == authoring.HOST_LOCAL_POSITION:
@@ -352,6 +350,8 @@ def bake_leaf_refs(
     than an invented one. ``meshes`` must be the export's own ``MeshExporter``: it dedupes by
     datablock, and a throwaway would re-export one GLB per object pointing at it.
     """
+    from ..export.placement import identity
+
     for host in authoring.flatten(component)[1]:
         if not host.is_authorable or host.leaf_type is None:
             continue
@@ -376,8 +376,8 @@ def bake_leaf_refs(
 
         if host.kind == authoring.HOST_ENTITY:
             # Whether the target is exported depends on what IT authors, so a dangling identity
-            # is the runtime's to refuse, where it can say so. See #27 for the meta.Guid split.
-            values[host.path] = str(guid.ensure_entity_guid(target))
+            # is the runtime's to refuse, where it can say so.
+            values[host.path] = identity(target.name)
             continue
 
         if host.kind == authoring.HOST_SPRITE:
@@ -551,6 +551,8 @@ def bake_component_source(
 ) -> dict:
     """A type-level host kind: the Godot host's ``/Source`` merge, baked fields at the payload
     root; a leaf kind writes onto the component's first plain string field."""
+    from ..export.placement import identity
+
     kind = component.authored_by
     if kind not in authoring.HOST_IMPLEMENTED_KINDS:
         return values
@@ -601,7 +603,7 @@ def bake_component_source(
         shape = export_shape(obj, target)
         baked = None if shape is None else shape.to_json()
     elif kind == authoring.HOST_ENTITY:
-        baked = str(guid.ensure_entity_guid(target))
+        baked = identity(target.name)
     elif kind == authoring.HOST_SPRITE:
         baked = _sprite_field(obj, target, paths) if paths is not None else None
     elif kind == authoring.HOST_MESH:

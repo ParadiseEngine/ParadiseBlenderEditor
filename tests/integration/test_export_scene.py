@@ -97,6 +97,10 @@ def write_authoring_schema() -> None:
     os.makedirs(DATA_DIR, exist_ok=True)
     with open(os.path.join(DATA_DIR, "authoring-schema.json"), "w", encoding="utf-8") as file:
         file.write(printed)
+    # A bake left by an earlier run would read as "the bridge is available" below.
+    stale = os.path.join(DATA_DIR, "scenes", "export_test.navmesh.bin")
+    if os.path.exists(stale):
+        os.unlink(stale)
 
     from paradise_blender.contract import authoring as contract_authoring
     contract_authoring._cache.clear()
@@ -433,9 +437,20 @@ def main() -> int:
     check(os.path.exists(orphan),
           "an export with the cleanup off deletes nothing, even an unreferenced file")
 
+    # The navmesh is the one artifact no document names; a bake may be absent (no bridge), so
+    # plant one under the scene's name and require the sweep to keep it (#28).
+    planted_navmesh = os.path.join(DATA_DIR, "scenes", "export_test.navmesh.bin")
+    had_navmesh = os.path.exists(planted_navmesh)
+    if not had_navmesh:
+        with open(planted_navmesh, "wb") as handle:
+            handle.write(b"recast")
+
     bpy.context.scene.paradise_project.prune_data = True
     export_scene(bpy.context.scene)
     check(not os.path.exists(orphan), "opting in removes the unreferenced file")
+    check(os.path.exists(planted_navmesh), "the cleanup keeps the scene's own navmesh bake")
+    if not had_navmesh:
+        os.unlink(planted_navmesh)
 
     # Owned-directory and derived-artifact rules, against a live export rather than a fixture.
     plant()

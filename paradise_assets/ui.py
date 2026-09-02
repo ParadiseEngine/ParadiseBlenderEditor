@@ -8,8 +8,8 @@ import os
 from bpy.types import Panel
 
 from . import component_ops, edits, field_widgets, watch
-from .document import axes, component_schema, project, well_known
-from .materialize import store, sync
+from .document import component_schema, project, well_known
+from .materialize import save, store, sync
 
 __all__ = ["classes"]
 
@@ -47,7 +47,8 @@ class PARADISE_ASSETS_PT_document(_AssetsPanel, Panel):
             warning.label(text="Reload, or your save will be refused.")
 
         # A save_pre handler can neither open a dialog nor cancel the save, so a refusal not
-        # said here is a save the author believes happened. (Edits do not survive reopen: #31.)
+        # said here is a save the author believes happened. The working file keeps the work:
+        # a reopen does not rebuild a scene that carries a refusal (workfile.unsaved_work).
         refused = sync.refusal(context.scene)
         if refused is not None:
             box = layout.box()
@@ -316,26 +317,13 @@ def _draw_meta(box, obj, component: dict) -> None:
 
 def _draw_transform(box, obj) -> None:
     """Local TRS in document convention, live and read-only: the gizmo is the editor."""
-    position, rotation, scale = _live_document_trs(obj)
+    position, rotation, scale = save.document_trs(obj)
     box.label(text=f"{well_known.POSITION}: {component_schema.format_value(position)}",
               icon="DECORATE_LOCKED")
     box.label(text=f"{well_known.ROTATION}: {component_schema.format_value(rotation)}",
               icon="DECORATE_LOCKED")
     box.label(text=f"{well_known.SCALE}: {component_schema.format_value(scale)}",
               icon="DECORATE_LOCKED")
-
-
-def _live_document_trs(obj):
-    """The object's local TRS rebased into document axes -- same conversion save writes."""
-    if obj.rotation_mode == "QUATERNION":
-        w, x, y, z = obj.rotation_quaternion
-    else:
-        w, x, y, z = obj.rotation_euler.to_quaternion()
-    return axes.from_blender_trs(
-        tuple(float(v) for v in obj.location),
-        (float(x), float(y), float(z), float(w)),
-        tuple(float(v) for v in obj.scale),
-    )
 
 
 def _component_label(component: dict) -> str:

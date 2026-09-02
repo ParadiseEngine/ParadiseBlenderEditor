@@ -44,8 +44,8 @@ either a component now or gone:
 
 | was | is |
 |---|---|
-| `Id` | `NameComponentData` — for diagnostics only; not an identity |
-| `WorldMatrix` | `TransformComponentData` — one placement, stated once |
+| `Id` | the format's `meta` payload (`Guid`, `Name`, `Parent`) — since v6 an identity again, and the hierarchy with it |
+| `WorldMatrix` | the format's `transform` payload — LOCAL position, rotation, scale; composition is the loader's |
 | `IsActive: false` | the object is not written at all |
 | `Camera` (document) | gone — it was the editor's viewport, and it framed any scene authoring no rig |
 | `Lighting.States[n].Environment` | `EnvironmentData`, on an object of its own (the shadow settings moved with it) |

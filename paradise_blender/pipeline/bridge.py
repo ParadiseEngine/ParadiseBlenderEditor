@@ -1,12 +1,14 @@
 """Locating and invoking the .NET bridge (``navmesh`` bake, ``contract-check``), the two jobs
-Python cannot do. Opt-in: a missing bridge degrades them with a warning. KNOWN GAP (#33): the
-launch has no PATH fix, so it fails from a Dock-launched macOS Blender.
+Python cannot do. Opt-in: a missing bridge degrades them with a warning. Launch it with
+:func:`.dotnet.subprocess_environment`, or a Dock-launched macOS Blender cannot find ``dotnet``.
 """
 
 from __future__ import annotations
 
 import os
 import shutil
+
+from . import dotnet
 
 __all__ = ["bridge_identity", "resolve_bridge_command"]
 
@@ -89,22 +91,11 @@ def _executed_assembly(command: list[str]) -> str | None:
 
 
 def _dotnet_run(project: str) -> list[str] | None:
-    dotnet = shutil.which("dotnet") or _well_known_dotnet()
-    if dotnet is None:
+    executable = dotnet.executable()
+    if executable is None:
         return None
     # `--`, or verbs like `navmesh` parse as dotnet options.
-    return [dotnet, "run", "--project", project, "--"]
-
-
-def _well_known_dotnet() -> str | None:
-    """Blender's PATH often lacks the dotnet install directory when launched from a GUI."""
-    candidates = [
-        "/usr/local/share/dotnet/dotnet",
-        "/opt/homebrew/bin/dotnet",
-        os.path.expanduser("~/.dotnet/dotnet"),
-        r"C:\Program Files\dotnet\dotnet.exe",
-    ]
-    return next((c for c in candidates if os.path.exists(c)), None)
+    return [executable, "run", "--project", project, "--"]
 
 
 def _expand(path: str) -> str:

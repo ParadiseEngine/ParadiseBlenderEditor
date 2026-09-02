@@ -337,17 +337,17 @@ class TestComponentsInTheDocument:
         data_dir = _data_dir_with_engine_schema(tmp_path)
         components = schema.EntityComponentsData(data_dir=data_dir)
         components.add_engine(
-            component_ids.RENDERABLE, schema.RenderableComponentData(mesh="Models/x.glb"))
+            component_ids.MATERIALS, schema.MaterialsComponentData(slots=["materials/x.json"]))
         entry = components.to_json()[0]
-        assert entry["Id"] == component_ids.RENDERABLE
-        assert entry["Type"] == "Paradise.Export.Data.RenderableComponentData"
-        assert entry["Data"]["Mesh"] == "Models/x.glb"
+        assert entry["Id"] == component_ids.MATERIALS
+        assert entry["Type"] == "Paradise.Export.Data.MaterialsComponentData"
+        assert entry["Data"]["Slots"] == ["materials/x.json"]
 
     def test_find_returns_the_entry_for_an_id(self, tmp_path):
         data_dir = _data_dir_with_engine_schema(tmp_path)
         components = schema.EntityComponentsData(data_dir=data_dir)
-        components.add_engine(component_ids.RENDERABLE, schema.RenderableComponentData())
-        assert components.find(component_ids.RENDERABLE) is not None
+        components.add_engine(component_ids.MATERIALS, schema.MaterialsComponentData())
+        assert components.find(component_ids.MATERIALS) is not None
         assert components.find(component_ids.AGENT) is None
 
     def test_an_engine_component_without_a_schema_refuses_rather_than_omitting_the_type(
@@ -358,12 +358,12 @@ class TestComponentsInTheDocument:
         committed. An export is reproducible or it is not."""
         components = schema.EntityComponentsData(data_dir=str(tmp_path))
         with pytest.raises(KeyError, match="authoring schema"):
-            components.add_engine(component_ids.RENDERABLE, schema.RenderableComponentData())
+            components.add_engine(component_ids.MATERIALS, schema.MaterialsComponentData())
 
     def test_engine_components_need_a_data_dir_at_all(self):
         components = schema.EntityComponentsData()
         with pytest.raises(ValueError, match="data_dir"):
-            components.add_engine(component_ids.RENDERABLE, schema.RenderableComponentData())
+            components.add_engine(component_ids.MATERIALS, schema.MaterialsComponentData())
 
 
 
@@ -376,9 +376,9 @@ def _data_dir_with_engine_schema(tmp_path) -> str:
         "version": 3,
         "components": [
             {
-                "id": component_ids.RENDERABLE,
-                "type": "Paradise.Export.Data.RenderableComponentData",
-                "displayName": "Renderable",
+                "id": component_ids.MATERIALS,
+                "type": "Paradise.Export.Data.MaterialsComponentData",
+                "displayName": "Materials",
                 "fields": [],
             },
         ],

@@ -26,7 +26,10 @@ class MaterialExporter:
     """Writes one JSON per referenced material, deduplicated by contract field; two datablocks
     colliding on a field are reported, not silently dropped."""
 
-    def __init__(self) -> None:
+    def __init__(self, paths: ExportPaths) -> None:
+        #: The export's own paths: a texture is data-relative to the scene being EXPORTED, which
+        #: ``bpy.context.scene`` is not when several scenes export in one call.
+        self._paths = paths
         self._exported: dict[str, LevelMaterialData] = {}
         self._field_source: dict[str, str] = {}
 
@@ -59,11 +62,13 @@ class MaterialExporter:
                 )
             return field
 
-        self._exported[field] = self._to_level_material(field, material)
+        self._exported[field] = self._to_level_material(field, material, self._paths)
         self._field_source[field] = source
         return field
 
-    def _to_level_material(self, field: str, material: bpy.types.Material) -> LevelMaterialData:
+    def _to_level_material(
+        self, field: str, material: bpy.types.Material, paths: ExportPaths
+    ) -> LevelMaterialData:
         extra = material.paradise
         data = LevelMaterialData(path=field, name=material.name)
 
@@ -79,10 +84,10 @@ class MaterialExporter:
             data.metallic_factor = material.metallic
             data.roughness_factor = material.roughness
         else:
-            _read_principled(bsdf, data)
+            _read_principled(bsdf, data, paths)
 
         data.alpha_mode = _alpha_mode(material, data)
-        data.normal_texture = _normal_texture(bsdf) if bsdf is not None else None
+        data.normal_texture = _normal_texture(bsdf, paths) if bsdf is not None else None
         data.normal_scale = _normal_scale(bsdf) if bsdf is not None else 1.0
 
         # Authored as sRGB (Godot metadata convention), so these DO get linearized.
@@ -118,7 +123,7 @@ def _find_principled(material: bpy.types.Material) -> bpy.types.Node | None:
     return next((n for n in material.node_tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
 
 
-def _read_principled(bsdf: bpy.types.Node, data: LevelMaterialData) -> None:
+def _read_principled(bsdf: bpy.types.Node, data: LevelMaterialData, paths: ExportPaths) -> None:
     base_color = bsdf.inputs.get("Base Color")
     if base_color is not None:
         # Linear already -- see the module docstring. No transfer function here.
@@ -126,7 +131,7 @@ def _read_principled(bsdf: bpy.types.Node, data: LevelMaterialData) -> None:
         alpha_input = bsdf.inputs.get("Alpha")
         alpha = alpha_input.default_value if alpha_input is not None else a
         data.base_color_factor = Color32.from_rgba(r, g, b, alpha)
-        data.base_color_texture = _texture_path(base_color)
+        data.base_color_texture = _texture_path(base_color, paths)
 
     metallic = bsdf.inputs.get("Metallic")
     roughness = bsdf.inputs.get("Roughness")
@@ -136,8 +141,8 @@ def _read_principled(bsdf: bpy.types.Node, data: LevelMaterialData) -> None:
         data.roughness_factor = roughness.default_value
 
     # One metallic-roughness map in the contract; two differing textures means no packed ORM.
-    metallic_texture = _texture_path(metallic) if metallic is not None else None
-    roughness_texture = _texture_path(roughness) if roughness is not None else None
+    metallic_texture = _texture_path(metallic, paths) if metallic is not None else None
+    roughness_texture = _texture_path(roughness, paths) if roughness is not None else None
     if metallic_texture and roughness_texture and metallic_texture != roughness_texture:
         log.warn(
             f"Material '{data.name}' drives Metallic and Roughness from different images "
@@ -153,10 +158,10 @@ def _read_principled(bsdf: bpy.types.Node, data: LevelMaterialData) -> None:
         r, g, b, _ = emission.default_value
         # Color32 clamps, so HDR emission relies on emissive_strength.
         data.emissive_factor = Color32.from_rgba(r * multiplier, g * multiplier, b * multiplier, 1.0)
-        data.emissive_texture = _texture_path(emission)
+        data.emissive_texture = _texture_path(emission, paths)
 
 
-def _normal_texture(bsdf: bpy.types.Node) -> str | None:
+def _normal_texture(bsdf: bpy.types.Node, paths: ExportPaths) -> str | None:
     """Normal -> Normal Map -> Image Texture; the strength lives on the middle node."""
     normal_input = bsdf.inputs.get("Normal")
     if normal_input is None or not normal_input.is_linked:
@@ -164,7 +169,7 @@ def _normal_texture(bsdf: bpy.types.Node) -> str | None:
     node = normal_input.links[0].from_node
     if node.type != "NORMAL_MAP":
         return None
-    return _texture_path(node.inputs.get("Color"))
+    return _texture_path(node.inputs.get("Color"), paths)
 
 
 def _normal_scale(bsdf: bpy.types.Node) -> float:
@@ -192,7 +197,7 @@ def _alpha_mode(material: bpy.types.Material, data: LevelMaterialData) -> str:
     return "Opaque"
 
 
-def _texture_path(socket) -> str | None:  # bpy.types.NodeSocket | None
+def _texture_path(socket, paths: ExportPaths) -> str | None:  # bpy.types.NodeSocket | None
     """Data-relative path of the image feeding a socket; ``None`` for a packed image, whose
     path would never resolve at runtime."""
     if socket is None or not socket.is_linked:
@@ -211,9 +216,6 @@ def _texture_path(socket) -> str | None:  # bpy.types.NodeSocket | None
         return None
 
     absolute = os.path.abspath(bpy.path.abspath(image.filepath))
-    from ..prefs import export_paths
-
-    paths = export_paths(bpy.context.scene)
     field = paths.data_relative_field(absolute)
     if field is None:
         # Not an alarm: mesh GLBs carry their textures regardless; only the material document

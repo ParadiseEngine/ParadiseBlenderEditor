@@ -50,6 +50,7 @@ def externalize(
     externalized = 0
     reused = 0
     dead_views: set[int] = set()
+    taken: set[str] = set()
     for index, image in enumerate(images):
         view_index = image.get("bufferView")
         extension = _IMAGE_MIME.get(image.get("mimeType", ""))
@@ -60,13 +61,19 @@ def externalize(
         start = view.get("byteOffset", 0)
         raw = bytes(bin_chunk[start : start + view["byteLength"]])
 
-        # The sidecar keeps the IMAGE name: ktx.is_linear classifies by name tokens.
+        # The sidecar keeps the IMAGE name: ktx.is_linear classifies by name tokens. Two
+        # images whose names differ only in unsafe characters would share one sidecar, so the
+        # second gets the image index.
         name = image.get("name") or f"image{index}"
-        sidecar = f"{stem}.{_safe(name)}.ktx2"
+        safe = _safe(name)
+        if safe in taken:
+            safe = f"{safe}.{index}"
+        taken.add(safe)
+        sidecar = f"{stem}.{safe}.ktx2"
         sidecar_path = os.path.join(directory, sidecar)
 
         # Keyed on the argv the transcode will see, which the filename decides.
-        source_name = f"{_safe(name)}{extension}"
+        source_name = f"{safe}{extension}"
         key = digest(raw, ktx.encode_signature(source_name, transcoder))
 
         if not force and cache is not None and cache.fetch(CACHE_KIND, key, sidecar_path):

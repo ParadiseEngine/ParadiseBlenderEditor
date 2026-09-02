@@ -4,8 +4,8 @@ drop and reconnect (addon reload) without the preview window dying.
     hello -> (ready | error) ; scene/full ; scene/patch* ; asset/invalidate ; scene/full ; bye
 
 Every message carries a monotonically increasing ``seq`` so the runtime can detect a dropped
-patch and ask for a resync. The client does not yet read replies (#34). No current runtime
-listens; ``tools/mock_runtime.py`` is the executable spec.
+patch and ask for one with ``{"type": "resync"}``, which the client answers with the next
+``scene/full``. No current runtime listens; ``tools/mock_runtime.py`` is the executable spec.
 """
 
 from __future__ import annotations

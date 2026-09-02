@@ -1,14 +1,14 @@
 """The component ids this host has something specific to do with.
 
 These are the ids the engine's ``LevelDocument.cs`` records carried up to contract v5. Since v6
-the engine declares NO authored components, so a record exists only if the GAME declares it under
-the same id: against ShiningPie's dumped schema, 10 of the 13 constants below resolve to nothing
-(only ``ENVIRONMENT``, ``MATERIALS`` and ``RIGIDBODY`` are reused by the game's own records).
-Exporting a component the game does not declare fails in :func:`engine_type_name`, so a lamp on
-a non-entity object cannot be exported against that game today. Retiring this table for v6 is
-issue #25. Tabulated rather than read because no document states which component this host
-MEANS by ``RENDERABLE``; the type NAME is read off the schema instead (:func:`engine_type_name`),
-since a second hand-written copy of something the schema states is a thing that can drift.
+the engine declares NO authored components, so an id below means something only if the GAME
+declares a component under it; exporting one the game does not declare fails in
+:func:`engine_type_name`, and :func:`check_engine_ids` reports the rest at export. Identity and
+placement are not here at all: they are the format's own ``meta`` / ``transform`` payloads
+(``well_known.py``), written for every object. Tabulated rather than read because no document
+states which component this host MEANS by ``RENDERABLE``; the type NAME is read off the schema
+instead (:func:`engine_type_name`), since a second hand-written copy of something the schema
+states is a thing that can drift.
 
 **Deliberately NOT a complete mirror.** A constant belongs here only when this host must do
 something SPECIFIC with that component -- derive it from Blender data, back it with a pointer
@@ -37,24 +37,15 @@ __all__ = [
     "AUDIO_EMITTER",
     "COLLIDER",
     "ENVIRONMENT",
-    "INTERACTABLE",
     "LIGHT",
     "MATERIALS",
-    "NAME",
     "PARTICLE_EMITTER",
     "RENDERABLE",
     "RIGIDBODY",
     "SPRITE_ANIMATION",
-    "TRANSFORM",
     "check_engine_ids",
     "engine_type_name",
 ]
-
-#: What an object is called, and where it stands. This host writes both for every object it
-#: emits: they are what the entity RECORD used to state as fields, and since v5 there is no
-#: record, only components.
-NAME = "f83f51f4-093a-42c9-aa7a-f50f48c3b5f9"
-TRANSFORM = "5b1a2ea9-a4bb-4ba2-be15-b645ccf50004"
 
 #: The scene's lighting and environment, written on an object of its own.
 ENVIRONMENT = "f5f4a867-fe27-426a-82f2-1a2de5aceb2f"
@@ -68,7 +59,6 @@ RENDERABLE = "f2c0357e-94dd-4a5a-9803-518066cb54b2"
 COLLIDER = "e1cd1bc8-86f2-4225-adc9-4a324c70ebf9"
 RIGIDBODY = "b7ab4dd8-c8da-4dc2-9e5e-192fd74deb11"
 AGENT = "5801915b-3d0c-4940-8970-7d1487b991cf"
-INTERACTABLE = "0283ee5f-775b-412b-a91c-03ecd9b61165"
 SPRITE_ANIMATION = "d3e53cd4-89c6-4ca8-851e-7596da889c68"
 PARTICLE_EMITTER = "1b4d1bdd-dea1-4b86-9b6a-879c46346b9e"
 AUDIO_EMITTER = "e6ec7f42-df09-4ec9-af06-128ddf3eda8e"
@@ -116,11 +106,12 @@ def engine_type_name(component_id: str, data_dir: str) -> str:
 def check_engine_ids(data_dir: str) -> list[str]:
     """Every constant above that the loaded schema does not corroborate.
 
-    The drift guard, and it replaces a unit test. Nothing keeps the v5 constants above in step
+    The drift guard, and it replaces a unit test. Nothing keeps the constants above in step
     with what a game declares; the old guard asserted each one against a vendored engine schema,
     which died with the vendored schema. Checking against the schema the game is actually built
-    against is the stronger test. Expect ten warnings per export against a v6 game until #25
-    retires the table.
+    against is the stronger test. A v6 game that reuses none of these ids gets one warning per
+    constant, which is the honest report: this host derives those components and that game
+    cannot receive them.
 
     Returns messages rather than raising: a drifted id is worth SAYING at export, but it is not
     worth refusing to export over. The one that must be fatal — a component this host is actively

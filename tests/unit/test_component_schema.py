@@ -183,38 +183,6 @@ def test_field_caption_puts_kg_on_the_label_and_leaves_widget_units_off():
     assert component_schema.field_caption("Lives", None) == "Lives"
 
 
-def test_unit01_and_a_closed_range_are_sliders():
-    assert component_schema.has_slider(0.0, 1.0, "unit01")
-    assert component_schema.has_slider(None, None, "unit01")
-    assert component_schema.has_slider(0.001, 10000, "kilograms")
-    assert not component_schema.has_slider(0.0, None, None)
-    assert not component_schema.has_slider(None, None, None)
-
-
-def test_numeric_widget_options_map_units_and_ranges():
-    mass = component_schema.FieldSchema(
-        {"name": "Mass", "type": "float", "unit": "kilograms",
-         "minimum": 0.001, "maximum": 10000})
-    friction = component_schema.FieldSchema(
-        {"name": "Friction", "type": "float", "unit": "unit01"})
-    near = component_schema.FieldSchema(
-        {"name": "Near", "type": "float", "unit": "meters"})
-
-    mass_opts = component_schema.numeric_widget_options(mass)
-    assert mass_opts["min"] == 0.001
-    assert mass_opts["max"] == 10000
-    assert "subtype" not in mass_opts
-
-    friction_opts = component_schema.numeric_widget_options(friction)
-    assert friction_opts["subtype"] == "FACTOR"
-    assert friction_opts["min"] == 0.0
-    assert friction_opts["max"] == 1.0
-
-    assert component_schema.numeric_widget_options(near)["subtype"] == "DISTANCE"
-    assert component_schema.id_subtype("radians") == "ANGLE"
-    assert component_schema.id_subtype("kilograms") is None
-
-
 _RIGIDBODY = {
     "id": "b7ab4dd8-c8da-4dc2-9e5e-192fd74deb11",
     "type": "Paradise.Export.Data.RigidbodyComponentData",
@@ -418,3 +386,19 @@ def test_default_payload_uses_schema_defaults():
     assert payload["BodyType"] == "Dynamic"
     assert payload["Mass"] == 1.0
     assert "LinearDamping" in payload
+
+
+def test_load_is_cached_on_the_dump_stamp(tmp_path, monkeypatch):
+    # The Components panel asks on every redraw; parsing the dump per frame was the redraw (#36).
+    dump = tmp_path / "build" / "authoring-schema.json"
+    dump.parent.mkdir()
+    dump.write_text(json.dumps({"version": 3, "components": [_RIGIDBODY]}), encoding="utf-8")
+
+    first = component_schema.load(str(tmp_path))
+    assert component_schema.load(str(tmp_path)) is first
+
+    dump.write_text(json.dumps({"version": 3, "components": []}), encoding="utf-8")
+    os.utime(dump, ns=(dump.stat().st_atime_ns, dump.stat().st_mtime_ns + 1_000_000))
+
+    assert component_schema.load(str(tmp_path)) is not first
+    assert not component_schema.load(str(tmp_path))

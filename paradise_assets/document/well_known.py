@@ -3,6 +3,8 @@ FOREVER: changing one orphans every object in every scene."""
 
 from __future__ import annotations
 
+from . import guid
+
 __all__ = [
     "DROPPED",
     "GUID",
@@ -119,27 +121,9 @@ def _transform_problem(data: dict) -> str | None:
     return None
 
 
-_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
-
-
 def _is_guid_text(value: object) -> bool:
-    """C# ``DocumentGuid.TryParse`` plus non-empty; not ``uuid.UUID``, which also accepts braces
-    and ``urn:`` forms no tool writes."""
-    if not isinstance(value, str):
-        return False
-    if len(value) == 36:
-        if any(value[i] != "-" for i in (8, 13, 18, 23)):
-            return False
-        digits = value.replace("-", "")
-        if len(digits) != 32:
-            return False
-    elif len(value) == 32:
-        digits = value
-    else:
-        return False
-    if any(c not in _HEX_DIGITS for c in digits):
-        return False
-    return digits != "0" * 32
+    """A non-empty guid in a spelling C# ``DocumentGuid.TryParse`` accepts (:mod:`guid`)."""
+    return guid.is_text(value)
 
 
 def _is_number_array(value: object, length: int) -> bool:

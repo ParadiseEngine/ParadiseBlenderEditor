@@ -30,6 +30,7 @@ from ..authoring import entity as authoring
 from ..export.entity import export_entity
 from ..export.material import MaterialExporter
 from ..export.mesh import MeshExporter
+from ..export.placement import Placement
 from ..prefs import export_paths, get_preferences
 from . import protocol
 
@@ -174,6 +175,17 @@ def _send_patch(scene: bpy.types.Scene) -> None:
 
     global _needs_full_resync
 
+    # Parent links in a patch have to name objects the runtime already has. The set is the
+    # entity roster plus non-entity lamps -- the same objects a full export would consider --
+    # so a child moved under an empty that is not exported still hangs from the next ancestor
+    # that is.
+    exported = {obj.name for obj in authoring.entity_objects(scene)}
+    exported.update(
+        obj.name for obj in scene.objects
+        if obj.type == "LIGHT" and not authoring.is_entity(obj)
+    )
+    placement = Placement(exported)
+
     updated = []
     for name in sorted(_dirty_objects):
         obj = scene.objects.get(name)
@@ -185,6 +197,10 @@ def _send_patch(scene: bpy.types.Scene) -> None:
             # object it never names, so the whole scene goes again -- see the docstring.
             _needs_full_resync = True
             continue
+        # export_entity no longer writes identity or placement: those need the whole exported
+        # set, which Placement has. A patch without them is a nameless, unplaced object, and
+        # the mock (and a real runtime) keys the stream on meta.Name.
+        placement.components(obj, components)
         updated.append(components.to_json())
 
     _dirty_objects.clear()

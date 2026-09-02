@@ -29,27 +29,27 @@ import os
 from . import well_known
 
 __all__ = [
-    "ComponentSchema",
     "EDITABLE_TYPES",
-    "FieldSchema",
-    "PlanItem",
     "ROLE_ARRAY",
     "ROLE_LEAF",
     "ROLE_LOCKED",
     "ROLE_ROW",
+    "ComponentSchema",
+    "FieldSchema",
+    "PlanItem",
     "Vocabulary",
     "addable",
     "default_payload",
     "describe",
+    "field_caption",
     "format_value",
+    "has_slider",
+    "id_subtype",
     "infer",
     "is_asset_field",
     "is_asset_ref",
     "is_format_owned",
     "is_host_derived",
-    "field_caption",
-    "has_slider",
-    "id_subtype",
     "is_host_locked",
     "join_path",
     "load",
@@ -111,7 +111,12 @@ class FieldSchema:
         self.items: FieldSchema | None = FieldSchema(items) if isinstance(items, dict) else None
         # ``[AuthorAssetKinds]`` sits on the LIST property in C#, so the dump writes it on the
         # array field. The picker is per row; copy the kinds down so each item is an asset.
-        if self.type == "array" and self.items is not None and self.asset_kinds and not self.items.asset_kinds:
+        if (
+            self.type == "array"
+            and self.items is not None
+            and self.asset_kinds
+            and not self.items.asset_kinds
+        ):
             self.items.asset_kinds = list(self.asset_kinds)
         visible = raw.get("visibleWhen")
         self.visible_when_field: str | None = None
@@ -240,7 +245,7 @@ def is_asset_field(field: FieldSchema, value=None) -> bool:
 
 
 #: Schema ``unit`` → Blender ID-property subtype. These are what make the NUMBER FIELD itself
-#: show a unit (``m``, ``°``, a 0–1 factor) rather than a bare float. ``kilograms`` has no
+#: show a unit (``m``, ``°``, a 0-1 factor) rather than a bare float. ``kilograms`` has no
 #: subtype -- Blender's ID properties cannot say MASS -- so the caption carries ``kg``.
 #:
 #: Mirrored in ``paradise_blender.contract.authoring``: the two addons do not import each other.
@@ -265,7 +270,7 @@ def id_subtype(unit: str | None) -> str | None:
 def field_caption(name: str, unit: str | None) -> str:
     """The label drawn next to a number field.
 
-    Units the widget already displays (metres, radians, seconds, 0–1) stay off the label so the
+    Units the widget already displays (metres, radians, seconds, 0-1) stay off the label so the
     row does not read ``Mass (kilograms): 1.0 kg``. Kilograms has no Blender subtype, so it
     becomes ``(kg)``. Anything else the schema named is shown as declared.
     """
@@ -289,7 +294,7 @@ def numeric_widget_options(field: FieldSchema) -> dict:
     """ID-property UI metadata for a float/int: range, factor, distance, angle, time.
 
     Applied on the way IN so a drag cannot leave the declared ``[AuthorRange]``, and so
-    ``[Unit01]`` is a 0–1 factor rather than a free float. Advisory in the engine; here it is
+    ``[Unit01]`` is a 0-1 factor rather than a free float. Advisory in the engine; here it is
     a courtesy to the person dragging the widget.
     """
     if field.type not in ("float", "int"):

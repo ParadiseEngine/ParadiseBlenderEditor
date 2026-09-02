@@ -580,12 +580,14 @@ class PARADISE_PT_entity_components(_ParadisePanel, Panel):
             for item in [*fields, *[h for h in hosts if h.stores_slot]]
             if authored.value_key(component.id, item.path) not in obj
         ]
-        if component.authored_by in (
-            *contract_authoring.HOST_RECORD_KINDS,
-            *contract_authoring.HOST_LEAF_KINDS,
+        if (
+            component.authored_by in (
+                *contract_authoring.HOST_RECORD_KINDS,
+                *contract_authoring.HOST_LEAF_KINDS,
+            )
+            and authored.value_key(component.id, contract_authoring.HOST_SOURCE_PATH) not in obj
         ):
-            if authored.value_key(component.id, contract_authoring.HOST_SOURCE_PATH) not in obj:
-                missing.append(contract_authoring.HOST_SOURCE_PATH)
+            missing.append(contract_authoring.HOST_SOURCE_PATH)
         if missing:
             # The schema grew since this component was enabled. Draw() may not write ID data,
             # so the fields are created by an operator click rather than silently here.

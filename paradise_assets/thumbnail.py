@@ -249,7 +249,12 @@ def render_all(
     destination = destination or previews_directory(layout.root)
     warnings: list[str] = []
     rendered: dict[str, str] = {}
-    engine = ENGINE
+    engine = _preferred_engine()
+    if engine != ENGINE:
+        warnings.append(
+            f"{ENGINE} needs libEGL, which is not on this machine; using {engine}. "
+            "Thumbnails show the shape but not the materials."
+        )
 
     for path in prefabs:
         relative = layout.relative(path)
@@ -274,6 +279,24 @@ def render_all(
             rendered[relative] = png
 
     return rendered, warnings
+
+
+def _preferred_engine() -> str:
+    """EEVEE except on a Linux box with no libEGL.
+
+    EEVEE aborting the process (SIGABRT, not a Python exception) is what a headless Linux CI
+    runner without libEGL does, and the fallback in :func:`_render_one` never runs because the
+    process is already dead. macOS and Windows ship a GPU stack Blender can use even when
+    ``find_library("EGL")`` is empty, so they keep EEVEE.
+    """
+    import ctypes.util
+    import sys
+
+    if sys.platform != "linux":
+        return ENGINE
+    if ctypes.util.find_library("EGL") or ctypes.util.find_library("egl"):
+        return ENGINE
+    return FALLBACK_ENGINE
 
 
 def _render_one(

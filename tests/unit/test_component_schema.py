@@ -173,7 +173,7 @@ def test_clamp_holds_a_value_to_the_declared_range():
 def test_field_caption_puts_kg_on_the_label_and_leaves_widget_units_off():
     # Kilograms has no Blender ID-property subtype, so the unit has to live on the label or it
     # is invisible. Metres/radians/seconds/unit01 become the widget itself (distance spinner,
-    # angle, time, 0–1 factor) and must not also say "(meters)" next to that.
+    # angle, time, 0-1 factor) and must not also say "(meters)" next to that.
     assert component_schema.field_caption("Mass", "kilograms") == "Mass (kg)"
     assert component_schema.field_caption("Near", "meters") == "Near"
     assert component_schema.field_caption("Yaw", "radians") == "Yaw"

@@ -27,11 +27,11 @@ import sys
 PROTOCOL_VERSION = 1
 
 
-#: The two engine components this mock reads. An OBJECT is a bare list of component entries since
-#: schema v5, so there is no Id and no EntityGuid to key on — what identifies one in the patch
-#: stream is its name, which is a component like everything else.
-NAME_ID = "f83f51f4-093a-42c9-aa7a-f50f48c3b5f9"
-TRANSFORM_ID = "5b1a2ea9-a4bb-4ba2-be15-b645ccf50004"
+#: The two format components this mock reads. Since contract v6 an object is a bare list of
+#: entries with no Id/EntityGuid: identity lives on ``meta`` and placement on ``transform``
+#: as local TRS, not a baked World matrix.
+META_ID = "0f1d4b3a-8c27-4a55-9b6e-2f7c1d40a913"
+TRANSFORM_ID = "7e55c210-3d41-4b8a-8f26-9c0a5e71b4d2"
 
 
 def _payload_of(entity: list, component_id: str) -> dict:
@@ -43,7 +43,7 @@ def _payload_of(entity: list, component_id: str) -> dict:
 
 
 def _name_of(entity: list) -> str:
-    return _payload_of(entity, NAME_ID).get("Value", "")
+    return _payload_of(entity, META_ID).get("Name", "")
 
 
 class MockRuntime:
@@ -125,8 +125,7 @@ class MockRuntime:
 
         if self.verbose:
             for entity in message.get("updated") or []:
-                world = _payload_of(entity, TRANSFORM_ID).get("World") or []
-                position = world[12:15] if len(world) >= 15 else "?"
+                position = _payload_of(entity, TRANSFORM_ID).get("Position") or "?"
                 self._log(f"    {_name_of(entity)} -> {position}")
         return None
 

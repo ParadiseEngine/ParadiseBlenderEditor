@@ -8,7 +8,7 @@ Slots live on the WindowManager, not the object. They are display state rebuilt 
 document plus overlay; the overlay is still the only thing save reads.
 
 Numbers with a schema unit use a dedicated RNA property so Blender can draw the unit on the
-field itself (``kg``, ``m``, a 0–1 factor). ``[AuthorRange]`` is applied in the update callback
+field itself (``kg``, ``m``, a 0-1 factor). ``[AuthorRange]`` is applied in the update callback
 -- a drag past the cap snaps back -- rather than as ID-property min/max. Those have to live on
 an ID, and writing an ID during a panel draw is what made a rigidbody edit wipe the component
 list.
@@ -45,7 +45,7 @@ _SYNCING = False
 _ENUM_CACHE: dict[str, list] = {}
 _PICK_CACHE: list[tuple[str, str, str]] = []
 
-#: RNA properties whose widget already prints a unit (or is a 0–1 factor). The label must not
+#: RNA properties whose widget already prints a unit (or is a 0-1 factor). The label must not
 #: also say ``(kg)`` or the row reads ``Mass (kg): 1.0 kg``.
 _RNA_SHOWS_UNIT = frozenset({
     "value_factor", "value_mass", "value_distance", "value_angle", "value_time",
@@ -131,7 +131,7 @@ class ParadiseFieldSlot(PropertyGroup):
     value_int: IntProperty(update=_commit)
     value_float: FloatProperty(update=_commit)
     # Closed unit vocabulary: one RNA property each, so Blender can put the unit on the field
-    # and so ``[Unit01]`` is a 0–1 slider rather than a free drag.
+    # and so ``[Unit01]`` is a 0-1 slider rather than a free drag.
     value_factor: FloatProperty(
         min=0.0, max=1.0, soft_min=0.0, soft_max=1.0, subtype="FACTOR", update=_commit)
     value_mass: FloatProperty(min=0.0, unit="MASS", update=_commit)

@@ -126,7 +126,7 @@ TYPE_QUATERNION = "quaternion"
 TYPE_COLOR = "color"
 
 #: Schema ``unit`` → Blender ID-property subtype. Metres become a distance spinner, radians an
-#: angle (displayed in degrees, stored in radians), seconds a time, unit01 a 0–1 factor.
+#: angle (displayed in degrees, stored in radians), seconds a time, unit01 a 0-1 factor.
 #: Kilograms has no ID-property subtype -- Blender cannot say MASS on one -- so the caption
 #: carries ``kg``. Mirrored in ``paradise_assets.document.component_schema``.
 _SUBTYPE_FOR_UNIT = {

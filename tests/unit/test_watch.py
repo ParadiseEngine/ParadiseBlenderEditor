@@ -13,6 +13,8 @@ The process is faked. What is under test is the table, not ``subprocess``.
 from __future__ import annotations
 
 import os
+import sys
+import types
 
 from paradise_assets import watch
 
@@ -192,3 +194,33 @@ def test_watch_command_rebuilds_play_mode(monkeypatch):
     assert watch.watch_command(["paradise"], "/game") == [
         "paradise", "assets", "watch", "--editor", "--profile", "dev", "--project", "/game",
     ]
+
+
+def test_start_for_does_nothing_when_auto_watch_is_off(monkeypatch):
+    # prefs imports bpy, so the module is faked rather than imported: this file is the no-Blender
+    # suite, and start_for's `from . import prefs` is the only reason that module is involved.
+    class Preferences:
+        auto_watch = False
+
+    fake = types.ModuleType("paradise_assets.prefs")
+    fake.get_preferences = lambda: Preferences()
+    monkeypatch.setitem(sys.modules, "paradise_assets.prefs", fake)
+    started: list[str] = []
+    monkeypatch.setattr(watch, "start", lambda root: started.append(root) or None)
+
+    assert watch.start_for("/game") is None
+    assert started == []
+
+
+def test_start_for_starts_when_auto_watch_is_on(monkeypatch):
+    class Preferences:
+        auto_watch = True
+
+    fake = types.ModuleType("paradise_assets.prefs")
+    fake.get_preferences = lambda: Preferences()
+    monkeypatch.setitem(sys.modules, "paradise_assets.prefs", fake)
+    started: list[str] = []
+    monkeypatch.setattr(watch, "start", lambda root: started.append(root) or None)
+
+    assert watch.start_for("/game") is None
+    assert started == ["/game"]

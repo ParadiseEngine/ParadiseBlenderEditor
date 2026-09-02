@@ -24,6 +24,13 @@ solved.
 Blender has no console anyone is looking at, which is the whole reason a failed rebuild needs
 somewhere to surface. That is also the case ParadiseEngine#192 (a tray icon) exists for; until it
 lands, the panel is the only place an author finds out.
+
+**``load_post`` starts the watcher for the file that just opened**, and rematerializes that
+file from ``assets/`` when it is a cached workfile. ``load_pre`` can only stop: after the load
+the old scene is gone, and the new scene is not readable yet. Opening a prefab through the
+operator, a cached ``.blend`` from ``.editor/blend/``, or enabling the addon on an already-open
+workfile all have to reach the same postcondition -- one watcher, objects that match the
+documents -- which is why the adopt step is shared rather than living in the operator alone.
 """
 
 from __future__ import annotations
@@ -35,6 +42,7 @@ import subprocess
 import tempfile
 
 __all__ = [
+    "adopt_loaded_file",
     "is_running",
     "last_error",
     "log_path",
@@ -298,8 +306,59 @@ def _on_load_pre(*_args) -> None:
     stop_all()
 
 
+#: Nested adopt is a real case -- rematerialize imports GLBs, and an importer that loaded a
+#: file would re-enter ``load_post``. The objects would be rebuilt twice and a second watcher
+#: start would race the first. The flag is the whole defence; do not "simplify" it away.
+_adopting = False
+
+
+def adopt_loaded_file(*_args) -> None:
+    """Refresh every document-backed scene from ``assets/`` and start its watcher.
+
+    Invoked from ``load_post`` (a ``.blend`` just opened) and from :func:`register_handler`
+    (the addon was enabled onto a session that already had a workfile -- that does not fire
+    ``load_post``). Idempotent per project: :func:`start_for` is.
+    """
+    global _adopting
+    if _adopting:
+        return
+
+    import bpy
+
+    from .document import project as project_layout
+    from .materialize import store, workfile
+
+    _adopting = True
+    try:
+        seen: set[str] = set()
+        for scene in bpy.data.scenes:
+            problem = workfile.refresh_from_document(scene)
+            if problem:
+                print(f"[paradise_assets] could not refresh from assets: {problem}")
+
+            state = store.read_state(scene)
+            if state is None:
+                continue
+            located = project_layout.locate(state.path)
+            if located is None:
+                continue
+            if located.root in seen:
+                continue
+            seen.add(located.root)
+            watch_problem = start_for(located.root)
+            if watch_problem:
+                print(f"[paradise_assets] {watch_problem}")
+    finally:
+        _adopting = False
+
+
+def _on_load_post(*_args) -> None:
+    """The new file is in; if it is a cached workfile, catch it up and watch its project."""
+    adopt_loaded_file()
+
+
 def register_handler() -> None:
-    """Stop watchers when Blender opens another file.
+    """Stop watchers on the way out of a file, and adopt the one that just came in.
 
     Persistent, for the reason every handler in these addons is: without it Blender drops the
     handler on the first file load, and the failure is invisible -- watchers simply start
@@ -307,20 +366,29 @@ def register_handler() -> None:
     """
     import bpy
 
-    _on_load_pre.__dict__.setdefault("_bpy_persistent", True)
-    handler = bpy.app.handlers.persistent(_on_load_pre)
-    globals()["_HANDLER"] = handler
-    if handler not in bpy.app.handlers.load_pre:
-        bpy.app.handlers.load_pre.append(handler)
+    handlers = (
+        (_on_load_pre, bpy.app.handlers.load_pre),
+        (_on_load_post, bpy.app.handlers.load_post),
+    )
+    stored: list = []
+    for function, collection in handlers:
+        function.__dict__.setdefault("_bpy_persistent", True)
+        handler = bpy.app.handlers.persistent(function)
+        stored.append((handler, collection))
+        if handler not in collection:
+            collection.append(handler)
+    globals()["_HANDLERS"] = stored
+
+    # Enabling the addon with a workfile already open does not fire load_post. Adopting here
+    # is a no-op when register runs at startup before the command-line file has loaded.
+    adopt_loaded_file()
 
 
 def unregister_handler() -> None:
-    import bpy
-
-    handler = globals().get("_HANDLER")
-    if handler is not None and handler in bpy.app.handlers.load_pre:
-        bpy.app.handlers.load_pre.remove(handler)
-    globals()["_HANDLER"] = None
+    for handler, collection in globals().get("_HANDLERS") or ():
+        if handler in collection:
+            collection.remove(handler)
+    globals()["_HANDLERS"] = []
     # Disabling the addon should not leave a watcher behind: nothing would be left that knows how
     # to stop it, and the atexit hook goes with the module on a reload.
     stop_all()

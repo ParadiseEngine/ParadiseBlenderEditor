@@ -24,6 +24,13 @@ from .materialize import instancing, load, save, store, workfile
 __all__ = ["classes"]
 
 
+def _start_watch(operator: Operator, layout: project.ProjectLayout) -> None:
+    """Start this project's watcher, reporting a setup gap rather than failing the open."""
+    problem = watch.start_for(layout.root)
+    if problem is not None:
+        operator.report({"WARNING"}, problem)
+
+
 class PARADISE_ASSETS_OT_open_prefab(Operator):
     """Open a Paradise prefab document and materialize it as Blender objects"""
 
@@ -53,10 +60,11 @@ class PARADISE_ASSETS_OT_open_prefab(Operator):
             )
             return {"CANCELLED"}
 
-        # The working file first: if there is one and the document has not moved on, it IS this
-        # document materialized, plus the camera and selection the last session left. Re-reading
-        # the document instead would rebuild the same objects and throw that away.
+        # The working file first: if there is one, it is this document's session -- camera,
+        # selection, extras -- and load_post rematerializes the objects from assets/. Re-reading
+        # the document here instead would throw that session away for a default view.
         if workfile.try_open(layout, path):
+            _start_watch(self, layout)
             self.report(
                 {"INFO"},
                 f"Opened {os.path.basename(path)} from its working file "
@@ -88,9 +96,7 @@ class PARADISE_ASSETS_OT_open_prefab(Operator):
         # to load is a rebuild nobody asked for. Reported as a WARNING rather than failing the
         # open -- the document is loaded and usable, and "no CLI installed" is a setup gap rather
         # than a reason to refuse the file.
-        problem = watch.start_for(layout.root)
-        if problem is not None:
-            self.report({"WARNING"}, problem)
+        _start_watch(self, layout)
 
         self.report(
             {"INFO"},

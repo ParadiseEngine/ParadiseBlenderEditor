@@ -85,9 +85,10 @@ class ParadiseAssetsPreferences(AddonPreferences):
     auto_watch: BoolProperty(  # type: ignore[valid-type]
         name="Watch While a Document Is Open",
         description=(
-            "Start `paradise assets watch` for the project when a document is opened, so edits "
-            "reach the build without starting one by hand. One watcher per project, stopped when "
-            "Blender quits or opens another file. Turn this off if you run your own"
+            "Start `paradise assets watch` for the project when a prefab or its cached .blend "
+            "is opened, so edits reach the build without starting one by hand. One watcher per "
+            "project, stopped when Blender quits or opens another file. Turn this off if you "
+            "run your own"
         ),
         default=True,
     )

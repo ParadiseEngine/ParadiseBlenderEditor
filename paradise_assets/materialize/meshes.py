@@ -26,6 +26,8 @@ import os
 
 import bpy
 
+from . import store
+
 __all__ = ["LIBRARY_COLLECTION", "MeshLibrary"]
 
 #: Holds one collection per imported GLB. Excluded from the view layer, so its contents are
@@ -34,6 +36,10 @@ LIBRARY_COLLECTION = "ParadiseAssets/Library"
 
 #: The source path an imported collection came from, for reuse across a reload.
 SOURCE_KEY = "paradise_glb_source"
+
+#: ``(mtime, size)`` of that file when it was imported. A matching path with a moved stamp is
+#: last week's mesh -- throw the collection away and import again.
+STAMP_KEY = "paradise_glb_stamp"
 
 
 class MeshLibrary:
@@ -83,9 +89,14 @@ class MeshLibrary:
             return None
 
         name = f"GLB/{os.path.splitext(os.path.basename(path))[0]}"
+        stamp = store.stamp_of(path)
         existing = bpy.data.collections.get(name)
-        if existing is not None and existing.get(SOURCE_KEY) == path:
+        if existing is not None and _is_current_import(existing, path, stamp):
             return existing
+        if existing is not None and _same_source(existing, path):
+            # Same asset, newer bytes: drop the stale collection so the import below can reuse
+            # the name rather than landing on GLB/Foo.001 and leaking the old mesh forever.
+            _discard_library_collection(existing)
 
         # The importer drops its objects into the active collection, and there is no argument to
         # redirect it. Diffing the object table around the call is the only reliable way to learn
@@ -104,7 +115,8 @@ class MeshLibrary:
             return None
 
         collection = bpy.data.collections.new(name)
-        collection[SOURCE_KEY] = path
+        collection[SOURCE_KEY] = os.path.abspath(path)
+        collection[STAMP_KEY] = stamp
         self._root.children.link(collection)
 
         for obj in created:
@@ -160,13 +172,46 @@ def _library_root(scene: bpy.types.Scene) -> bpy.types.Collection:
     if root.name not in {child.name for child in scene.collection.children}:
         scene.collection.children.link(root)
 
-    layer = _find_layer_collection(bpy.context.view_layer.layer_collection, root.name)
+    layer = _find_layer_collection(_view_layer_collection(scene), root.name)
     if layer is not None:
         layer.exclude = True
     return root
 
 
+def _view_layer_collection(scene: bpy.types.Scene):
+    """The view-layer collection to search, or ``None`` when there is no view layer yet.
+
+    ``load_post`` can rematerialize before ``bpy.context.view_layer`` is set, and treating that
+    as a missing library would re-import every GLB. Exclusion is a viewport convenience; the
+    collections still work without it.
+    """
+    view_layer = getattr(bpy.context, "view_layer", None)
+    if view_layer is None:
+        view_layers = getattr(scene, "view_layers", None)
+        view_layer = view_layers[0] if view_layers else None
+    return None if view_layer is None else view_layer.layer_collection
+
+
+def _is_current_import(collection: bpy.types.Collection, path: str, stamp: str) -> bool:
+    return _same_source(collection, path) and collection.get(STAMP_KEY) == stamp
+
+
+def _same_source(collection: bpy.types.Collection, path: str) -> bool:
+    stored = collection.get(SOURCE_KEY)
+    if not isinstance(stored, str) or not stored:
+        return False
+    return os.path.normcase(os.path.abspath(stored)) == os.path.normcase(os.path.abspath(path))
+
+
+def _discard_library_collection(collection: bpy.types.Collection) -> None:
+    for obj in list(collection.objects):
+        bpy.data.objects.remove(obj, do_unlink=True)
+    bpy.data.collections.remove(collection)
+
+
 def _find_layer_collection(layer, name: str):
+    if layer is None:
+        return None
     if layer.collection.name == name:
         return layer
     for child in layer.children:

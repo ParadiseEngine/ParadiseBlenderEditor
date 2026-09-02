@@ -110,6 +110,12 @@ if command -v "$BLENDER" >/dev/null 2>&1; then
   "$BLENDER" --background --factory-startup --python tests/integration/test_save_on_save.py 2>&1 \
     | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2}|Info: Saved)' | tail -30
   check "${PIPESTATUS[0]}" "save on save"
+
+  # Opening a cached .blend must rematerialize from assets/ and start the watcher. Own project.
+  step "Integration: opening a cached .blend refreshes from assets"
+  "$BLENDER" --background --factory-startup --python tests/integration/test_open_workfile.py 2>&1 \
+    | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2}|Info: Saved|.*Read blend)' | tail -30
+  check "${PIPESTATUS[0]}" "open workfile"
 else
   echo "SKIPPED: Blender not found (set BLENDER=/path/to/blender) — integration tests not run."
 fi

@@ -11,6 +11,12 @@ ShiningPie's district. It is that a working file keeps the things a document has
 where the camera is, what is selected, a reference image parented to nothing -- and those survive
 a reopen instead of being rebuilt into a default view every time.
 
+Opening the ``.blend`` itself (File > Open, a recent file, double-click under ``.editor/blend/``)
+still rematerializes from ``assets/``. The cache is what the session *is*; the objects in it are
+what the documents last said, and an asset edited in another tool, a git pull, or a nested prefab
+change would otherwise sit stale until someone pressed Reload. The camera and extras stay; the
+document objects are rebuilt. See :func:`refresh_from_document`.
+
 The session ADOPTS the workfile's path (``save_as_mainfile`` without ``copy``), so Blender's own
 Ctrl+S updates the working file while "Save to Prefab Document" writes the document. Two saves
 that mean different things, each going where it says.
@@ -25,7 +31,7 @@ import bpy
 from ..document import project
 from . import store, sync
 
-__all__ = ["path_for", "save", "try_open"]
+__all__ = ["path_for", "refresh_from_document", "save", "try_open"]
 
 
 def path_for(layout: project.ProjectLayout, document_path: str) -> str:
@@ -53,12 +59,49 @@ def save(layout: project.ProjectLayout, document_path: str) -> str | None:
     return destination
 
 
+def refresh_from_document(scene: bpy.types.Scene) -> str | None:
+    """Rebuild ``scene`` from the prefab it was cached from.
+
+    Returns ``None`` when the scene is not a workfile, or when the rebuild succeeded. An error
+    string means the document could not be read and the cached objects were left as they were.
+
+    Always re-reads: a nested prefab, a GLB, or a material TOML can move without the scene
+    document's ``(mtime, size)`` stamp changing, and those are the edits this exists to catch.
+    """
+    from ..document.prefab import PrefabDocumentError, loads
+    from . import load
+
+    state = store.read_state(scene)
+    if state is None:
+        return None
+    if not os.path.isfile(state.path):
+        return f"document is missing: {state.path}"
+
+    located = project.locate(state.path)
+    if located is None:
+        return f"no asset project at or above {state.path}"
+
+    try:
+        with open(state.path, encoding="utf-8") as handle:
+            document = loads(handle.read(), state.path)
+    except (PrefabDocumentError, OSError) as error:
+        return str(error)
+
+    load.load_document(scene, document, state.path, located)
+    return None
+
+
 def try_open(layout: project.ProjectLayout, document_path: str) -> bool:
     """Open this document's working file, if there is a current one.
 
     Returns True only when the file opened AND still matches the document. False means the caller
     should materialize from the document instead -- and it may already have replaced the session
     doing so, which is fine: the caller materializes into whatever session it now has.
+
+    Opening the file fires ``load_post``, which rematerializes from ``assets/`` before this
+    returns -- so a workfile that was stale on disk can still read as current afterwards. That
+    is the point: the session (camera, extras) comes from the cache, the objects from the
+    documents.
     """
     source = path_for(layout, document_path)
     if not os.path.isfile(source):

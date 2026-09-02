@@ -328,7 +328,11 @@ def _draw_leaf(layout, scene, prefix, component, field, label: str) -> None:
         picker.component = component.id
         picker.path = field.path
     else:
-        layout.prop(scene, f'["{key}"]', text=label)
+        layout.prop(
+            scene, f'["{key}"]',
+            text=contract_authoring.field_caption(label, field.unit),
+            slider=contract_authoring.has_slider(field),
+        )
 
 
 def _draw_array(layout, scene, prefix, component, index, array) -> None:
@@ -608,7 +612,11 @@ class PARADISE_PT_entity_components(_ParadisePanel, Panel):
                 picker.component = component.id
                 picker.path = field.path
             else:
-                column.prop(obj, f'["{key}"]', text=field.path)
+                column.prop(
+                    obj, f'["{key}"]',
+                    text=contract_authoring.field_caption(field.path, field.unit),
+                    slider=contract_authoring.has_slider(field),
+                )
 
         for host in hosts:
             key = authored.value_key(component.id, host.path)

@@ -77,8 +77,12 @@ __all__ = [
     "build_payload",
     "counts_of",
     "default_of",
+    "field_caption",
     "flatten",
+    "has_slider",
+    "id_subtype",
     "merge",
+    "numeric_widget_options",
     "outline",
     "read",
     "relative_to",
@@ -120,6 +124,64 @@ TYPE_VECTOR2 = "vector2"
 TYPE_VECTOR3 = "vector3"
 TYPE_QUATERNION = "quaternion"
 TYPE_COLOR = "color"
+
+#: Schema ``unit`` → Blender ID-property subtype. Metres become a distance spinner, radians an
+#: angle (displayed in degrees, stored in radians), seconds a time, unit01 a 0–1 factor.
+#: Kilograms has no ID-property subtype -- Blender cannot say MASS on one -- so the caption
+#: carries ``kg``. Mirrored in ``paradise_assets.document.component_schema``.
+_SUBTYPE_FOR_UNIT = {
+    "meters": "DISTANCE",
+    "radians": "ANGLE",
+    "seconds": "TIME",
+    "unit01": "FACTOR",
+}
+
+_SHORT_UNIT = {
+    "kilograms": "kg",
+}
+
+
+def id_subtype(unit: str | None) -> str | None:
+    """Blender ID-property subtype for a schema unit, or None when the widget cannot carry it."""
+    return _SUBTYPE_FOR_UNIT.get(unit) if unit else None
+
+
+def field_caption(name: str, unit: str | None) -> str:
+    """The label drawn next to a number field.
+
+    Units the widget already displays stay off the label. Kilograms becomes ``(kg)``. Anything
+    else the schema named is shown as declared.
+    """
+    if not unit or unit in _SUBTYPE_FOR_UNIT:
+        return name
+    return f"{name} ({_SHORT_UNIT.get(unit, unit)})"
+
+
+def has_slider(field: FlatField) -> bool:
+    """Whether both ends of a range exist (or the unit is unit01), so the draw can cap a slider."""
+    if field.unit == "unit01":
+        return True
+    return field.minimum is not None and field.maximum is not None
+
+
+def numeric_widget_options(field: FlatField) -> dict[str, object]:
+    """ID-property UI metadata for a float/int: range plus the unit's Blender subtype."""
+    if field.type not in (TYPE_FLOAT, TYPE_INT):
+        return {}
+    options: dict[str, object] = {}
+    if field.minimum is not None:
+        options["min"] = field.minimum
+    if field.maximum is not None:
+        options["max"] = field.maximum
+    subtype = id_subtype(field.unit)
+    if subtype:
+        options["subtype"] = subtype
+    if field.unit == "unit01":
+        options.setdefault("min", 0.0)
+        options.setdefault("max", 1.0)
+        options["subtype"] = "FACTOR"
+    return options
+
 
 #: ``authoredBy`` kinds. Closed set is ``Paradise.Authoring``'s ``AuthoredBySources``.
 HOST_TRANSFORM = "transform"

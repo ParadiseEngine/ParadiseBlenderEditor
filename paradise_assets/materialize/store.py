@@ -24,6 +24,7 @@ __all__ = [
     "clear_object",
     "component_json",
     "guid_of",
+    "object_with_guid",
     "prefab_of",
     "read_state",
     "stamp_of",
@@ -142,6 +143,22 @@ def guid_of(obj: bpy.types.Object) -> str | None:
     """The document identity of ``obj``, or ``None`` if it is not a document object."""
     guid = obj.get(GUID_KEY)
     return guid if isinstance(guid, str) and guid else None
+
+
+def object_with_guid(scene: bpy.types.Scene, guid: str | None):
+    """The Blender object that stands for *guid* in *scene*, or ``None``.
+
+    Case-insensitive: a guid is hex and nothing in the format promises a case. Used by the
+    Components panel to turn a parent identity into a selectable object.
+    """
+    if not guid:
+        return None
+    needle = guid.lower()
+    for obj in scene.collection.all_objects:
+        found = guid_of(obj)
+        if found is not None and found.lower() == needle:
+            return obj
+    return None
 
 
 def is_derived(obj: bpy.types.Object) -> bool:

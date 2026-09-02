@@ -134,6 +134,45 @@ def test_a_corrupt_overlay_reads_as_empty_rather_than_throwing():
     assert edits.read({edits.EDITS_KEY: 42}) == {}
 
 
+def test_apply_writes_a_nested_path_without_touching_siblings():
+    entry = FakeEntry([
+        FakeComponent("comp-a", {"Camera": {"Guide": {"NearDistance": 6.0}, "Yaw": 0.12}}),
+    ])
+
+    written = edits.apply_to(entry, {"comp-a": {"Camera/Guide/NearDistance": 8.0}})
+
+    assert written == 1
+    assert entry.component("comp-a").data == {
+        "Camera": {"Guide": {"NearDistance": 8.0}, "Yaw": 0.12},
+    }
+
+
+def test_apply_grows_a_list_at_an_indexed_path():
+    entry = FakeEntry([FakeComponent("comp-a", {"Slots": ["a"]})])
+
+    edits.apply_to(entry, {"comp-a": {"Slots/1": "b"}})
+
+    assert entry.component("comp-a").data["Slots"] == ["a", "b"]
+
+
+def test_set_field_drops_descendant_keys_so_a_list_replace_wins():
+    obj: dict = {}
+    edits.set_field(obj, "c", "Slots/0", "old")
+    edits.set_field(obj, "c", "Slots", ["a", "b"])
+
+    assert edits.read(obj) == {"c": {"Slots": ["a", "b"]}}
+
+
+def test_quaternion_and_vector2_keep_their_shape_through_the_overlay():
+    obj: dict = {}
+    edits.set_field(obj, "c", "Spin", [0.0, 0.0, 0.0, 1.0])
+    edits.set_field(obj, "c", "Size", [1.0, 2.0])
+
+    restored = edits.read(obj)["c"]
+    assert restored["Spin"] == [0.0, 0.0, 0.0, 1.0]
+    assert restored["Size"] == [1.0, 2.0]
+
+
 def test_values_keep_their_type_through_the_overlay():
     # The reason the overlay is a JSON string rather than Blender ID properties: those normalize
     # an int to a float and a tuple to a list on the way through, and these values are written
@@ -148,3 +187,74 @@ def test_values_keep_their_type_through_the_overlay():
     assert isinstance(restored["Count"], int) and not isinstance(restored["Count"], bool)
     assert isinstance(restored["Ratio"], float)
     assert restored["Flag"] is False
+
+
+def test_adding_a_component_shows_up_without_touching_the_snapshot():
+    snapshot = [{"id": "meta", "type": "meta", "data": {}}]
+    obj: dict = {}
+
+    edits.add_component(obj, {"id": "comp-a", "type": "Game.A", "data": {"Speed": 1.0}})
+
+    visible = edits.visible_components(snapshot, edits.read_structure(obj))
+    assert [c["id"] for c in visible] == ["meta", "comp-a"]
+    assert snapshot == [{"id": "meta", "type": "meta", "data": {}}]
+    assert edits.count(obj) == 1
+
+
+def test_removing_a_file_component_hides_it_until_save():
+    snapshot = [
+        {"id": "meta", "type": "meta", "data": {}},
+        {"id": "comp-a", "type": "Game.A", "data": {"Speed": 1.0}},
+    ]
+    obj: dict = {}
+
+    edits.remove_component(obj, "comp-a")
+
+    visible = edits.visible_components(snapshot, edits.read_structure(obj))
+    assert [c["id"] for c in visible] == ["meta"]
+    assert edits.removed_ids(obj) == ["comp-a"]
+
+
+def test_removing_a_pending_add_forgets_it_entirely():
+    obj: dict = {}
+    edits.add_component(obj, {"id": "comp-a", "type": "Game.A", "data": {}})
+    edits.remove_component(obj, "comp-a")
+
+    assert edits.added_components(obj) == []
+    assert edits.removed_ids(obj) == []
+    assert edits.STRUCTURE_KEY not in obj
+
+
+def test_re_adding_a_removed_component_restores_the_file_payload():
+    snapshot = [{"id": "comp-a", "type": "Game.A", "data": {"Speed": 4.5}}]
+    obj: dict = {}
+    edits.remove_component(obj, "comp-a")
+    edits.add_component(obj, {"id": "comp-a", "type": "Game.A", "data": {}})
+
+    visible = edits.visible_components(snapshot, edits.read_structure(obj))
+    assert visible == snapshot
+    assert edits.removed_ids(obj) == []
+    assert edits.added_components(obj) == []
+
+
+def test_removing_a_component_drops_its_field_edits():
+    obj: dict = {}
+    edits.set_field(obj, "comp-a", "Speed", 9.0)
+    edits.remove_component(obj, "comp-a")
+
+    assert edits.read(obj) == {}
+
+
+def test_clearing_the_object_also_drops_pending_add_and_remove():
+    obj: dict = {}
+    edits.add_component(obj, {"id": "comp-a", "type": "Game.A", "data": {}})
+    edits.remove_component(obj, "comp-b")
+    edits.set_field(obj, "comp-c", "Speed", 1.0)
+
+    edits.clear(obj)
+
+    assert edits.read(obj) == {}
+    assert edits.added_components(obj) == []
+    assert edits.removed_ids(obj) == []
+    assert edits.EDITS_KEY not in obj
+    assert edits.STRUCTURE_KEY not in obj

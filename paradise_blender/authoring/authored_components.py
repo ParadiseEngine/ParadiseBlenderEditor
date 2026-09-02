@@ -869,8 +869,12 @@ def storage_value(field: authoring.FlatField, value=None):
 
 
 def apply_ui_metadata(store: bpy.types.ID, key: str, field: authoring.FlatField) -> None:
-    """Attach doc/range/subtype to an ID property. Takes any ID datablock, not just an Object:
-    the Game Config panel keeps the same kind of store on the Scene."""
+    """Attach doc/range/unit-subtype to an ID property. Takes any ID datablock, not just an Object:
+    the Game Config panel keeps the same kind of store on the Scene.
+
+    ``[Unit01]`` and ``[AuthorRange]`` become a capped slider; ``[Meters]`` a distance spinner;
+    ``[Kilograms]`` has no Blender subtype so the panel label carries ``kg``.
+    """
     try:
         ui = store.id_properties_ui(key)
     except TypeError:
@@ -879,11 +883,7 @@ def apply_ui_metadata(store: bpy.types.ID, key: str, field: authoring.FlatField)
     options: dict[str, object] = {}
     if field.doc:
         options["description"] = field.doc
-    if field.type in (authoring.TYPE_FLOAT, authoring.TYPE_INT):
-        if field.minimum is not None:
-            options["min"] = field.minimum
-        if field.maximum is not None:
-            options["max"] = field.maximum
+    options.update(authoring.numeric_widget_options(field))
     if field.type == authoring.TYPE_COLOR:
         # COLOR_GAMMA, not COLOR: the picker then treats the stored floats as display-space,
         # which is how the Godot inspector's picker treats them -- same swatch, same numbers

@@ -1031,3 +1031,37 @@ class TestEngineIdDrift:
         schema_load_error; repeating it per constant would bury it."""
         authoring._cache.clear()
         assert component_ids.check_engine_ids(str(tmp_path)) == []
+
+
+class TestWidgetUnits:
+    """Each editor maps schema units to its own widget. Blender's mapping lives here."""
+
+    def test_caption_shows_kg_and_leaves_widget_units_off_the_label(self):
+        assert authoring.field_caption("Mass", "kilograms") == "Mass (kg)"
+        assert authoring.field_caption("Near", "meters") == "Near"
+        assert authoring.field_caption("Friction", "unit01") == "Friction"
+        assert authoring.field_caption("Speed", "m/s") == "Speed (m/s)"
+
+    def test_unit01_is_a_factor_and_a_range_is_a_slider(self):
+        friction = authoring.FlatField(path="Friction", type="float", unit="unit01")
+        mass = authoring.FlatField(
+            path="Mass", type="float", unit="kilograms", minimum=0.001, maximum=10000)
+        lives = authoring.FlatField(path="Lives", type="int")
+
+        assert authoring.has_slider(friction)
+        assert authoring.has_slider(mass)
+        assert not authoring.has_slider(lives)
+
+        friction_opts = authoring.numeric_widget_options(friction)
+        assert friction_opts["subtype"] == "FACTOR"
+        assert friction_opts["min"] == 0.0
+        assert friction_opts["max"] == 1.0
+
+        mass_opts = authoring.numeric_widget_options(mass)
+        assert mass_opts["min"] == 0.001
+        assert mass_opts["max"] == 10000
+        assert "subtype" not in mass_opts
+
+        assert authoring.id_subtype("meters") == "DISTANCE"
+        assert authoring.id_subtype("radians") == "ANGLE"
+        assert authoring.id_subtype("kilograms") is None

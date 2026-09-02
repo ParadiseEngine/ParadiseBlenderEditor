@@ -103,6 +103,10 @@ def save_prefab(scene: bpy.types.Scene) -> SaveResult:
     # overlay would re-apply itself on the next save, resurrecting an old value over whatever
     # someone else had written in the meantime. Before the write, a failed save would lose the
     # author's edits along with it.
+    #
+    # The load-time snapshot is refreshed from what we just wrote, so the panel shows the saved
+    # values without a reload -- add/remove would otherwise vanish the moment the overlay cleared.
+    _refresh_snapshots(scene, merged)
     for obj in _document_objects(scene):
         component_edits.clear(obj)
 
@@ -247,13 +251,15 @@ def _object_entry(obj: bpy.types.Object, original: PrefabObject | None, result: 
 
 
 def _apply_edits(obj: bpy.types.Object, entry: PrefabObject, result: SaveResult) -> None:
-    """Apply this object's pending field edits, and report a component that went missing.
+    """Apply this object's pending add/remove and field edits.
 
-    Missing is worth REPORTING rather than passing over: it means the document changed under an
-    edit -- the component was deleted, or its id changed -- and the author's change is being
-    dropped. Silence there is the same failure as a save that does not reach the document, which
-    this module already treats as something an author must be told about.
+    Structure first: a field edit on a component that was just added needs the component to
+    exist. Missing is worth REPORTING rather than passing over: it means the document changed
+    under an edit -- the component was deleted, or its id changed -- and the author's change is
+    being dropped. Silence there is the same failure as a save that does not reach the document,
+    which this module already treats as something an author must be told about.
     """
+    _apply_structure(obj, entry, result)
     pending = component_edits.read(obj)
     if not pending:
         return
@@ -264,6 +270,58 @@ def _apply_edits(obj: bpy.types.Object, entry: PrefabObject, result: SaveResult)
         result.warnings.append(
             f"{obj.name}: an edit to component {component_id} was dropped -- the document no "
             "longer carries it.")
+
+
+def _apply_structure(obj: bpy.types.Object, entry: PrefabObject, result: SaveResult) -> None:
+    """Insert added components and drop removed ones. meta / transform cannot be removed."""
+    removed = {item.lower() for item in component_edits.removed_ids(obj)}
+    added = component_edits.added_components(obj)
+    if not removed and not added:
+        return
+
+    owned = {well_known.META_ID.lower(), well_known.TRANSFORM_ID.lower()}
+    if removed:
+        kept = []
+        for component in entry.components:
+            if component.id.lower() in removed and component.id.lower() not in owned:
+                result.edited += 1
+                continue
+            kept.append(component)
+        entry.components = kept
+
+    present = {component.id.lower() for component in entry.components}
+    for spec in added:
+        component_id = str(spec.get("id", ""))
+        if not component_id or component_id.lower() in present or component_id.lower() in owned:
+            continue
+        data = spec.get("data")
+        entry.components.append(PrefabComponent(
+            component_id,
+            spec.get("type"),
+            dict(data) if isinstance(data, dict) else {},
+        ))
+        present.add(component_id.lower())
+        result.edited += 1
+
+
+def _refresh_snapshots(scene: bpy.types.Scene, merged: PrefabDocument) -> None:
+    """Rewrite each object's display JSON from the document that was just saved."""
+    by_guid = {
+        entry.guid.lower(): entry for entry in merged.objects if entry.guid
+    }
+    for obj in _document_objects(scene):
+        guid = store.guid_of(obj)
+        if not guid or guid.lower() not in by_guid:
+            continue
+        entry = by_guid[guid.lower()]
+        store.tag_object(
+            obj,
+            guid,
+            [
+                {"id": component.id, "type": component.type, "data": component.data}
+                for component in entry.components
+            ],
+        )
 
 
 def _write_meta(entry: PrefabObject, guid: str, name: str, parent: str | None) -> None:

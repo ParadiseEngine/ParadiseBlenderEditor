@@ -25,6 +25,7 @@ __all__ = [
     "TRANSFORM_ID",
     "TRANSFORM_TYPE",
     "is_meta_field",
+    "parent_caption",
     "payload_problem",
 ]
 
@@ -90,6 +91,19 @@ def is_meta_field(key: str) -> bool:
     copy-through loop needs no edit.
     """
     return key in (GUID, NAME, PARENT, TARGET, DROPPED)
+
+
+def parent_caption(guid: str | None, name: str | None) -> str:
+    """How the Components panel writes a parent: name plus the identity, or a root mark.
+
+    The guid is the value the document stores; the name is what an author recognises. Both, in
+    that pairing, so a click can still copy the identity while the row reads as a person.
+    """
+    if not guid:
+        return "— (root)"
+    if name:
+        return f"{name}  ({guid})"
+    return guid
 
 
 def payload_problem(component) -> str | None:

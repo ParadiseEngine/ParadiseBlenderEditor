@@ -10,9 +10,11 @@ what changed is that an edit is now recorded as an OVERLAY of the fields an auth
 (see ..edits), applied over the file version at save. A component nobody edited is still written
 back byte-for-byte, including one this addon has never heard of.
 
-A field is editable when the GAME schema describes it and the host does not author it. Everything
-else is shown as it always was: the format own meta and transform (Blender name field and gizmo
-are their editor), nested payloads, and anything a dump does not mention.
+A field is drawn inline when a schema describes it and the host does not author it -- the game
+dump first, then a host-side form for engine types the dump no longer lists (rigidbody), then
+a type inferred from the payload. Enums are dropdowns; asset references pick a project file.
+``meta`` and ``transform`` stay live from Blender. Mesh/shape/light stay locked: those are
+baked from the host object.
 """
 
 from __future__ import annotations
@@ -21,8 +23,8 @@ import os
 
 from bpy.types import Panel
 
-from . import component_ops, edits, watch
-from .document import project
+from . import component_ops, edits, field_widgets, watch
+from .document import axes, component_schema, project, well_known
 from .materialize import store, sync
 
 __all__ = ["classes"]
@@ -178,98 +180,197 @@ class PARADISE_ASSETS_PT_object(_AssetsPanel, Panel):
 
         layout.label(text=guid, icon="COPY_ID")
 
-        components = store.component_json(obj)
-        if not components:
-            layout.label(text="No components.")
-            return
-
         vocabulary = component_ops.vocabulary_for(context)
         pending = edits.read(obj)
+        components = component_ops.components_of(obj)
+        pending_count = edits.count(obj)
 
-        if pending:
+        if pending_count:
             row = layout.box().row()
-            row.label(text=f"{edits.count(obj)} unsaved field edit(s)", icon="GREASEPENCIL")
+            row.label(text=f"{pending_count} unsaved edit(s)", icon="GREASEPENCIL")
             row.operator(
                 "paradise_assets.revert_component_field", text="", icon="LOOP_BACK"
             ).component_id = ""
 
+        layout.operator("paradise_assets.add_component", icon="ADD")
+
         if not vocabulary:
             # Not a failure: the dump is a build product of the GAME, and a fresh clone has none.
-            # Saying which file is missing is the difference between "this addon is broken" and
-            # "build the launcher once".
-            layout.label(text="No schema — build the game to edit fields.", icon="INFO")
+            # Engine forms (rigidbody) and inferred payloads still edit; this only warns that
+            # GAME fields will not appear until the launcher has been built once.
+            layout.label(text="No game schema — build the launcher to edit game fields.", icon="INFO")
+
+        if not components:
+            layout.label(text="No components.")
+            return
+
+        widget_rows: list[tuple[str, object, object]] = []
+        drawn: list[tuple] = []
 
         for component in components:
             component_id = str(component.get("id", ""))
-            schema = vocabulary.get(component_id)
+            schema = vocabulary.describe(component)
             edited = pending.get(component_id, {})
+            drawn.append((component, component_id, schema, edited))
+            if schema is None or component_schema.is_format_owned(component_id):
+                continue
+            raw = component.get("data")
+            data = raw if isinstance(raw, dict) else {}
+            merged = component_ops.merged_data(obj, component_id, data)
+            for item in schema.plan(merged):
+                if item.role not in (
+                    component_schema.ROLE_LEAF, component_schema.ROLE_ROW
+                ):
+                    continue
+                if not item.field.editable:
+                    continue
+                value = edits.read_path(merged, item.path)
+                if component_schema.is_asset_field(item.field, value):
+                    continue
+                if item.field.fields:
+                    continue
+                widget_rows.append((component_id, item, value))
 
+        field_widgets.sync(context, obj, widget_rows)
+
+        for component, component_id, schema, edited in drawn:
             box = layout.box()
             header = box.row()
-            header.label(text=_component_label(component), icon="PROPERTIES")
+            header.label(
+                text=schema.display_name if schema is not None else _component_label(component),
+                icon="PROPERTIES",
+            )
             if edited:
                 revert = header.operator(
                     "paradise_assets.revert_component_field", text="", icon="LOOP_BACK")
                 revert.component_id = component_id
                 revert.field_name = ""
+            if not component_schema.is_format_owned(component_id):
+                drop = header.operator(
+                    "paradise_assets.remove_component", text="", icon="X")
+                drop.component_id = component_id
+
+            if component_schema.is_format_owned(component_id):
+                if component_id.lower() == well_known.META_ID.lower():
+                    _draw_meta(box, obj, component)
+                else:
+                    _draw_transform(box, obj)
+                continue
 
             if schema is None:
-                # Either the format's own two (meta, transform -- Blender's name field and gizmo
-                # ARE their editor) or a component this game's dump does not describe. Shown as
-                # it was before, because a value nobody can type is still a value worth reading.
                 for line in _payload_lines(component.get("data")):
                     box.label(text=line)
                 continue
 
-            _draw_schema_fields(box, component, schema, edited)
+            _draw_schema_fields(box, context, obj, component, schema, edited)
 
 
-def _draw_schema_fields(box, component: dict, schema, edited: dict) -> None:
+def _draw_schema_fields(box, context, obj, component: dict, schema, edited: dict) -> None:
     """One component's fields, editable where the schema says they can be."""
-    data = component.get("data")
-    data = data if isinstance(data, dict) else {}
+    raw = component.get("data")
+    data = raw if isinstance(raw, dict) else {}
+    component_id = str(component.get("id", ""))
+    merged = component_ops.merged_data(obj, component_id, data)
 
-    for field in schema.fields:
-        row = box.row(align=True)
-        value = edited.get(field.name, data.get(field.name, field.default))
-
-        if not field.editable:
-            # A host-authored field is shown and not offered: its value comes from the object it
-            # points at, so typing one in would be authoring in the place the export overwrites.
-            row.label(text=f"{field.name}: {_short_value(value)}", icon="DECORATE_LOCKED")
+    for item in schema.plan(merged):
+        value = edits.read_path(merged, item.path)
+        if item.role == component_schema.ROLE_LOCKED:
+            row = box.row()
+            row.label(
+                text=f"{item.path}: {component_schema.format_value(value)}",
+                icon="DECORATE_LOCKED",
+            )
             continue
 
-        label = f"{field.name}: {_short_value(value)}"
-        edit = row.operator(
-            "paradise_assets.edit_component_field",
-            text=label,
-            icon="GREASEPENCIL" if field.name in edited else "DOT")
-        edit.component_id = str(component.get("id", ""))
-        edit.field_name = field.name
+        if item.role == component_schema.ROLE_ARRAY:
+            row = box.row(align=True)
+            count = len(value) if isinstance(value, list) else 0
+            row.label(text=item.path if count else f"{item.path}  (empty)")
+            add = row.operator("paradise_assets.add_array_row", text="", icon="ADD")
+            add.component_id = component_id
+            add.field_name = item.path
+            continue
 
-        if field.name in edited:
-            revert = row.operator(
-                "paradise_assets.revert_component_field", text="", icon="LOOP_BACK")
-            revert.component_id = str(component.get("id", ""))
-            revert.field_name = field.name
+        if item.role == component_schema.ROLE_ROW:
+            row = box.row(align=True)
+            row.label(text=str(item.index if item.index is not None else 0))
+            array_path, _, _ = item.path.rpartition("/")
+            if item.field.editable and (
+                not item.field.fields or component_schema.is_asset_field(item.field, value)
+            ):
+                field_widgets.draw_item(
+                    box, context, obj, component_id, item, value, edited, row=row)
+            else:
+                row.label(text=item.path, icon="DOT")
+            drop = row.operator("paradise_assets.remove_array_row", text="", icon="X")
+            drop.component_id = component_id
+            drop.field_name = array_path
+            drop.index = item.index if item.index is not None else 0
+            continue
+
+        field_widgets.draw_item(box, context, obj, component_id, item, value, edited)
 
 
-def _short_value(value) -> str:
-    """A value as one short line. A panel row is not a document viewer."""
-    if isinstance(value, float):
-        return f"{value:g}"
-    if isinstance(value, (list, tuple)):
-        if all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in value):
-            return "(" + ", ".join(f"{float(v):g}" for v in value) + ")"
-        return f"[{len(value)} item(s)]"
-    if isinstance(value, dict):
-        # An asset reference is the dict an author actually recognises, so it reads as its path.
-        path = value.get("path")
-        return str(path) if isinstance(path, str) else "{…}"
-    if value is None:
-        return "—"
-    text = str(value)
-    return text if len(text) <= 28 else text[:27] + "…"
+def _draw_meta(box, obj, component: dict) -> None:
+    """Identity, live name, and a parent that can be selected in the Outliner.
+
+    The load-time snapshot is display data for every other component; for these three fields it
+    is a lie the moment someone renames or reparents in Blender. Save writes ``obj.name`` and
+    ``obj.parent``, so the panel has to read the same place.
+    """
+    raw = component.get("data")
+    data = raw if isinstance(raw, dict) else {}
+
+    box.label(text=f"{well_known.GUID}: {store.guid_of(obj) or data.get(well_known.GUID) or '—'}",
+              icon="DECORATE_LOCKED")
+    box.label(text=f"{well_known.NAME}: {obj.name}", icon="DECORATE_LOCKED")
+
+    parent = obj.parent
+    parent_guid = store.guid_of(parent) if parent is not None else None
+    row = box.row(align=True)
+    row.label(text=f"{well_known.PARENT}:")
+    if parent is not None and parent_guid:
+        jump = row.operator(
+            "paradise_assets.reveal_object", text=parent.name, icon="OBJECT_DATA")
+        jump.guid = parent_guid
+        box.label(text=parent_guid)
+    elif parent is not None:
+        row.label(text=f"{parent.name}  (not a document object)")
+    else:
+        row.label(text="— (root)")
+
+    for key in (well_known.TARGET, well_known.DROPPED):
+        if key in data:
+            box.label(text=f"{key}: {component_schema.format_value(data.get(key))}",
+                      icon="DECORATE_LOCKED")
+
+
+def _draw_transform(box, obj) -> None:
+    """Local TRS in document convention, live from the gizmo.
+
+    Readonly on purpose: Blender's transform is the editor. The numbers have to be the actual
+    vectors -- a ``[3 item(s)]`` summary is what this used to print, and it is not a value.
+    """
+    position, rotation, scale = _live_document_trs(obj)
+    box.label(text=f"{well_known.POSITION}: {component_schema.format_value(position)}",
+              icon="DECORATE_LOCKED")
+    box.label(text=f"{well_known.ROTATION}: {component_schema.format_value(rotation)}",
+              icon="DECORATE_LOCKED")
+    box.label(text=f"{well_known.SCALE}: {component_schema.format_value(scale)}",
+              icon="DECORATE_LOCKED")
+
+
+def _live_document_trs(obj):
+    """The object's local TRS rebased into document axes -- same conversion save writes."""
+    if obj.rotation_mode == "QUATERNION":
+        w, x, y, z = obj.rotation_quaternion
+    else:
+        w, x, y, z = obj.rotation_euler.to_quaternion()
+    return axes.from_blender_trs(
+        tuple(float(v) for v in obj.location),
+        (float(x), float(y), float(z), float(w)),
+        tuple(float(v) for v in obj.scale),
+    )
 
 
 def _component_label(component: dict) -> str:
@@ -299,7 +400,7 @@ def _payload_lines(data, prefix: str = "", depth: int = 0) -> list[str]:
         if isinstance(value, dict):
             lines.extend(_payload_lines(value, f"{path}.", depth + 1))
         elif isinstance(value, list):
-            lines.append(f"{path}: [{len(value)} item(s)]")
+            lines.append(f"{path}: {component_schema.format_value(value)}")
         else:
             lines.append(f"{path}: {value}")
     return lines

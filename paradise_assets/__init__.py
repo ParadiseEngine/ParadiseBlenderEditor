@@ -29,20 +29,23 @@ _REGISTERED: list = []
 def register() -> None:
     import bpy
 
-    from . import browser, component_ops, dropped, ops, prefs, ui, watch
+    from . import browser, component_ops, dropped, field_widgets, ops, prefs, ui, watch
     from .materialize import sync
     from .play import ops as play_ops
 
     # Preferences FIRST: every operator below resolves the toolchain through them, and an
     # AddonPreferences that is not registered yet reads as "nothing configured".
+    # field_widgets BEFORE ui: the Components panel draws those RNA slots.
     # component_ops BEFORE ui: the Components panel draws those operators, and a panel that
     # names an unregistered operator draws a dead button rather than failing loudly.
     for cls in (
-        *prefs.classes, *ops.classes, *play_ops.classes, *component_ops.classes,
-        *ui.classes, *browser.classes,
+        *prefs.classes, *ops.classes, *play_ops.classes, *field_widgets.classes,
+        *component_ops.classes, *ui.classes, *browser.classes,
     ):
         bpy.utils.register_class(cls)
         _REGISTERED.append(cls)
+
+    field_widgets.attach()
 
     # The Asset Browser's drop is Blender's own operation and cannot be replaced, only followed --
     # see paradise_assets.dropped for why that handler exists and how it stays harmless.
@@ -60,13 +63,14 @@ def register() -> None:
 def unregister() -> None:
     import bpy
 
-    from . import browser, dropped, watch
+    from . import browser, dropped, field_widgets, watch
     from .materialize import sync
 
     browser.unregister_menu()
     dropped.unregister_handler()
     sync.unregister_handler()
     watch.unregister_handler()
+    field_widgets.detach()
 
     # Reverse order: a child panel registered against a parent's bl_idname must go first, or
     # Blender warns about an unregistered parent while tearing the tab down.

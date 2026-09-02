@@ -1,21 +1,8 @@
-"""Live-preview session: the runtime process, the connection, and the change feed.
-
-Owns one preview at a time (module-level :data:`_session`), because the runtime binds a fixed
-port and two sessions would fight over it.
-
-Startup sequence, and why it is ordered this way:
-
-1. **Export once, fully.** The runtime needs meshes and materials on disk before it can render
-   anything the patches refer to.
-2. **Launch the runtime with ``--live <port>``** and let it come up.
-3. **Poll for the listener** rather than sleeping a fixed interval -- first launch through
-   ``dotnet run`` may build first and take seconds, while a warm binary is ready almost
-   immediately.
-4. **Handshake, then send the full scene.**
-5. **Subscribe to depsgraph updates**, coalesced by :mod:`.sync`.
-
-Teardown always runs, including when the runtime dies on its own: a dangling depsgraph handler
-would keep queueing work for a socket nobody is reading.
+"""Live-preview session: one at a time, since the runtime binds a fixed port. Export fully
+first (patches refer to meshes on disk), launch, poll for the listener, handshake, send the
+full scene, subscribe. Teardown always runs, or a dangling depsgraph handler keeps queueing for
+a dead socket. KNOWN GAP (#34): the handshake reply is never read and the wait sleeps on the
+main thread.
 """
 
 from __future__ import annotations
@@ -33,8 +20,7 @@ from .transport import LiveConnection
 
 __all__ = ["LiveSession", "current_session", "is_running", "start", "stop"]
 
-#: How long to wait for the runtime to start listening. Generous because a cold `dotnet run`
-#: compiles the host before it opens the port.
+#: Generous: a cold `dotnet run` compiles before it opens the port.
 _STARTUP_TIMEOUT_SECONDS = 60.0
 _POLL_INTERVAL_SECONDS = 0.25
 
@@ -64,11 +50,7 @@ class LiveSession:
             self.connection.send(message)
 
     def send_full_scene(self, scene: bpy.types.Scene) -> None:
-        """Push the whole level document.
-
-        Assets are not re-exported here: this runs on every structural change, and rewriting
-        every GLB each time an object is added would stall Blender for seconds.
-        """
+        """Push the whole document without re-exporting assets, which would stall Blender."""
         paths = export_paths(scene)
         document = build_level_data(scene, paths, export_assets=False)
         self.send(protocol.scene_full(self.next_seq(), document.to_json()))
@@ -138,8 +120,7 @@ def stop(operator=None) -> bool:
     if _session.connection is not None:
         if _session.connection.connected:
             _session.connection.send(protocol.bye(_session.next_seq()))
-            # Give the sender thread a moment to flush `bye` before the socket closes;
-            # otherwise the runtime sees a dropped connection and logs it as a crash.
+            # Let `bye` flush, or the runtime logs a dropped connection as a crash.
             time.sleep(0.05)
         dropped = _session.connection.dropped_messages
         if dropped:

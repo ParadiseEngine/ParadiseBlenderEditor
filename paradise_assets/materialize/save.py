@@ -1,35 +1,19 @@
-"""Blender objects -> scene document.
+"""Blender objects -> prefab document.
 
-Blender owns placement: names, parents, transforms, and which objects exist. The document owns
-component payloads, which are taken from the FILE rather than from Blender -- so a component this
-addon has never heard of round-trips verbatim.
+Blender owns placement; the document owns component payloads, taken from the FILE (re-read at
+save time) with the author's field overlay (:mod:`..edits`) applied on top, so a component this
+addon has never heard of round-trips verbatim and a hand edit since the load survives. The save
+refuses when the file's stamp moved (merging blind would drop whatever changed it), refuses a
+parent that is not a document entity and guarantees ``meta`` + ``transform`` on every entity
+(since v6 nothing downstream synthesizes placement), and writes atomically.
 
-Component EDITS join that arrangement without ending it. What Blender holds is not a copy of the
-payloads but an overlay of the fields an author actually changed (:mod:`..edits`), applied on top
-of the file's version at merge time. So an edited component keeps every member nobody touched,
-including the ones this addon has no schema for and could not have displayed.
+An object nobody moved keeps its authored numbers verbatim: the rebase round-trips to ~4e-8
+relative, fine as a position and fatal as text because ``repr`` of a value moved in its last bit
+is a different string, so an untouched scene would otherwise rewrite every transform. See
+:func:`_unchanged`.
 
-Four rules guard the write, each against a failure that has a name:
-
-* **Re-read and merge.** The document is re-read at save time and used as the base. A hand edit
-  made since the load survives, because only what Blender owns is overwritten.
-* **Stamp.** If the file changed since it was read, the save REFUSES. Merging blind would
-  silently drop whatever made the change.
-* **Atomic.** Written to a temp file beside the target and replaced, so an interrupted save
-  cannot leave a half-written document as the source of truth.
-* **The addon is the guarantor.** Every saved entity carries a ``meta`` AND a ``transform``
-  component, and a parent must be an entity in the same document -- refused, not warned, because
-  since contract v6 nothing downstream re-checks or synthesizes placement: what the addon writes
-  is what the game loads.
-
-And one rule that is not about safety but about diffs:
-
-* **An object nobody moved keeps its authored numbers verbatim.** The document stores values
-  that came from C# ``float``; Blender stores float32 too, and the rebase runs a square root.
-  Round-tripping is therefore accurate to ~4e-8 relative -- fine as a position, fatal as text,
-  because ``repr`` of a value that moved in the last bit is a completely different string. Left
-  alone, saving an untouched scene would rewrite every transform in it and bury a one-object
-  edit in a whole-file diff. See :func:`_unchanged`.
+KNOWN GAP (#26): override carriers (``meta.Target``) have no Blender object, so :func:`_merge`
+counts them "removed" and the first save drops them.
 """
 
 from __future__ import annotations
@@ -68,7 +52,6 @@ class SaveResult:
         self.moved = 0
         self.added = 0
         self.removed = 0
-        #: How many component FIELDS an overlay wrote (see ..edits).
         self.edited = 0
         self.warnings: list[str] = []
 
@@ -98,14 +81,9 @@ def save_prefab(scene: bpy.types.Scene) -> SaveResult:
     _write_atomic(state.path, prefab_document.dumps(merged))
     store.write_state(scene, state.path)
 
-    # AFTER the write, and only after: an edit is a PENDING change to the document, not a second
-    # place the value lives. Once it is in the file, the file is the truth again -- and a leftover
-    # overlay would re-apply itself on the next save, resurrecting an old value over whatever
-    # someone else had written in the meantime. Before the write, a failed save would lose the
-    # author's edits along with it.
-    #
-    # The load-time snapshot is refreshed from what we just wrote, so the panel shows the saved
-    # values without a reload -- add/remove would otherwise vanish the moment the overlay cleared.
+    # Clear the overlay only AFTER the write: before it, a failed save loses the edits; kept, it
+    # would re-apply on the next save over whatever someone else wrote meanwhile. The snapshot
+    # is refreshed too, or add/remove vanish from the panel the moment the overlay clears.
     _refresh_snapshots(scene, merged)
     for obj in _document_objects(scene):
         component_edits.clear(obj)
@@ -115,18 +93,10 @@ def save_prefab(scene: bpy.types.Scene) -> SaveResult:
 
 
 def _refuse_duplicate_identities(scene: bpy.types.Scene) -> None:
-    """Refuse to save when two objects claim one identity.
-
-    **Duplicating a document object is the obvious thing to try, and it silently destroyed the
-    file.** Blender copies an object's custom properties, identity included, so Shift+D produces a
-    second object claiming the first one's guid. The merge then wrote both, the document declared
-    the same guid twice, and it would not load again -- while the save reported success.
-
-    Refusing here rather than repairing it: this addon does not know which of the two the author
-    meant to keep, and minting a fresh guid for one of them would quietly turn a copy of an
-    instance into a second instance the document never had. Naming the objects lets the author
-    decide in a second, which is the part that was missing.
-    """
+    """Refuse when two objects claim one identity. Shift+D copies custom properties, guid
+    included; writing both produced a document that would not load while the save reported
+    success. Refused rather than re-minted because the addon cannot know which copy the
+    author meant to keep."""
     seen: dict[str, str] = {}
     clashes: dict[str, list[str]] = {}
 
@@ -155,15 +125,8 @@ def _refuse_duplicate_identities(scene: bpy.types.Scene) -> None:
 
 
 def _refuse_foreign_parents(scene: bpy.types.Scene) -> None:
-    """Refuse to save when an entity is parented to something that is not an entity.
-
-    A parent link is recorded as ``meta.Parent`` naming another document object; a Blender-only
-    parent has no identity to name. The old behaviour warned and saved the object AS A ROOT --
-    which silently moved it, because Blender still showed the hierarchy the document no longer
-    had. Since contract v6 the parent chain ships to the runtime, so a link the document cannot
-    express is a link the game never sees: refusing names the objects and lets the author decide
-    in a second.
-    """
+    """Refuse a parent that is not a document entity. Saving it as a root instead silently
+    moved the object, since Blender kept showing a hierarchy the document no longer had."""
     entities = {obj.name for obj in _document_objects(scene) if store.guid_of(obj) is not None}
     violations = [
         f"  '{obj.name}' is parented to '{obj.parent.name}'"
@@ -191,9 +154,8 @@ def _merge(scene: bpy.types.Scene, base: PrefabDocument, result: SaveResult) -> 
     merged = PrefabDocument()
     seen: set[str] = set()
 
-    # Document order is preserved for objects that were already there -- Blender guarantees no
-    # iteration order for a scene's objects, so following it instead would reshuffle the file on
-    # every save and make each diff unreadable.
+    # File order is kept: Blender guarantees no iteration order, and following it would
+    # reshuffle the file on every save.
     for entry in base.objects:
         if entry.guid not in present:
             result.removed += 1
@@ -218,47 +180,31 @@ def _document_order(base: PrefabDocument):
 
 
 def _object_entry(obj: bpy.types.Object, original: PrefabObject | None, result: SaveResult) -> PrefabObject:
-    """One Blender object as a document object.
-
-    The FILE's version is the base and Blender overwrites only what Blender owns -- the name, the
-    parent, and the transform's three fields. Everything else, a prefab reference and every
-    component payload included, is carried through untouched. That is what lets a scene full of
-    components this addon has never heard of survive a round trip, and what keeps an instance an
-    instance instead of flattening it into the plain objects it displays as.
-    """
+    """One Blender object as a document object: the file's entry with only what Blender owns
+    overwritten, which is what keeps an instance an instance rather than the plain objects it
+    displays as."""
     guid = store.guid_of(obj)
     entry = PrefabObject() if original is None else original
 
-    # A NEW instance has no file entry to carry a prefab reference through, so it carries its own.
-    # Only when there is no original: an object already in the document keeps whatever reference
-    # the file gives it, which is what stops a stale marker from overriding an edited document.
+    # Only a NEW instance carries its own prefab reference; an existing entry keeps the file's,
+    # so a stale marker cannot override an edited document.
     if original is None and store.prefab_of(obj) is not None:
         reference_guid, reference_path = store.prefab_of(obj)
         entry.prefab = AssetReference(reference_guid, reference_path)
 
-    # A foreign parent was refused before the merge began (_refuse_foreign_parents), so a parent
-    # here always has an identity to record.
     parent_guid = store.guid_of(obj.parent) if obj.parent is not None else None
 
     _write_meta(entry, guid, obj.name, parent_guid)
     _write_transform(entry, obj, original, result)
 
-    # LAST, so a component edit is applied to the entry the file gave us rather than to one this
-    # function is still assembling -- and so an edit to `meta` or `transform`, which the overlay
-    # refuses to record in the first place, could not win against the two writes above.
+    # Last, so an overlay edit could never win against the meta/transform writes above.
     _apply_edits(obj, entry, result)
     return entry
 
 
 def _apply_edits(obj: bpy.types.Object, entry: PrefabObject, result: SaveResult) -> None:
-    """Apply this object's pending add/remove and field edits.
-
-    Structure first: a field edit on a component that was just added needs the component to
-    exist. Missing is worth REPORTING rather than passing over: it means the document changed
-    under an edit -- the component was deleted, or its id changed -- and the author's change is
-    being dropped. Silence there is the same failure as a save that does not reach the document,
-    which this module already treats as something an author must be told about.
-    """
+    """Apply pending add/remove, then field edits. A missing target is reported, not skipped:
+    the document changed under the edit and the author's change is being dropped."""
     _apply_structure(obj, entry, result)
     pending = component_edits.read(obj)
     if not pending:
@@ -352,10 +298,7 @@ def _write_transform(
     elif original is not None and not _unchanged({}, (position, rotation, scale)):
         result.moved += 1
 
-    # An object the document gave no transform GETS one now, even at the identity: every saved
-    # entity carries a transform, because since contract v6 nothing downstream synthesizes
-    # placement -- an absent component would be whatever each loader decides it means. The
-    # one-time diff on a previously transform-less object is the rule taking effect.
+    # A transform-less object gets one, even identity: nothing downstream synthesizes placement.
 
     component = entry.component(well_known.TRANSFORM_ID)
     if component is None:
@@ -368,11 +311,7 @@ def _write_transform(
 
 
 def _blender_trs(obj: bpy.types.Object):
-    """The object's LOCAL transform, as ``(position, (x, y, z, w), scale)``.
-
-    Read from the channels rather than from ``matrix_basis`` for the same reason the loader
-    writes to them: a matrix round trip decomposes, and decomposition is lossy.
-    """
+    """Local TRS from the channels, not ``matrix_basis``: a matrix decomposition is lossy."""
     if obj.rotation_mode == "QUATERNION":
         w, x, y, z = obj.rotation_quaternion
     else:
@@ -385,16 +324,11 @@ def _blender_trs(obj: bpy.types.Object):
 
 
 def _unchanged(stored: dict, computed) -> bool:
-    """Whether the object still sits where the document put it.
-
-    Compared per-component and RELATIVE to the stored magnitude, because the error being tolerated
-    is a relative one: a position of 400 metres and a scale of 0.01 do not deserve the same
-    absolute slack. Rotations compare by the dot product, since a quaternion and its negation are
-    the same rotation and a sign flip is not a move.
-    """
-    # Sequence, not `list`: an ABSENT field falls back to the identity default below, and those
-    # are tuples. Testing for `list` alone made every identity transform compare as changed, so
-    # every object the document gave no transform gained one on the first save.
+    """Whether the object still sits where the document put it. Relative to the stored
+    magnitude (400 m and 0.01 scale do not deserve the same slack); rotations by dot product,
+    since q and -q are one rotation."""
+    # Sequence, not `list`: the identity defaults are tuples, and testing `list` alone made
+    # every transform-less object gain a transform on the first save.
     def numbers(key, count, default):
         value = stored.get(key, default)
         if not isinstance(value, (list, tuple)) or len(value) != count:
@@ -420,12 +354,8 @@ def _unchanged(stored: dict, computed) -> bool:
 
 
 def _document_objects(scene: bpy.types.Scene) -> list[bpy.types.Object]:
-    """The objects this save may write.
-
-    Objects RESOLVED out of a prefab are excluded: the document has no entry for them, so the
-    merge would count them "added" and write them into the scene as plain objects -- flattening
-    every instance on the first save, and duplicating them on the next load.
-    """
+    """The objects this save may write. Derived (prefab-resolved) objects are excluded, or the
+    merge would flatten every instance on the first save."""
     return [
         obj for obj in scene.collection.all_objects
         if store.guid_of(obj) is not None and not store.is_derived(obj)
@@ -433,11 +363,8 @@ def _document_objects(scene: bpy.types.Scene) -> list[bpy.types.Object]:
 
 
 def _write_atomic(path: str, text: str) -> None:
-    """Write ``text`` to ``path`` via a temp file in the same directory, then replace.
-
-    Same directory because ``os.replace`` is only atomic within one filesystem; a temp file in
-    the system temp directory can land on another volume and degrade to a copy.
-    """
+    """Temp file in the SAME directory then replace: ``os.replace`` is atomic only within one
+    filesystem. The temp is mode 0600, which the document inherits (#37)."""
     directory = os.path.dirname(path)
     handle = None
     try:

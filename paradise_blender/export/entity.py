@@ -1,24 +1,17 @@
-"""One Blender object -> its authored components.
+"""One Blender object -> its authored components, without its placement.
 
-Port of ``SceneDataExporter.ExportEntity`` / ``BuildComponents``, against schema v5 — where an
-object in the document IS a list of components and there is no entity record at all.
+Port of ``SceneDataExporter.ExportEntity`` / ``BuildComponents`` against schema v6: an object in
+the document IS a list of ``{Id, Type, Data}`` components and nothing else. Identity and placement
+are components too -- the format's own ``meta`` (guid, name, parent guid) and ``transform``
+(LOCAL position, rotation, scale) -- but they are NOT built here. A local transform names a
+parent, and the parent is the nearest ancestor that is itself exported, which cannot be known per
+object: an author may park things under an empty that authors nothing. :mod:`.placement`
+resolves that once over the whole exported set, after this module has decided which objects
+survive.
 
-What that removed, and it is most of what this module used to do: the object's id, stable id,
-display name, kind, spawn phase, active flag, prefab provenance (five fields), initial animation,
-parent link, three decomposed local transform fields and two matrices, and an override table. Two
-of those survive as ordinary components — the NAME, because a runtime refusal has to be able to
-say which object it is about, and the world TRANSFORM, because anything that exists is somewhere.
-The rest were written by this host and read by nobody.
-
-The deliberate consequence: an object that authors nothing is not exported. It used to be, as a
-positioned empty with an empty component list — a row in the document that meant "an author
-marked this and then said nothing about it", which no runtime can act on.
-
-One deviation from the Godot host is gone with the parent link. This module used to compute the
-local transform relative to the nearest ENTITY ancestor rather than the immediate parent, because
-Godot writes the node's own position while declaring the nearest entity ancestor as the parent,
-and the two disagree whenever a plain Node3D sits between them. There is no local transform and no
-parent now: an object's placement is stated in world space, once.
+An object that authors nothing is therefore not exported at all. A positioned empty with no
+components would be a row that says "an author marked this and then said nothing about it",
+which no runtime can act on.
 """
 
 from __future__ import annotations

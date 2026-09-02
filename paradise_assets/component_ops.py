@@ -1,17 +1,9 @@
-"""Editing one component field, and reverting one.
+"""Component operators: add/remove components and rows, revert edits, reveal objects.
 
-**One operator per VERB, not per type.** Blender registers an operator's properties at class
-definition time, so a schema-driven editor cannot declare "the property this field needs" -- the
-field is not known until the panel draws. The way around it is a fixed set of typed properties,
-one per shape the schema can describe, of which exactly one is used per invocation. That is why
-:class:`PARADISE_ASSETS_OT_edit_field` looks like it has six values and does not: it has one, six
-times over, and ``_slot`` is what says which.
-
-The dialog is deliberate rather than inline. Blender can draw an ID property straight into a
-panel, which would be fewer clicks -- but ID properties normalize types on the way in and out (an
-``int`` returns a ``float``, a tuple a list), and these values are written into a document whose
-numbers are a cross-language contract. A dialog lets the value stay in a property of the RIGHT
-type and be written through :mod:`.edits` exactly once, in the shape the schema declares.
+``PARADISE_ASSETS_OT_edit_field`` and its helpers are dead since the panel moved to
+``field_widgets`` (#37). Values must never be written back from an ID property: ID properties
+normalize types (``int`` -> ``float``, tuple -> list) and the document's numbers are a
+cross-language contract, so edits go through :mod:`.edits` in the schema's declared shape.
 """
 
 from __future__ import annotations
@@ -37,13 +29,8 @@ __all__ = ["classes", "components_of", "merged_data", "schema_for", "vocabulary_
 
 
 def vocabulary_for(context) -> component_schema.Vocabulary:
-    """The game's component vocabulary for the open document's project.
-
-    Resolved on demand rather than cached on the scene: the dump is a build product, and an
-    author who rebuilds the game to add a component expects the panel to show it without
-    reopening the document. It is a small file read at draw time -- if that ever costs, the fix
-    is a cache keyed on its mtime, not a copy taken at load.
-    """
+    """The game's component vocabulary, re-read on demand so a rebuild shows up without
+    reopening. Read at draw time (#36); the fix is an mtime cache, not a copy taken at load."""
     state = store.read_state(context.scene)
     if state is None:
         return component_schema.Vocabulary({}, None)
@@ -68,11 +55,8 @@ def components_of(obj) -> list:
 
 
 def merged_data(obj, component_id: str, data: dict) -> dict:
-    """The component payload as the panel should show it: the document, plus pending edits.
-
-    A copy, because :func:`edits.write_path` mutates. The ID property holding the original
-    payload is display data and must not be written back from.
-    """
+    """The payload as the panel shows it: document plus pending edits, copied because
+    ``write_path`` mutates."""
     merged = copy.deepcopy(data) if isinstance(data, dict) else {}
     for path, value in edits.edited_fields(obj, component_id).items():
         edits.write_path(merged, path, copy.deepcopy(value))
@@ -80,13 +64,8 @@ def merged_data(obj, component_id: str, data: dict) -> dict:
 
 
 def _enum_values(self, context):
-    """The enum's allowed values, as Blender items.
-
-    A callback rather than a static list, because the values belong to the field being edited.
-    The reference is kept on the operator (``_enum_items``) because Blender does not retain the
-    strings a callback returns -- returning freshly built tuples each call is the documented way
-    to get garbage-collected labels.
-    """
+    """Enum items, kept referenced on the operator: Blender does not retain a callback's
+    strings, and fresh tuples each call give garbage-collected labels."""
     return getattr(self, "_enum_items", None) or [("NONE", "—", "")]
 
 
@@ -128,9 +107,7 @@ class PARADISE_ASSETS_OT_edit_field(Operator):
         current = _current_value(obj, self.component_id, self.field_name, field)
 
         if field.type == "enum":
-            # Blender rejects an empty enum identifier, so a field whose schema lists no values
-            # cannot be offered as one. Falling back to a string keeps it editable rather than
-            # unreachable, which matters because the value still has to reach the document.
+            # Blender rejects an empty enum identifier; a string keeps the field editable.
             items = [(value, value, "") for value in field.values if value]
             if not items:
                 self._slot = "value_string"
@@ -284,12 +261,8 @@ class PARADISE_ASSETS_OT_reveal_object(Operator):
 
 
 def _reveal_in_outliner(context) -> None:
-    """Frame the active object in an Outliner editor, when the layout has one.
-
-    The operator lives in the 3D View sidebar, so without an override `outliner.show_active`
-    would look at the wrong area and silently do nothing -- which is the whole point of the
-    button. A layout with no Outliner still selected the object; that is enough to find it.
-    """
+    """Frame the active object in an Outliner, with an area override: from the 3D View sidebar
+    ``outliner.show_active`` otherwise silently does nothing."""
     screen = getattr(context, "screen", None)
     if screen is None:
         return
@@ -346,13 +319,8 @@ def _current_value(obj, component_id: str, field_name: str, field):
 
 
 def _coerce(value, field):
-    """*value* as the type its widget needs, tolerating whatever the document holds.
-
-    A document is allowed to carry a number where the schema says float and an int is what was
-    written, or a colour as ``#RRGGBBAA`` rather than four components. Refusing to open the
-    dialog over that would leave the field uneditable for exactly the values most in need of a
-    fix, so each conversion falls back to the field's default and then to a neutral one.
-    """
+    """*value* as its widget's type, tolerating what the document holds: refusing would leave
+    uneditable exactly the values most in need of a fix."""
     if field.type == "bool":
         return bool(value) if isinstance(value, (bool, int, float)) else False
     if field.type in ("int", "float"):
@@ -380,13 +348,8 @@ def _numbers(value, count: int, fill: float) -> list[float]:
 
 
 def _color(value) -> list[float]:
-    """A colour as RGBA floats, from either spelling the contract uses.
-
-    Since engine 0.32.0 a ``Color32`` writes as ``"#RRGGBBAA"`` -- a packed value rendered as
-    four floats was an exact value wearing a lossy costume -- but documents written before that,
-    and hand-written ones, carry ``{r, g, b, a}``. Both are read; the write side always produces
-    the object form, which every reader still accepts.
-    """
+    """RGBA floats from either contract spelling: ``"#RRGGBBAA"`` (engine 0.32.0+) or the
+    older ``{r, g, b, a}``."""
     if isinstance(value, str) and value.startswith("#") and len(value) in (7, 9):
         try:
             raw = [int(value[i:i + 2], 16) / 255.0 for i in range(1, len(value) - 1, 2)]

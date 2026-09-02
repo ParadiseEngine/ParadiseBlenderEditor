@@ -1,21 +1,5 @@
-"""The "Paradise Assets" sidebar tab.
-
-Two panels: what document this scene came from and what can be done to it, and what the selected
-object is in that document.
-
-The second used to be READ-ONLY, on the grounds that component payloads pass through untouched
-and a panel that let you type into them would promise an edit that never reached the file. Both
-halves of that are still true -- the save still takes payloads from the re-read document -- and
-what changed is that an edit is now recorded as an OVERLAY of the fields an author touched
-(see ..edits), applied over the file version at save. A component nobody edited is still written
-back byte-for-byte, including one this addon has never heard of.
-
-A field is drawn inline when a schema describes it and the host does not author it -- the game
-dump first, then a host-side form for engine types the dump no longer lists (rigidbody), then
-a type inferred from the payload. Enums are dropdowns; asset references pick a project file.
-``meta`` and ``transform`` stay live from Blender. Mesh/shape/light stay locked: those are
-baked from the host object.
-"""
+"""The "Paradise Assets" sidebar tab. Edits go through the overlay in :mod:`edits`; ``meta``
+and ``transform`` stay live from Blender, host-baked fields stay locked."""
 
 from __future__ import annotations
 
@@ -62,9 +46,8 @@ class PARADISE_ASSETS_PT_document(_AssetsPanel, Panel):
             warning.label(text="Changed on disk since it was opened.", icon="ERROR")
             warning.label(text="Reload, or your save will be refused.")
 
-        # In the PAST tense, and separate from the warning above, which only predicts a refusal.
-        # Saving writes the document too, and a handler can neither open a dialog nor cancel the
-        # save -- so a refusal that is not said here is a save the author believes happened.
+        # A save_pre handler can neither open a dialog nor cancel the save, so a refusal not
+        # said here is a save the author believes happened. (Edits do not survive reopen: #31.)
         refused = sync.refusal(context.scene)
         if refused is not None:
             box = layout.box()
@@ -73,8 +56,6 @@ class PARADISE_ASSETS_PT_document(_AssetsPanel, Panel):
             box.label(text="Your work is in the working file, not lost.")
             box.label(text=refused[:70])
 
-        # Above save/reload, and on its own: it is the one button here that ADDS something, and
-        # the drag-and-drop route is not discoverable from a panel.
         layout.operator("paradise_assets.add_prefab_instance", text="Add Prefab…", icon="ADD")
         layout.operator("paradise_assets.refresh_catalogue", icon="ASSET_MANAGER")
 
@@ -98,8 +79,7 @@ class PARADISE_ASSETS_PT_play(_AssetsPanel, Panel):
     def draw(self, context):
         layout = self.layout
 
-        # Resolved on every redraw, which is why `status` neither logs nor touches the project:
-        # an author with nothing configured would otherwise get a warning per frame.
+        # Every redraw: `status` must not log or a warning fires per frame.
         from .play.ops import status
 
         problems = status()
@@ -111,14 +91,12 @@ class PARADISE_ASSETS_PT_play(_AssetsPanel, Panel):
 
         layout.operator("paradise_assets.play", icon="PLAY")
 
-        # The watcher has no console anyone is looking at, so this row is where a failed rebuild
-        # surfaces at all. Until a tray icon exists (ParadiseEngine#192) it is the only place.
+        # The only place a failed rebuild surfaces until the tray (ParadiseEngine#192).
         _draw_watch(layout, context)
 
         row = layout.row(align=True)
         row.operator("paradise_assets.build", icon="MOD_BUILD")
         row.operator("paradise_assets.verify", icon="CHECKMARK")
-        # Off on its own: the only button here that deletes anything.
         layout.operator("paradise_assets.clean", icon="TRASH")
 
 
@@ -127,8 +105,7 @@ def _draw_watch(layout, context) -> None:
     state = store.read_state(context.scene)
     if state is None:
         return
-    # locate can fail even with a document open -- the project may have been moved or deleted out
-    # from under the session -- and a panel that raised would take the whole sidebar with it.
+    # A project moved out from under the session must not take the whole sidebar down.
     layout_ = project.locate(state.path)
     if layout_ is None:
         return
@@ -150,9 +127,7 @@ def _draw_watch(layout, context) -> None:
         box.label(text="Last rebuild reported:", icon="ERROR")
         box.label(text=problem[:70])
     elif not running and (reason := watch.exit_reason(root)) is not None:
-        # A watcher that started and then STOPPED used to be indistinguishable here from one that
-        # was never started, which is the difference between "click Start" and "something is
-        # wrong". Whatever it said on the way out is the only clue an author has.
+        # A stopped watcher must not read as a never-started one.
         box = layout.box()
         box.alert = True
         box.label(text="The watcher stopped on its own.", icon="ERROR")
@@ -195,9 +170,7 @@ class PARADISE_ASSETS_PT_object(_AssetsPanel, Panel):
         layout.operator("paradise_assets.add_component", icon="ADD")
 
         if not vocabulary:
-            # Not a failure: the dump is a build product of the GAME, and a fresh clone has none.
-            # Engine forms (rigidbody) and inferred payloads still edit; this only warns that
-            # GAME fields will not appear until the launcher has been built once.
+            # Not a failure: a fresh clone has no dump until the launcher is built once.
             layout.label(text="No game schema — build the launcher to edit game fields.", icon="INFO")
 
         if not components:
@@ -312,12 +285,8 @@ def _draw_schema_fields(box, context, obj, component: dict, schema, edited: dict
 
 
 def _draw_meta(box, obj, component: dict) -> None:
-    """Identity, live name, and a parent that can be selected in the Outliner.
-
-    The load-time snapshot is display data for every other component; for these three fields it
-    is a lie the moment someone renames or reparents in Blender. Save writes ``obj.name`` and
-    ``obj.parent``, so the panel has to read the same place.
-    """
+    """Identity, name and parent read LIVE from the object, since save writes ``obj.name`` and
+    ``obj.parent`` and the snapshot lies the moment someone renames."""
     raw = component.get("data")
     data = raw if isinstance(raw, dict) else {}
 
@@ -346,11 +315,7 @@ def _draw_meta(box, obj, component: dict) -> None:
 
 
 def _draw_transform(box, obj) -> None:
-    """Local TRS in document convention, live from the gizmo.
-
-    Readonly on purpose: Blender's transform is the editor. The numbers have to be the actual
-    vectors -- a ``[3 item(s)]`` summary is what this used to print, and it is not a value.
-    """
+    """Local TRS in document convention, live and read-only: the gizmo is the editor."""
     position, rotation, scale = _live_document_trs(obj)
     box.label(text=f"{well_known.POSITION}: {component_schema.format_value(position)}",
               icon="DECORATE_LOCKED")
@@ -374,11 +339,7 @@ def _live_document_trs(obj):
 
 
 def _component_label(component: dict) -> str:
-    """The CLR type name where there is one, and the id otherwise.
-
-    The type is the readable half and what an author recognises; the id is the primary key and
-    the only thing guaranteed present.
-    """
+    """The CLR type name where there is one, else the id."""
     type_name = component.get("type")
     if isinstance(type_name, str) and type_name:
         return type_name.rsplit(".", 1)[-1]
@@ -386,11 +347,7 @@ def _component_label(component: dict) -> str:
 
 
 def _payload_lines(data, prefix: str = "", depth: int = 0) -> list[str]:
-    """A payload flattened to one line per leaf.
-
-    Depth-limited because a panel is not a document viewer: a deeply nested payload would push
-    everything else off the screen, and the file is one click away for anyone who needs the rest.
-    """
+    """A payload as one line per leaf, depth-limited: a panel is not a document viewer."""
     if not isinstance(data, dict) or depth > 2:
         return []
 
@@ -408,8 +365,7 @@ def _payload_lines(data, prefix: str = "", depth: int = 0) -> list[str]:
 
 classes = (
     PARADISE_ASSETS_PT_document,
-    # Child panels follow their parent: Blender warns about an unregistered bl_parent_id
-    # otherwise, and unregistration walks this in reverse for the same reason.
+    # Parents before children, or Blender warns about an unregistered bl_parent_id.
     PARADISE_ASSETS_PT_play,
     PARADISE_ASSETS_PT_object,
 )

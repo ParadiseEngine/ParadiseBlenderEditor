@@ -76,15 +76,9 @@ class PARADISE_OT_open_data_dir(Operator):
 
 @bpy.app.handlers.persistent
 def _on_save_post(_file_path) -> None:
-    """Re-export on save, mirroring the Godot host's save hook.
-
-    Runs on ``save_post`` rather than ``save_pre`` for one specific reason: the export's scene
-    name and its ``//``-relative data directory both resolve against ``bpy.data.filepath``,
-    which is only correct *after* a Save As has completed. On ``save_pre`` a first-time save
-    would write into the previous location, or into the unsaved-file fallback.
-
-    ``@persistent`` keeps the handler alive across file loads; without it, exporting on save
-    would silently stop working after the first time a .blend is opened.
+    """Re-export on save. ``save_post``, not ``save_pre``: the scene name and ``//`` data
+    directory resolve against ``bpy.data.filepath``, correct only after a Save As completes.
+    ``@persistent`` or Blender drops the handler on the first file load.
     """
     for scene in bpy.data.scenes:
         settings = getattr(scene, "paradise_project", None)

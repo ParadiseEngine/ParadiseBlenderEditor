@@ -1,36 +1,12 @@
-"""Blender (Z-up) <-> Paradise (Y-up) basis change, in both directions.
+"""Blender (Z-up, -Y forward) <-> document (Y-up, -Z forward), both directions: Rot(-90°, X)::
 
-The scene document stores transforms in engine convention -- right-handed, **Y-up, -Z forward,
-+X right** (glTF/Godot). Blender is right-handed but **Z-up, -Y forward**. The conversion is a
-rotation of -90 degrees about X::
+    C @ (x, y, z) = (x, z, -y)     M_document = C @ M_blender @ C^-1     M_blender = C^-1 @ M @ C
 
-    C = | 1  0  0 |          C @ (x, y, z) = (x, z, -y)
-        | 0  0  1 |
-        | 0 -1  0 |
-
-Transforms are rebased by **conjugation**, not by left-multiplication::
-
-    M_document = C @ M_blender @ C^-1
-    M_blender  = C^-1 @ M_document @ C
-
-Left-multiplying alone rotates an object's placement but leaves its local axes expressed in the
-old basis, which breaks the moment transforms compose -- i.e. any parent/child hierarchy, and
-this loader builds one. Conjugation is a similarity transform: it re-expresses the *same* linear
-map in the new basis, so composition survives it (``C(AB)C^-1 == (CAC^-1)(CBC^-1)``).
-
-Scale is the trap, and the reason :func:`to_blender_trs` converts the MATRIX and decomposes
-second rather than converting position, rotation and scale separately. The basis change permutes
-axes, so document scale ``(1, 2, 3)`` is Blender scale ``(1, 3, 2)``; converting the channels
-independently silently gets that wrong.
-
-This is a deliberate near-copy of ``paradise_blender/contract/axes.py``, not an import of it.
-Two installed extensions are independent artifacts under ``bl_ext.user_default.*`` and reaching
-across them is not a supported Blender mechanism; it would break on a rename or a different
-install root. What this module adds is the INVERSE direction, which the loader needs and the
-exporting addon never did.
-
-Imports no ``bpy`` / ``mathutils``, so it is unit-testable with plain pytest. Matrices are plain
-nested tuples in row-major ``m[row][col]`` order -- the same indexing ``mathutils.Matrix`` uses.
+Conjugation, never left-multiplication, or local axes stay in the old basis and composition
+(any parent/child) breaks. Convert the MATRIX and decompose second: the basis change permutes
+axes, so document scale (1, 2, 3) is Blender scale (1, 3, 2), and converting channels separately
+silently gets that wrong. Duplicates ``paradise_blender/contract/axes.py`` because extensions
+cannot import each other (#35). No ``bpy``/``mathutils``; row-major ``m[row][col]`` tuples.
 """
 
 from __future__ import annotations
@@ -104,15 +80,9 @@ def to_blender(m: Mat4) -> Mat4:
 
 
 def trs_to_matrix(position: Vec3, rotation: Quat, scale: Vec3) -> Mat4:
-    """Compose a TRS into a matrix. ``rotation`` is ``(x, y, z, w)``.
-
-    The quaternion is **normalized first**, and that is not defensive coding. Documents store
-    values that came from C# ``float``, so a quaternion is float32-quantized and its length is
-    never exactly 1 -- treating that as an authoring error would flag every object in every
-    scene. Skipping the normalize leaks the length error into the rotation matrix, which the
-    decompose then reads back as SCALE: it turned a stored ``20.0`` into ``19.999998`` on
-    ShiningPie's skyline props, and every such value would have churned its decimal on save.
-    """
+    """Compose a TRS. The quaternion is NORMALIZED first: document quaternions are
+    float32-quantized and never exactly unit, and the length error comes back out of the
+    decompose as SCALE (a stored ``20.0`` became ``19.999998`` on ShiningPie's skyline props)."""
     x, y, z, w = rotation
     length = math.sqrt(x * x + y * y + z * z + w * w)
     if length > 0.0:
@@ -137,11 +107,7 @@ def trs_to_matrix(position: Vec3, rotation: Quat, scale: Vec3) -> Mat4:
 
 
 def to_blender_trs(position: Vec3, rotation: Quat, scale: Vec3) -> tuple[Vec3, Quat, Vec3]:
-    """A document TRS as a Blender TRS: compose, rebase, decompose.
-
-    Returns ``(position, (x, y, z, w) rotation, scale)``. The caller reorders the quaternion to
-    Blender's ``(w, x, y, z)`` at the boundary.
-    """
+    """Document TRS -> Blender TRS (compose, rebase, decompose); rotation stays ``(x, y, z, w)``."""
     return _decompose(to_blender(trs_to_matrix(position, rotation, scale)))
 
 
@@ -151,12 +117,8 @@ def from_blender_trs(position: Vec3, rotation: Quat, scale: Vec3) -> tuple[Vec3,
 
 
 def _decompose(m: Mat4) -> tuple[Vec3, Quat, Vec3]:
-    """Split a matrix into translation, rotation and scale.
-
-    Negative scale is preserved on X where the basis is left-handed (determinant < 0). Blender
-    and the document both allow a mirrored object, and silently dropping the sign would turn one
-    into a differently-shaped object rather than reporting a problem.
-    """
+    """Split into TRS; a mirrored basis (det < 0) keeps its negative scale on X rather than
+    silently becoming a different shape."""
     translation = (m[0][3], m[1][3], m[2][3])
 
     columns = [(m[0][c], m[1][c], m[2][c]) for c in range(3)]
@@ -180,11 +142,8 @@ def _determinant3(m: Mat4) -> float:
 
 
 def _matrix_to_quaternion(basis) -> Quat:
-    """Shepperd's method: pick the largest diagonal term to keep the divisor away from zero.
-
-    The naive ``w``-first formula divides by ``sqrt(1 + trace)``, which loses all precision for a
-    180-degree rotation -- and a scene full of axis-aligned props has plenty of those.
-    """
+    """Shepperd's method: the naive w-first formula loses all precision at 180°, which
+    axis-aligned props hit constantly."""
     m00, m01, m02 = basis[0][0], basis[1][0], basis[2][0]
     m10, m11, m12 = basis[0][1], basis[1][1], basis[2][1]
     m20, m21, m22 = basis[0][2], basis[1][2], basis[2][2]

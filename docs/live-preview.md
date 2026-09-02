@@ -15,20 +15,16 @@ simulation.
 
 ## Status — read this first
 
-**Implemented and verified against a real game: `ShiningPie.Launcher --live`.**
+**Complete on the Blender side; no current runtime listens.**
 
-The listener lives in the ShiningPie repository (`ShiningPie.Launcher/LiveLink.cs` and
-`LiveSceneApplier.cs`). Point the addon's runtime host at that launcher, or start it yourself:
+The only listener ever built is in ShiningPie's frozen first stack
+(`ShiningPie.Launcher.Legacy --live`), which is in no solution and not referenced by the current
+game. The current `ShiningPie.Launcher` and `paradise-runtime` (the engine sample) have **no**
+`--live` listener; adding one is a separate change in the host repository. Against either, the
+button waits 60 s and reports the absence.
 
-```bash
-cd ShiningPie && dotnet run --project ShiningPie.Launcher -- --live   # listens on 45123
-```
-
-Then press **Start Live Preview**. Moving an object in Blender moves it in the running game.
-
-`paradise-runtime` (the engine sample) still has **no** `--live` listener — that would be a
-separate change in `ParadiseGodotEditor`. Against that host the button still waits 60s and
-reports the absence.
+Two protocol gaps on this side are tracked in #34: the client never reads the runtime's `ready`
+or `error` reply after `hello`, and the 60 s wait sleeps on Blender's main thread.
 
 `tools/mock_runtime.py` remains the executable spec and is what
 `tests/integration/test_live_preview.py` drives, so the Blender side stays testable with no game
@@ -78,13 +74,15 @@ Blender                                   runtime
 
 **Patches carry whole entity documents, not field diffs.** An entity document is small, and a
 field-level diff would require the runtime to implement merge semantics for every contract
-field — far more surface for the two sides to disagree on. `removed` carries GUIDs because
-names are not stable.
+field — far more surface for the two sides to disagree on. `removed` carries object names, the
+same key `updated`/`added` entries are matched by (`live/protocol.py`); a rename therefore
+arrives as a remove plus an add.
 
 **Sequence numbers exist so the runtime can detect a gap.** The sender's queue is bounded and
 drops the oldest pending messages when the runtime stops keeping up (see below), so a gap is a
 real possibility. On noticing one, the runtime should ask for a resync rather than render a
-scene that has silently diverged.
+scene that has silently diverged — but note the client currently sends only and never reads a
+reply, so a resync request would be ignored until #34 lands.
 
 ### Full resync vs patch
 
@@ -96,8 +94,10 @@ The Blender side chooses:
 | an entity added, removed, or unmarked | `scene/full` |
 | a light, the camera, the world, or a material | `scene/full` |
 
-Lights and the camera live in the level document's header, outside the entity list — there is
-no patch vocabulary for them, and a partial update would leave the runtime's scene out of step.
+Since v5 every lamp is an object in the entity list, but a lamp that is not marked as an entity
+is emitted by the scene walk rather than tracked as an entity, so a patch cannot address it by
+name; the camera and the world are not entities at all. Resyncing wholesale is the only update
+that cannot leave the runtime's scene out of step.
 
 ## How the Blender side stays responsive
 

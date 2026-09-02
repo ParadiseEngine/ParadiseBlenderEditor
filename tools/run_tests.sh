@@ -76,7 +76,7 @@ if command -v "$BLENDER" >/dev/null 2>&1; then
     | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2})' | tail -30
   check "${PIPESTATUS[0]}" "scene export"
 
-  # paradise_assets: the OTHER addon, which opens assets/scenes/*.scene rather than exporting
+  # paradise_assets: the OTHER addon, which opens assets/**/*.prefab rather than exporting
   # to data/. Its gate is a byte-exact round trip through Blender, so it needs a real asset
   # project -- it skips cleanly when PARADISE_ASSETS_PROJECT names nothing.
   step "Integration: open and save an asset-project scene"

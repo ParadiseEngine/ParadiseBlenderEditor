@@ -79,8 +79,9 @@ Parity is not asserted by inspection. Three mechanisms enforce it:
 1. **`contract-check`** round-trips every exported document through the engine's own
    `ExportJsonReader`/`ExportJsonWriter`. Anything the Python writer got wrong — a misspelled
    key, an enum written as a number, a missing field — shows up as a difference.
-2. **Shared defaults.** `authoring/defaults.py` mirrors `ParadiseAuthoringDefaults`, so
-   agent data cannot silently diverge between hosts.
+2. **Shared defaults.** Field defaults come from the game's dumped `authoring-schema.json`
+   (`contract/authoring.py`), the same document the Godot host reads, so agent data cannot
+   silently diverge between hosts.
 3. **Shared math.** `collider_fold.py`, `layers.py`, `sky.py`, and the matrix layout are
    direct ports with unit tests pinned to the C# behaviour, including the half-away-from-zero
    rounding in `Color32.ToByte` that Python's built-in `round` would get wrong.

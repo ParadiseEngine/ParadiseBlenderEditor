@@ -1,14 +1,6 @@
-"""Scene document -> Blender objects.
-
-One Blender object per document object, carrying the document's identity, placed by the
-document's local TRS rebased into Blender's axes, parented as the document says, and displaying
-whatever GLB its components reference.
-
-The transform path is the part with a trap in it, and ``paradise_blender/CONVENTIONS.md``
-records why: **assign the channels, never the matrix.** Setting ``matrix_basis`` makes Blender
-decompose, and that round trip is lossy at ~1e-6 -- it once moved 25 of ShiningPie's 321 objects
-on every export. Here the same loss would mean every object's decimals churn the moment the
-scene is saved back, turning a one-object edit into a whole-file diff.
+"""Prefab document -> Blender objects. Assign the transform CHANNELS, never ``matrix_basis``:
+the matrix round trip is lossy at ~1e-6 (it moved 25 of ShiningPie's 321 objects per export),
+and here it would churn every object's decimals on the next save.
 """
 
 from __future__ import annotations
@@ -37,16 +29,9 @@ class LoadResult:
         self.instances = 0
         self.derived = 0
         self.warnings: list[str] = []
-        #: Every file the load READ, absolute -- the document itself, the prefabs it instances,
-        #: the GLBs it displayed, the materials it took colour from.
-        #:
-        #: The loader reports this because it is the only place that knows it. A caller wanting to
-        #: cache something derived from a load (the Asset Browser thumbnails do) needs to know what
-        #: to invalidate on, and the alternative -- walking the document itself looking for things
-        #: that smell like paths -- is a second implementation of reference discovery that drifts
-        #: from this one silently. When it drifts it does not error; it keeps serving a stale
-        #: artifact. Recorded even for files that failed to parse, so fixing a broken one counts
-        #: as a change.
+        #: Every file the load READ, for the thumbnail cache to invalidate on: a second
+        #: reference-discovery would drift silently and serve a stale artifact. Failed parses
+        #: are recorded too, so fixing one counts as a change.
         self.sources: set[str] = set()
 
     def warn(self, message: str) -> None:
@@ -76,10 +61,8 @@ def load_document(
             "extension instead (build the game's launcher to get the real schema)"
         )
 
-    # Prefab instances are expanded for DISPLAY: what the scene contains is the resolved
-    # objects, and showing the unresolved instance would show an empty at the origin. The
-    # unresolved document is what save writes back to, which is why the resolved children are
-    # marked derived below rather than treated as ordinary objects.
+    # Instances are expanded for DISPLAY only; the resolved children are marked derived so save
+    # never writes them back.
     expansion = resolve.resolve(document, lambda reference: _load_prefab(layout, reference, result))
     for error in expansion.errors:
         result.warn(error)
@@ -100,16 +83,14 @@ def load_document(
     result.instances = expansion.expanded
     document = expansion.document
 
-    # Parenting is a SECOND pass because a document may name a parent that appears later in the
-    # file; the reader already proved every parent exists and that there are no cycles.
+    # Second pass: a parent may appear later in the file.
     for entry in document.objects:
         if entry.parent is None:
             continue
         child = created[entry.guid]
         child.parent = created[entry.parent]
-        # Identity, so the stored local TRS IS the Blender local TRS. Blender's default is the
-        # inverse of the parent's world matrix at parenting time, which would silently offset
-        # every child by wherever its parent happened to be.
+        # Identity, so the stored local TRS IS Blender's; the default parent inverse would
+        # silently offset every child.
         child.matrix_parent_inverse.identity()
 
     result.meshes = library.imported
@@ -149,18 +130,8 @@ def _create_object(
 def _apply_authored_colour(
     obj: bpy.types.Object, entry: PrefabObject, layout, result: LoadResult
 ) -> None:
-    """Put the object's authored material colour on ``obj.color``.
-
-    A prefab instance shares ONE mesh with every other instance, so its colour cannot live in the
-    mesh's material -- which is where a per-mesh GLB used to keep it. The box meshes this replaced
-    each had their material baked in (``mat_platform``'s 0.30/0.28/0.26 and so on), and without
-    this every graybox in the scene renders the same generic grey, which is exactly the thing a
-    graybox workflow needs to distinguish.
-
-    Object colour rather than a material per instance: it is one float4 on the object, it costs no
-    datablock, and :func:`meshes.tint_by_object_colour` is what makes the shared material read it.
-    The engine is unaffected either way -- it takes colour from the Materials component.
-    """
+    """Put the authored material colour on ``obj.color``: instances share one mesh, so
+    per-instance colour cannot live in the material, and without it every graybox is the same grey."""
     for component in entry.components:
         slots = component.data.get("Slots")
         if not isinstance(slots, list) or not slots:
@@ -251,16 +222,7 @@ def _components_payload(entry: PrefabObject) -> list:
 
 
 def _mesh_reference(entry: PrefabObject, mesh_fields: schema.MeshFields) -> str | None:
-    """The first mesh path the object's components name, if any.
-
-    First rather than all: an object is one placement and gets one display mesh. A component set
-    naming two would be an authoring question, not something for the loader to invent an answer
-    to -- and no component in use does.
-
-    A reference may be a bare path or an ``AssetReference`` inline table. Both are read, because
-    the two forms coexist while games move over: the guid half is what a resolver would use, but
-    displaying a mesh only needs somewhere to read bytes from, and the path is that.
-    """
+    """The first mesh path the components name (a bare path or an ``AssetReference``), if any."""
     for component in entry.components:
         for field, value in component.data.items():
             if isinstance(value, dict):
@@ -273,12 +235,8 @@ def _mesh_reference(entry: PrefabObject, mesh_fields: schema.MeshFields) -> str 
 
 
 def _clear_previous(scene: bpy.types.Scene) -> None:
-    """Remove the objects a previous load created, leaving anything else alone.
-
-    Keyed on the GUID marker rather than on the collection, so a user's own objects added to the
-    scene survive a reload. The mesh library is left in place: re-importing 117 GLBs to show the
-    same geometry would make reload cost what the first load cost.
-    """
+    """Remove a previous load's objects (by GUID marker, so the user's own survive), keeping
+    the mesh library so reload does not re-import every GLB. Drops pending edits too (#31)."""
     doomed = [obj for obj in scene.collection.all_objects if store.guid_of(obj) is not None]
     for obj in doomed:
         bpy.data.objects.remove(obj, do_unlink=True)

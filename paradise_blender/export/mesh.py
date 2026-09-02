@@ -1,22 +1,8 @@
-"""Mesh GLB export.
+"""Mesh GLB export, in entity-local space, deduplicated by mesh datablock.
 
-The contract's ``RenderableComponentData.Mesh`` is a GLB path relative to ``data/`` holding
-the entity's visual subtree **in entity-local space** -- the entity's ``WorldMatrix`` places
-it. So two things must hold, and both are easy to get wrong:
-
-1. **The GLB must be written with the same Y-up conversion the transforms use.** Blender's
-   glTF exporter does exactly the conjugation :mod:`..contract.axes` implements, so
-   ``export_yup=True`` (its default) is what keeps mesh data and node transforms agreeing.
-   ``tests/integration/test_axis_parity.py`` pins that equivalence.
-
-2. **The object's own transform must not be baked into the GLB**, or it would be applied
-   twice -- once by the GLB's node transform and again by the contract's ``WorldMatrix``,
-   putting the object at the square of its placement. Blender's exporter has no "ignore
-   transform" switch, so :func:`export_object_glb` neutralizes the transform around the call
-   and restores it in a ``finally``.
-
-Meshes are deduplicated by mesh datablock: ten objects sharing one mesh produce one GLB and
-ten entities referencing it, which is also what the Godot host's shared-GLB pipeline does.
+Two things must hold: the GLB is written with ``export_yup=True``, the same conjugation
+:mod:`..contract.axes` applies to transforms (pinned by ``test_axis_parity.py``); and the
+object's own transform is neutralized around the export, or the placement is applied twice.
 """
 
 from __future__ import annotations
@@ -34,18 +20,12 @@ from ..pipeline.cache import ArtifactCache, artifact_cache
 
 __all__ = ["MeshExporter"]
 
-#: Where generated GLBs land, relative to the data directory. Matches the Godot host's layout.
 MESH_SUBDIR = "Models"
 
 
 class MeshExporter:
-    """Exports entity meshes to GLB, deduplicated by mesh datablock.
-
-    ``force`` re-exports and re-encodes everything, ignoring both the staleness check and the
-    texture cache. It is the escape hatch for the one case neither can see: a change to the
-    exporter or the transcoding pipeline itself, which leaves every output stale while the
-    .blend's mtime says nothing changed.
-    """
+    """Exports entity meshes to GLB. ``force`` bypasses staleness and the texture cache: the
+    one case neither can see is a change to the exporter itself."""
 
     def __init__(self, force: bool = False) -> None:
         self._fields_by_mesh: dict[str, str] = {}
@@ -55,12 +35,7 @@ class MeshExporter:
         self._cache: ArtifactCache | None = None
 
     def resolve_mesh_field(self, obj: bpy.types.Object, paths: ExportPaths) -> str | None:
-        """Contract mesh field for an object, exporting the GLB on first use.
-
-        Precedence mirrors the Godot host: an explicitly authored model path wins, otherwise
-        the object's own geometry is exported. Returns ``None`` when the object has no
-        exportable geometry, which is normal -- an empty used as a collider parent, say.
-        """
+        """Contract mesh field for an object (authored path wins), exporting on first use."""
         authored = obj.paradise.model_path.strip()
         if authored:
             return self._resolve_authored(obj, authored, paths)
@@ -82,15 +57,9 @@ class MeshExporter:
                 self._failed.add(mesh_key)
                 return None
 
-            # The engine reads textured meshes through KTX2 sidecars next to the GLB (its glTF
-            # reader rejects PNG/JPEG outright), but Blender can only EMBED images — so every
-            # textured export gets post-processed into the sidecar layout here. A missing
-            # transcoder must be LOUD: it once passed silently and the game refused to launch
-            # on GLBs full of PNG, hours and one confused user later.
-            #
-            # Note what the staleness check above CANNOT do: a .blend save invalidates every
-            # GLB, so this runs for all of them on every export. That is why the encode itself
-            # is cached rather than gated on the GLB — see :mod:`..pipeline.cache`.
+            # A missing transcoder must be LOUD: it once passed silently and the game refused
+            # to launch on GLBs full of PNG. This runs for every GLB on every export (a save
+            # invalidates them all), which is why the encode is cached (pipeline/cache.py).
             transcoder = ktx.resolve_transcoder()
             if transcoder is not None:
                 glb_textures.externalize(
@@ -108,11 +77,7 @@ class MeshExporter:
         return field
 
     def _texture_cache(self, paths: ExportPaths) -> ArtifactCache:
-        """The project's artifact cache, resolved once per export.
-
-        Lazily, because the cache belongs to the project being exported and the exporter is
-        constructed before any ``ExportPaths`` is in hand.
-        """
+        """The project's artifact cache, resolved lazily since the exporter predates ``ExportPaths``."""
         if self._cache is None:
             self._cache = artifact_cache(paths)
         return self._cache
@@ -120,11 +85,7 @@ class MeshExporter:
     def _resolve_authored(
         self, obj: bpy.types.Object, authored: str, paths: ExportPaths
     ) -> str | None:
-        """Map an authored model path to a contract field, without exporting anything.
-
-        An authored path points at an asset that already exists under ``data/`` (typically a
-        GLB produced by the art pipeline), so this only validates reachability.
-        """
+        """An authored model path as a contract field; only validates reachability."""
         if not authored.lower().endswith((".glb", ".gltf")):
             log.warn(
                 f"Entity '{obj.name}' has model path '{authored}', which is not a .glb/.gltf. "
@@ -149,24 +110,14 @@ class MeshExporter:
 
 
 def _is_stale(output_path: str) -> bool:
-    """Whether a mesh GLB needs rewriting.
-
-    Missing, obviously. Otherwise: older than the .blend it came from. A Blender datablock has
-    no modification time to compare against, but any geometry edit reaches disk as a .blend
-    save, so the file's mtime is the closest available proxy.
-
-    The previous rule was "export only if absent", which meant an edited mesh kept its original
-    GLB forever -- the export reported success, the contract pointed at a stale file, and the
-    runtime showed the old geometry. AGENTS.md tells authors to re-export after a scene edit;
-    this is what makes that instruction true for geometry.
-    """
+    """Missing, or older than the .blend (a datablock has no mtime; the save is the proxy).
+    "Export only if absent" once left an edited mesh's GLB stale forever while reporting success."""
     if not os.path.exists(output_path):
         return True
 
     blend_path = bpy.data.filepath
     if not blend_path or not os.path.exists(blend_path):
-        # Unsaved .blend: nothing to compare against, and the export lands in a temp directory
-        # anyway. Keep the old behaviour rather than re-encoding every mesh on every export.
+        # Unsaved .blend: nothing to compare against.
         return False
 
     return os.path.getmtime(blend_path) > os.path.getmtime(output_path)
@@ -185,19 +136,9 @@ def deforming_armatures(obj: bpy.types.Object) -> list[bpy.types.Object]:
 
 
 def export_object_glb(obj: bpy.types.Object, output_path: str) -> bool:
-    """Export one object's geometry to ``output_path`` in entity-local space.
-
-    Temporarily clears the exported root's world transform so the GLB contains geometry only,
-    then restores it. Mutating the scene mid-export is unpleasant but is the only way Blender's
-    exporter supports this; the ``finally`` guarantees restoration even if the export raises,
-    and the operation is invisible to the user because no depsgraph-visible frame is drawn
-    in between.
-
-    **A skinned mesh is exported together with its armature.** ``use_selection`` honours the
-    selection literally, and an armature left out of it does not merely lose its animations --
-    the mesh exports with no ``skins`` at all, as plain static geometry in bind pose. Nothing
-    fails, so the first sign is a character that renders but never moves.
-    """
+    """Export one object's geometry in entity-local space, restoring its transform in a
+    ``finally``. The armature must be in the selection: without it the mesh exports with no
+    ``skins`` at all, and the first sign is a character that renders but never moves."""
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
 
     view_layer = bpy.context.view_layer
@@ -205,16 +146,14 @@ def export_object_glb(obj: bpy.types.Object, output_path: str) -> bool:
     saved_active = view_layer.objects.active
 
     exported = [obj, *deforming_armatures(obj)]
-    # Neutralize the transform of the hierarchy ROOT, not of `obj`: for a skinned mesh parented
-    # to its armature, zeroing the child while the parent keeps its placement would bake the
-    # armature's transform into the result instead of removing it.
+    # The ROOT, not `obj`: zeroing a skinned child while its armature keeps its placement
+    # bakes the armature's transform in instead of removing it.
     root = next((o for o in exported if o.parent not in exported), obj)
     saved_transform = _capture_transform(root)
     saved_hidden = [o for o in exported if o.hide_get()]
 
     try:
-        # A hidden object cannot be selected, and the exporter's use_selection would then
-        # write an empty GLB rather than failing.
+        # A hidden object cannot be selected; use_selection would then write an empty GLB.
         for hidden in saved_hidden:
             hidden.hide_set(False)
 
@@ -228,16 +167,11 @@ def export_object_glb(obj: bpy.types.Object, output_path: str) -> bool:
             filepath=output_path,
             export_format="GLB",
             use_selection=True,
-            # +Y up: the same basis change contract/axes.py applies to transforms. Turning
-            # this off would leave mesh data Z-up while transforms are Y-up.
+            # Off would leave mesh data Z-up while transforms are Y-up.
             export_yup=True,
             export_apply=True,  # apply modifiers -- the runtime has no modifier stack
-            # Blender defaults this OFF, and a normal-mapped mesh without TANGENT renders DARK
-            # rather than failing: the loader default-fills a CONSTANT (1,0,0,+1) tangent, the
-            # shader's degenerate-tangent guard only trips where the normal parallels ±X, and
-            # everywhere else it builds a valid-but-meaningless TBN that tilts the shading normal
-            # away from the light. Cheap to always emit; the alternative is a silent 35% albedo
-            # loss on every asset that ships a normal map.
+            # Blender defaults this OFF, and a normal-mapped mesh without TANGENT renders dark
+            # rather than failing (the loader fills a constant tangent): a silent 35% albedo loss.
             export_tangents=True,
             export_cameras=False,
             export_lights=False,
@@ -256,31 +190,18 @@ def export_object_glb(obj: bpy.types.Object, output_path: str) -> bool:
             hidden.hide_set(True)
         bpy.ops.object.select_all(action="DESELECT")
         for previously in saved_selection:
-            # The object may have become unselectable (hidden by a collection toggle) since
-            # the selection was captured; losing a selection is not worth aborting for.
+            # Losing a selection is not worth aborting for.
             with contextlib.suppress(RuntimeError):
                 previously.select_set(True)
         view_layer.objects.active = saved_active
 
 
 def _capture_transform(obj: bpy.types.Object) -> tuple:
-    """Snapshot an object's transform CHANNELS, so it can be put back exactly.
-
-    Not ``matrix_world``: assigning one decomposes it into location/rotation/scale and the
-    rotation half of that round trip is lossy at ~1e-6. Restoring a saved matrix therefore leaves
-    the object a couple of microns from where it started -- invisible in the viewport, and
-    permanent in the exported data. Measured on ShiningPie, one export moved 25 of 321 objects by
-    up to 2.2e-6, and the next export moved them again.
-
-    Nothing looks wrong when this happens, which is what makes it worth the extra care: the
-    exported transforms churn on every export (noise in every diff of a committed ``data/``), and
-    anything that decides "did this change?" by comparing content -- the navmesh cache in
-    :mod:`..pipeline.cache`, most obviously -- never sees an unchanged scene twice.
-
-    All four rotation representations are saved rather than the one ``rotation_mode`` selects:
-    they are separate stored fields, restoring them all is exact regardless of mode, and it costs
-    a few floats.
-    """
+    """Snapshot the transform CHANNELS, never ``matrix_world``: assigning a matrix decomposes it
+    and the rotation half is lossy at ~1e-6, so one export moved 25 of 321 ShiningPie objects by
+    up to 2.2e-6 and the next moved them again, churning every diff and defeating the content-
+    keyed navmesh cache. All four rotation representations are saved so the restore is exact in
+    any mode."""
     return (
         obj.location.copy(),
         obj.rotation_euler.copy(),
@@ -303,9 +224,9 @@ def _safe_filename(name: str) -> str:
     """Make a datablock name safe for a filesystem path.
 
     Blender allows characters in datablock names that are path separators or invalid on
-    Windows. Substituting rather than rejecting keeps the export working; a collision between
-    two names that normalize identically is possible but is reported by the caller when the
-    second export overwrites the first.
+    Windows. Substituting rather than rejecting keeps the export working. Two names that
+    normalize identically (``Cube.001`` and ``Cube_001``) currently overwrite one GLB with no
+    report; detecting that is #34.
     """
     safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in name)
     return safe.strip("._") or "mesh"

@@ -1,15 +1,6 @@
-"""Collision-layer contract -- port of ``Paradise.Export.Geometry.CollisionLayerContract``.
-
-``ColliderShapeData.Layer`` is a Unity-style single layer **index**; consumers rebuild the
-membership mask as ``1u << Layer``. A single int therefore cannot express multi-layer
-membership, so a mask with several bits set is lossy: only the lowest bit survives.
-
-Blender has no built-in collision-layer concept, so ``authoring/collider.py`` exposes a
-20-slot boolean mask (mirroring Godot's ``collision_layer`` UI) and funnels it through here.
-Keeping the lossy case *loud* rather than silent is the whole point of :func:`is_multi_layer`
--- the Godot exporter warns in exactly the same situation, and an author who has ticked two
-layers needs to know the runtime will only see one.
-"""
+"""Collision-layer contract (port of ``CollisionLayerContract``): ``Layer`` is a single INDEX
+rebuilt as ``1u << Layer``, so a multi-bit mask is lossy and :func:`is_multi_layer` exists to
+keep that loud."""
 
 from __future__ import annotations
 

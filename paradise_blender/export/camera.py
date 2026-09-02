@@ -1,11 +1,5 @@
-"""Blender cameras -> the HostCamera field set.
-
-A camera is authored by pointing at a Camera object, the same way a light is authored by
-pointing at a lamp. The lens (projection, FOV, clip) comes off the datablock; where it stands
-and which way it looks come off the object's world pose, rebased through
-:func:`.transform.decompose_contract` so a camera and a mesh cannot disagree about which way
-is up.
-"""
+"""Blender cameras -> the HostCamera field set, posed through ``decompose_contract`` so a camera
+and a mesh cannot disagree about which way is up."""
 
 from __future__ import annotations
 
@@ -19,11 +13,7 @@ __all__ = ["host_camera_values"]
 
 
 def host_camera_values(obj: bpy.types.Object) -> dict | None:
-    """A camera as the HostCamera field set, in the storage shape ``build_payload`` consumes.
-
-    Returns ``None`` when ``obj`` is not a Camera, so a slot pointed at a mesh warns and stays
-    unauthored rather than inventing a 50° perspective at the origin.
-    """
+    """HostCamera fields, or ``None`` for a non-camera rather than an invented 50° perspective."""
     if obj.type != "CAMERA" or obj.data is None:
         return None
     camera = obj.data

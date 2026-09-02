@@ -1,36 +1,11 @@
-"""``paradise assets watch``, supervised by Blender for as long as a document is open.
+"""``paradise assets watch``, supervised by Blender while a document is open.
 
-Opening a level and having edits appear in ``.editor/play`` should not also require remembering to start
-a watcher in a terminal. The addon knows which project the open document belongs to, so it can
-start one and stop it again.
-
-**ONE WATCHER PER PROJECT, and that is a correctness rule rather than tidiness.** The engine's
-``AssetWatcher.Drain`` documents it: the watcher's gate guards its event maps, but the sidecar
-maintainer is driven OUTSIDE that lock (its work is filesystem IO, and holding a lock across it
-would stall every incoming event) and its quarantine is unsynchronized. Two drainers race it, and
-what they lose is the identity a move depends on -- a renamed asset gets a fresh guid and every
-reference to it dangles. So :func:`start` is idempotent per project root, and two documents from
-one project share the watcher rather than getting one each.
-
-**Not detached, unlike the runtime.** ``play`` launches a game the author interacts with and
-Blender has no business owning; a watcher is infrastructure for the session, so it is a child this
-process can terminate. The cost is that a Blender killed outright (SIGKILL, a crash) leaves it
-running -- :func:`stop_all` is registered with ``atexit`` and on ``load_pre``, which covers
-quitting and opening another file, and nothing can cover the rest. A stray watcher is visible in a
-task list and harmless beyond a rebuild nobody asked for, so the trade is stated rather than
-solved.
-
-**Output goes to a file, and the panel reads the last error out of it.** A watch started from
-Blender has no console anyone is looking at, which is the whole reason a failed rebuild needs
-somewhere to surface. That is also the case ParadiseEngine#192 (a tray icon) exists for; until it
-lands, the panel is the only place an author finds out.
-
-**``load_post`` starts the watcher for the file that just opened**, and rematerializes that
-file from ``assets/`` when it is a cached workfile. ``load_pre`` can only stop: after the load
-the old scene is gone, and the new scene is not readable yet. Opening a prefab through the
-operator, a cached ``.blend`` from ``.editor/blend/``, or enabling the addon on an already-open
-workfile all have to reach the same postcondition -- one watcher, objects that match the
-documents -- which is why the adopt step is shared rather than living in the operator alone.
+ONE watcher per project root, as a correctness rule: the engine's ``AssetWatcher.Drain`` drives
+the sidecar maintainer outside its lock with an unsynchronized quarantine, and two drainers lose
+the identity a move depends on. The watcher is a child (not detached like the runtime) so it can
+be terminated; a SIGKILLed Blender leaves it running, which ``atexit`` and ``load_pre`` cannot
+cover. Output goes to a log the panel reads the last error from, since a Blender-started watch
+has no console (ParadiseEngine#192 is the tray that will replace this).
 """
 
 from __future__ import annotations
@@ -54,26 +29,17 @@ __all__ = [
     "watched_roots",
 ]
 
-#: Live watchers, by absolute project root. At most one per root -- see the module docstring.
 _WATCHERS: dict[str, subprocess.Popen] = {}
 
-#: Why a watcher stopped, by project root: (exit code, last thing its log said). Kept only until
-#: the next start, so it describes the most recent failure rather than accumulating history.
+#: (exit code, last log line) per root, kept until the next start.
 _EXITS: dict[str, tuple[int, str | None]] = {}
 
 
 def log_path(project_root: str) -> str:
-    """Where one project's watcher writes.
-
-    Keyed on the root's basename plus a hash of the whole path: two checkouts of the same game
-    are a normal thing to have open, and a shared log would interleave them into nonsense.
-    """
+    """Per-root log path; two checkouts of one game must not share a log."""
     name = os.path.basename(os.path.normpath(project_root)) or "project"
-    # hashlib, NOT hash(): Python salts str hashing per process, so hash() would name a different
-    # file on every Blender launch -- and the panel, running in a later process than the one that
-    # started the watcher, would read a path nothing had ever written to and report no errors for
-    # a watcher that was reporting plenty. Found by testing this end to end rather than by
-    # reading it, which is the only way that class of bug shows up.
+    # hashlib, NOT hash(): str hashing is salted per process, so a later Blender would read a
+    # path nothing wrote to and report no errors for a watcher reporting plenty.
     digest = hashlib.sha1(os.path.normcase(project_root).encode("utf-8")).hexdigest()[:6]
     return os.path.join(tempfile.gettempdir(), f"paradise_assets_watch_{name}_{digest}.log")
 
@@ -89,13 +55,8 @@ def is_running(project_root: str) -> bool:
     if process is None:
         return False
     if (code := process.poll()) is not None:
-        # Reaped here rather than in a timer: nothing polls on a schedule, and a dead entry left
-        # in the table would make `start` a no-op forever after the first crash.
-        #
-        # WHY IT DIED IS REMEMBERED. A watcher that starts and then stops used to leave the panel
-        # saying "Not watching" -- identical to never having started one, and impossible to act
-        # on. The exit code and whatever the log last said are kept so the panel can say what
-        # happened instead of what is no longer true.
+        # A dead entry left in the table would make `start` a no-op forever after a crash; the
+        # exit reason is kept so the panel can say more than "Not watching".
         _WATCHERS.pop(key, None)
         _EXITS[key] = (code, last_error(project_root) or _last_line(project_root))
         return False
@@ -110,11 +71,7 @@ def watched_roots() -> list[str]:
 
 
 def watch_command(cli_argv: list[str], project_root: str) -> list[str]:
-    """The argv for ``paradise assets watch`` when started from the addon.
-
-    Always ``--editor`` so the tray starts with play mode on (the CLI default). The tray
-    checkbox can turn it off; a restart is not required.
-    """
+    """The watch argv; ``--editor`` so play mode starts on (the tray can turn it off)."""
     from .play import host
 
     profile = host._preference("build_profile", "dev") or "dev"
@@ -122,12 +79,7 @@ def watch_command(cli_argv: list[str], project_root: str) -> list[str]:
 
 
 def start(project_root: str) -> str | None:
-    """Start this project's watcher, or return why it could not.
-
-    Returns ``None`` both when one was started and when one was ALREADY running -- "there is a
-    watcher for this project" is the postcondition a caller wants, and the two ways of reaching
-    it are not worth distinguishing at the call site.
-    """
+    """Ensure this project has a watcher; returns why it could not, or ``None``."""
     from .play import host
 
     key = _normalize(project_root)
@@ -165,9 +117,7 @@ def start(project_root: str) -> str | None:
         handle.close()
         return f"Could not start the watcher: {error}"
     finally:
-        # The child holds its own duplicate of the descriptor, so this process does not need to
-        # keep one open -- and on Windows an open handle here would lock the file against the
-        # next run's truncate.
+        # On Windows an open handle here would lock the log against the next run's truncate.
         handle.close()
 
     _WATCHERS[key] = process
@@ -175,13 +125,7 @@ def start(project_root: str) -> str | None:
 
 
 def start_for(project_root: str) -> str | None:
-    """Start a watcher if the author has not turned the behaviour off.
-
-    Separate from :func:`start` so the preference is consulted in exactly one place, and so the
-    panel's own button can start one unconditionally -- an author who turned the automatic
-    behaviour off may still want one for this session, and a button that silently did nothing
-    would be the worst of both.
-    """
+    """Start a watcher unless the preference is off; the panel button bypasses this."""
     from . import prefs
 
     preferences = prefs.get_preferences()
@@ -191,12 +135,8 @@ def start_for(project_root: str) -> str | None:
 
 
 def stop(project_root: str) -> None:
-    """Stop this project's watcher, if it has one.
-
-    Terminate then kill: the CLI handles the interrupt to put the watcher down rather than being
-    shot mid-write, and a short wait is what lets it. A watcher that ignores both is killed,
-    because Blender must not block on it.
-    """
+    """Terminate, wait briefly so the CLI can finish a write, then kill; Blender must not
+    block on it. On Windows ``terminate()`` is already a kill (#36)."""
     key = _normalize(project_root)
     process = _WATCHERS.pop(key, None)
     if process is None or process.poll() is not None:
@@ -209,7 +149,6 @@ def stop(project_root: str) -> None:
         except subprocess.TimeoutExpired:
             process.kill()
     except OSError:
-        # Already gone. Nothing to do, and nothing worth reporting: the postcondition holds.
         pass
 
 
@@ -220,12 +159,8 @@ def stop_all() -> None:
 
 
 def last_error(project_root: str) -> str | None:
-    """The most recent line of the log that looks like a failure, or ``None``.
-
-    The LAST rather than the first, which is the opposite of what the play path wants: a build log
-    is read once after a run that already failed, while this file grows for as long as the session
-    does and the interesting rebuild is the one that just happened.
-    """
+    """The most recent failure line, or ``None``. Last, not first (unlike the play path):
+    this log grows all session and the interesting rebuild is the latest."""
     path = log_path(project_root)
     try:
         with open(path, encoding="utf-8", errors="replace") as handle:
@@ -242,10 +177,8 @@ def last_error(project_root: str) -> str | None:
         if not (lowered.startswith("error") or "failed" in lowered):
             continue
 
-        # A failed rebuild ends with a COUNT -- "watch: build FAILED with 1 error(s)" -- and the
-        # line that says WHAT went wrong is above it. Taking the last match verbatim would show an
-        # author the tally and hide the sentence naming the file, which is the one thing they need
-        # to act. So the summary is remembered and the scan keeps going for a detail line.
+        # The tally line ("build FAILED with 1 error(s)") comes last; the line naming the file
+        # is above it, so keep scanning past the tally.
         if _is_summary(lowered):
             summary = summary or text
             continue
@@ -260,12 +193,7 @@ def _is_summary(lowered: str) -> bool:
 
 
 def _last_line(project_root: str) -> str | None:
-    """The final non-empty line of the log, whatever it says.
-
-    The fallback when a watcher exits without anything that looks like an error: a process that
-    stopped for a reason it did not phrase as one still left its last words, and those are more
-    use than an exit code alone.
-    """
+    """The final non-empty log line, for a watcher that exited without a recognisable error."""
     try:
         with open(log_path(project_root), encoding="utf-8", errors="replace") as handle:
             lines = [line.strip() for line in handle.readlines()[-40:] if line.strip()]
@@ -275,12 +203,7 @@ def _last_line(project_root: str) -> str | None:
 
 
 def exit_reason(project_root: str) -> str | None:
-    """Why this project's watcher stopped, or ``None`` if it never started or is still running.
-
-    Exists because "Not watching" is what a panel showed for BOTH "you never started one" and
-    "the one you started died a second later", and an author cannot tell those apart or act on
-    either.
-    """
+    """Why the watcher stopped, or ``None`` if it never started or is still running."""
     entry = _EXITS.get(_normalize(project_root))
     if entry is None:
         return None
@@ -298,11 +221,7 @@ def status_line(project_root: str) -> str:
 
 
 def _on_load_pre(*_args) -> None:
-    """Blender is about to replace the session, so this document's watcher is finished.
-
-    ``load_pre`` and not ``load_post``: after the load the scene is the NEW file's, and the
-    project the watcher belongs to is no longer reachable from anything the handler can see.
-    """
+    """``load_pre``, because after the load the old project is unreachable from the handler."""
     stop_all()
 
 
@@ -313,12 +232,8 @@ _adopting = False
 
 
 def adopt_loaded_file(*_args) -> None:
-    """Refresh every document-backed scene from ``assets/`` and start its watcher.
-
-    Invoked from ``load_post`` (a ``.blend`` just opened) and from :func:`register_handler`
-    (the addon was enabled onto a session that already had a workfile -- that does not fire
-    ``load_post``). Idempotent per project: :func:`start_for` is.
-    """
+    """Refresh every document-backed scene from ``assets/`` and start its watcher. Also called
+    from register: enabling the addon onto an open workfile does not fire ``load_post``."""
     global _adopting
     if _adopting:
         return
@@ -358,12 +273,8 @@ def _on_load_post(*_args) -> None:
 
 
 def register_handler() -> None:
-    """Stop watchers on the way out of a file, and adopt the one that just came in.
-
-    Persistent, for the reason every handler in these addons is: without it Blender drops the
-    handler on the first file load, and the failure is invisible -- watchers simply start
-    accumulating, one per document anyone opens for the rest of the session.
-    """
+    """Register the load handlers. ``@persistent`` or Blender drops them on the first file load,
+    and watchers silently accumulate for the rest of the session."""
     import bpy
 
     handlers = (
@@ -379,8 +290,7 @@ def register_handler() -> None:
             collection.append(handler)
     globals()["_HANDLERS"] = stored
 
-    # Enabling the addon with a workfile already open does not fire load_post. Adopting here
-    # is a no-op when register runs at startup before the command-line file has loaded.
+    # Enabling the addon with a workfile already open does not fire load_post.
     adopt_loaded_file()
 
 
@@ -389,11 +299,9 @@ def unregister_handler() -> None:
         if handler in collection:
             collection.remove(handler)
     globals()["_HANDLERS"] = []
-    # Disabling the addon should not leave a watcher behind: nothing would be left that knows how
-    # to stop it, and the atexit hook goes with the module on a reload.
+    # After a disable nothing is left that knows how to stop a watcher.
     stop_all()
 
 
-#: Quitting Blender is the case ``load_pre`` cannot see. It does not cover a crash or a SIGKILL,
-#: which is stated in the module docstring rather than pretended away.
+#: Quitting is the case ``load_pre`` cannot see; a crash or SIGKILL is covered by nothing.
 atexit.register(stop_all)

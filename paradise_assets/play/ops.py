@@ -1,16 +1,6 @@
-"""Build, Play, Verify and Clean -- the CLI's verbs, as buttons.
-
-**Play builds first, and a failed build stops it.** That is the difference from
-``paradise_blender``'s Play, which deliberately never exports because ``data/`` is kept fresh by a
-save hook. Nothing keeps ``.editor/play/`` fresh: ``assets/`` is source, the runtime reads built
-trees only, and the CLI is the thing in between. A Play that skipped the build would launch
-whatever the last one left -- showing the author a level they edited an hour ago with nothing on
-screen saying so -- and a Play that built but launched anyway on failure would do the same thing
-while looking like it had worked.
-
-Which document plays is the one that is OPEN. Every authoring document is a prefab and a prefab can
-be played (the asset plan's §2.9), so this needs no notion of a "main level" and a prop opened on
-its own is as launchable as a district.
+"""Build, Play, Verify and Clean as buttons. Play builds first and a failed build stops it:
+nothing else keeps ``.editor/play/`` fresh, and launching anyway would show an hour-old level
+with nothing on screen saying so. The open document plays; every prefab is playable (§2.9).
 """
 
 from __future__ import annotations
@@ -36,25 +26,12 @@ from .host import (
 
 __all__ = ["classes"]
 
-# How long to keep watching a launched runtime for an early death.
-#
-# THREE MINUTES, because thirty seconds was not enough in the module this was ported from, and the
-# way it failed was the worst available: the watch expired, the operator reported success, and the
-# build died a minute later with nobody listening. "Play does nothing and says nothing" is far
-# harder to diagnose than any error message, and it is what this constant produces when too small.
-#
-# Waiting is free -- the timer polls a `poll()` and passes every other event through -- and launch
-# success is reported immediately rather than at the end of the watch, so a long window costs the
-# author no perceived latency either.
-#
-# IT BOUNDS THE FAILURE RATHER THAN REMOVING IT. The architecture is still "no death within the
-# window means success", so a runtime slower than three minutes reports success and then dies
-# unheard. Removing it properly means watching until the process either dies or is observed to have
-# opened a window, and Blender cannot see the second half.
+# Three minutes: thirty seconds was not enough, and the failure was the worst kind (watch
+# expired, success reported, build died a minute later unheard). Waiting is free. It bounds
+# the failure rather than removing it: Blender cannot see whether a window opened.
 WATCH_SECONDS = 180.0
 POLL_INTERVAL = 0.4
 
-#: What the CLI is called in messages, so the fix is always spelled the same way.
 CLI_MISSING = (
     "No Paradise CLI found. Set 'Paradise CLI' in the addon preferences to the `paradise` "
     "executable or to Paradise.Cli.csproj, or install it with `dotnet tool install -g`."
@@ -100,24 +77,14 @@ def _run(operator, layout, arguments: list[str], verb: str) -> bool:
 
 
 def _built_scene(layout, document_path: str) -> str:
-    """Where the CLI puts this document's compiled form in the play tree.
-
-    ``assets/levels/x.prefab`` -> ``.editor/play/levels/x.prefab``: play bakes the document but
-    keeps the authoring name, so this is the source-relative path under the play tree.
-    """
+    """``assets/levels/x.prefab`` -> ``.editor/play/levels/x.prefab`` (play keeps the name)."""
     relative = os.path.relpath(document_path, layout.assets)
     return os.path.join(layout.editor, "play", relative)
 
 
 def _derived_config(play_root: str) -> list[str]:
-    """``--config`` for games that keep one where the build puts it, and nothing otherwise.
-
-    The build copies the project's own folder through under its manifest name, so a game whose
-    config lives at ``assets/<name>/config.toml`` has it at ``<play>/<name>/config.toml`` (or
-    ``.json``, if that is the profile). The file is passed only when it is actually there, and a
-    game that arranges things differently says so through the Runtime Arguments preference rather
-    than being second-guessed here.
-    """
+    """``--config`` when ``<play>/<name>/config.{toml,json}`` exists, nothing otherwise; a game
+    arranged differently says so through the Runtime Arguments preference."""
     manifest = os.path.join(play_root, "manifest.json")
     try:
         with open(manifest, encoding="utf-8") as handle:
@@ -142,8 +109,7 @@ class PARADISE_ASSETS_OT_play(Operator):
     bl_label = "Build & Play"
     bl_options = {"REGISTER"}
 
-    # Plain Python attributes, not RNA properties: they hold the watch state for one modal run and
-    # must not be saved, shown in the redo panel, or set from a keymap.
+    # Plain attributes, not RNA properties: watch state must not reach the redo panel or a keymap.
     _process = None
     _timer = None
     _deadline = 0.0
@@ -163,8 +129,7 @@ class PARADISE_ASSETS_OT_play(Operator):
 
         scene_path = _built_scene(layout, document_path)
         if not os.path.isfile(scene_path):
-            # The build succeeded and did not produce this. Most likely the document is not one
-            # the profile emits; say which file was expected rather than "something went wrong".
+            # Name the expected file rather than "something went wrong".
             self.report(
                 {"ERROR"},
                 f"The build succeeded but {os.path.relpath(scene_path, layout.root)} is not there.",
@@ -174,9 +139,7 @@ class PARADISE_ASSETS_OT_play(Operator):
         play_root = os.path.join(layout.editor, "play")
         arguments = ["--scene", scene_path, *_derived_config(play_root)]
 
-        # IN THE PROJECT ROOT, not wherever Blender happens to be. --scene is absolute so the
-        # level is always found; everything else a runtime reads is conventionally relative to
-        # the project root. See launch_runtime for the failure this prevents.
+        # In the project root, not wherever Blender is (see launch_runtime).
         process, error = launch_runtime(arguments, cwd=layout.root)
         if process is None:
             self.report({"ERROR"}, error or "Could not launch the runtime")
@@ -184,19 +147,13 @@ class PARADISE_ASSETS_OT_play(Operator):
 
         self.report({"INFO"}, f"Launched {os.path.basename(document_path)} (pid {process.pid})")
 
-        # Background Blender has no event loop to drive a modal, so a timer added here would never
-        # fire and the operator would sit in RUNNING_MODAL forever. Launching still succeeded, so
-        # report success rather than failing a scripted call over a diagnostic it could not show.
-        #
-        # `bpy.app.background` is the test, NOT `context.window is None`: 5.2 hands a background
-        # run a window in its context, so the window check alone passes straight into the modal
-        # path and a scripted `bpy.ops.paradise_assets.play()` never returns FINISHED.
+        # Background Blender has no event loop, so a modal would sit in RUNNING_MODAL forever.
+        # `bpy.app.background`, NOT `context.window is None`: 5.2 hands a background run a
+        # window, and a scripted play() would never return FINISHED.
         if bpy.app.background or context.window is None:
             return {"FINISHED"}
 
-        # Watch the child instead of declaring victory on a successful fork: a detached runtime
-        # writes to a log, so a missing asset would otherwise show up in Blender as a pid and
-        # nothing else.
+        # A detached runtime's death would otherwise show up as a pid and nothing else.
         self._process = process
         self._deadline = time.monotonic() + WATCH_SECONDS
         window_manager = context.window_manager
@@ -288,9 +245,7 @@ class PARADISE_ASSETS_OT_verify(Operator):
             self.report({"ERROR"}, CLI_MISSING)
             return {"CANCELLED"}
 
-        # A non-zero exit here means the TREE has errors, not that the tool failed -- so the
-        # findings are the result, reported as warnings, and the operator still finishes. Each
-        # finding names a file and a reason; showing a handful beats showing a count.
+        # A non-zero exit means the TREE has errors, not that the tool failed.
         findings = [
             line.strip() for line in result.stdout.splitlines()
             if line.strip().startswith(("error:", "warning:"))
@@ -313,13 +268,8 @@ class PARADISE_ASSETS_OT_clean(Operator):
     bl_label = "Clean"
     bl_options = {"REGISTER"}
 
-    #: Off by default, and it is the only destructive thing in this module.
-    #:
-    #: ``.editor/`` holds the Asset Browser catalogue, its rendered thumbnails, and every working
-    #: file -- the per-document ``.blend`` carrying camera, selection and anything parented to
-    #: nothing. All of it is regenerable, which is exactly why deleting it is easy to do without
-    #: thinking and annoying to have done: the next open re-imports every GLB and the next
-    #: catalogue re-renders every thumbnail.
+    #: Off by default: regenerable, but the next open re-imports every GLB and re-renders every
+    #: thumbnail.
     editor_too: BoolProperty(  # type: ignore[valid-type]
         name="Also delete .editor/",
         description=(
@@ -358,10 +308,7 @@ class PARADISE_ASSETS_OT_clean(Operator):
 
 
 def status() -> list[tuple[str, str]]:
-    """``(icon, message)`` for each part of the toolchain that is not ready.
-
-    Resolves without logging, because the panel asks on every redraw.
-    """
+    """``(icon, message)`` per unready tool. No logging: the panel asks on every redraw."""
     from .host import _preference
 
     problems: list[tuple[str, str]] = []
@@ -370,10 +317,8 @@ def status() -> list[tuple[str, str]]:
     if resolve_runtime_command() is None:
         problems.append(("ERROR", "No runtime host — set it in preferences"))
 
-    # Said out loud because the alternative is silent. The pipeline resolves PARADISE_KTX_PATH
-    # with File.Exists, so a path that is a directory -- or a typo, or a moved install -- is
-    # discarded rather than rejected, and the only symptom is a build that cannot encode a
-    # texture. A field that LOOKS filled in is worse than an empty one.
+    # The pipeline resolves PARADISE_KTX_PATH with File.Exists, so a directory or typo is
+    # silently discarded; a field that LOOKS filled in is worse than an empty one.
     ktx = _preference("ktx_path").strip()
     if ktx and not os.path.isfile(os.path.expanduser(ktx)):
         problems.append(("ERROR", "KTX path is not a file — point it at ktx.exe itself"))

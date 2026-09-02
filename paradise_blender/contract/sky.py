@@ -1,27 +1,8 @@
-"""Ambient irradiance from a sky, in the contract's Y-up space.
-
-Port of the sky math in ``SceneDataExporter.cs`` (``EvalProceduralSky``,
-``IntegrateSkyIrradiance``, ``ProjectSkyIrradianceSh``), generalized so the *radiance source*
-is a callable rather than being hard-wired to Godot's ``ProceduralSkyMaterial``.
-
-That generalization is the point. The engine's ``EnvironmentData`` describes a two-part sky
-gradient plus a sun disk because that is Godot's procedural sky -- but the numbers the runtime
-actually consumes for diffuse ambient are the *integrated* ones (``AmbientColor``,
-``AmbientEquatorColor``, ``AmbientGroundColor``, ``AmbientSh``). Any host that can evaluate its
-own sky per direction can fill those in. Blender's world can be a flat color, a Background
-node, or a Sky Texture; ``export/world.py`` picks an evaluator and this module turns it into
-the same contract fields Godot produces.
-
-**All directions and outputs here are in contract space (Y-up).** Callers convert Blender's
-Z-up vectors first -- see :mod:`.axes`.
-
-Two conventions worth stating because they are easy to get wrong by a factor of pi:
-
-* The integral returns ``E/pi`` -- the cosine-weighted *average radiance* over the hemisphere,
-  which is exactly the ambient value the engine expects (measured against Godot: sky-SH ambient
-  equals ``albedo * E/pi``). Multiplying by pi here makes every scene pi times too bright.
-* The SH band factors are ``A_l/pi = (1, 2/3, 1/4)``, premultiplied into the coefficients, so
-  reconstruction yields the same ``E/pi``. The shader applies only the basis constants.
+"""Ambient irradiance from a sky evaluator, in contract space (Y-up); port of the sky math in
+``SceneDataExporter.cs``. Two factor-of-pi traps: the integral returns ``E/pi`` (cosine-weighted
+average radiance, which is what the engine expects; multiplying by pi makes every scene pi times too
+bright), and the SH band factors ``(1, 2/3, 1/4)`` are premultiplied so the shader applies only
+the basis constants.
 """
 
 from __future__ import annotations
@@ -43,7 +24,6 @@ __all__ = [
 
 Rgb = tuple[float, float, float]
 
-#: Evaluates sky radiance (linear RGB) for a unit direction in contract space.
 SkyRadiance = Callable[[Vec3], Rgb]
 
 # Sample counts match the C# implementation so both hosts land on the same Monte-Carlo answer.
@@ -53,12 +33,8 @@ _GOLDEN_ANGLE = math.pi * (3.0 - math.sqrt(5.0))
 
 
 class SunParams:
-    """Sun disk/halo parameters, matching Godot's ``sky_material.cpp`` uniforms.
-
-    ``size`` and ``angle_max`` are **cosines** of angles, so the disk test is a plain dot-product
-    comparison. The contract's "no sun" sentinel is 2.0 -- out of range for a cosine, so the
-    branch can never trigger.
-    """
+    """Sun disk parameters (Godot's ``sky_material.cpp`` uniforms). ``size`` and ``angle_max``
+    are COSINES; the "no sun" sentinel 2.0 is out of range so the branch never triggers."""
 
     __slots__ = ("angle_max", "color_energy", "direction", "enabled", "inv_curve", "size")
 
@@ -98,13 +74,8 @@ def godot_procedural_sky(
     inv_ground_curve: float,
     sun: SunParams | None = None,
 ) -> SkyRadiance:
-    """Godot's ``ProceduralSkyMaterial`` radiance as a reusable evaluator.
-
-    Retained even though Blender has no such material: a Blender scene authored to match a
-    Godot scene can select this evaluator and get byte-identical ambient, which is how the
-    cross-host parity fixture is built. All colors are linear and already premultiplied by
-    their energy multipliers, as in the C# original.
-    """
+    """Godot's ``ProceduralSkyMaterial`` radiance, which is how the cross-host parity fixture
+    gets byte-identical ambient. Colours are linear and energy-premultiplied, as in C#."""
     sun = sun or SunParams()
 
     def evaluate(direction: Vec3) -> Rgb:
@@ -130,11 +101,7 @@ def godot_procedural_sky(
 
 
 def integrate_irradiance(normal: Vec3, radiance: SkyRadiance, energy: float = 1.0) -> Rgb:
-    """Cosine-weighted average radiance over the hemisphere around ``normal`` (i.e. ``E/pi``).
-
-    Fibonacci-sphere sampling over the full sphere, rejecting the back hemisphere. Used for
-    the three ambient zones the contract stores: up (sky), horizontal (equator), down (ground).
-    """
+    """Cosine-weighted average radiance (``E/pi``) over the hemisphere around ``normal``."""
     r = g = b = weight_sum = 0.0
     for i in range(_IRRADIANCE_SAMPLES):
         direction = _fibonacci_direction(i, _IRRADIANCE_SAMPLES)
@@ -153,13 +120,8 @@ def integrate_irradiance(normal: Vec3, radiance: SkyRadiance, energy: float = 1.
 
 
 def project_irradiance_sh(radiance: SkyRadiance, energy: float = 1.0) -> list[float]:
-    """Project sky radiance onto L2 spherical harmonics: 9 RGB coefficients = 27 floats.
-
-    Ramamoorthi ordering (Y00, Y1-1, Y10, Y11, Y2-2, Y2-1, Y20, Y21, Y22), with the band
-    factors and energy multiplier premultiplied. Coefficients may be negative -- that is
-    normal for SH, and why the contract stores full-precision floats here instead of the
-    8-bit ``Color32`` it uses for the zone colors.
-    """
+    """L2 SH projection, 27 floats in Ramamoorthi order with band factors premultiplied.
+    Coefficients can be negative, which is why the contract stores floats, not ``Color32``."""
     coefficients = [0.0] * 27
     for i in range(_SH_SAMPLES):
         d = _fibonacci_direction(i, _SH_SAMPLES)

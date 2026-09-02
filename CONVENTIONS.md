@@ -96,10 +96,11 @@ uniqueness half harder: duplicating an object (`Shift+D`, `Alt+D`, copy/paste) d
 property groups, GUID included, so a duplicate arrives **already colliding**, silently, and
 there is no per-object "was duplicated" callback to hook.
 
-So `authoring/guid.py` mints lazily and sweeps on `save_pre`, and the exporter sweeps again
-before walking the scene (so an unsaved .blend still exports unique identities). Collision
-resolution keeps the first object in a **stable name ordering** and re-mints the rest —
-without a deterministic order, which duplicate keeps the original GUID would vary between runs.
+So `authoring/guid.py` mints lazily and sweeps on `save_pre` and from the panel's button; the
+exporter does **not** sweep, so an unsaved .blend with a fresh duplicate exports two objects
+sharing one stored GUID. Collision resolution keeps the first object in a **stable name
+ordering** and re-mints the rest — without a deterministic order, which duplicate keeps the
+original GUID would vary between runs.
 
 ---
 
@@ -146,6 +147,13 @@ the contract carries a unitless multiplier in Godot's convention. There is no ph
 correct conversion without also fixing an exposure model, so `WATTS_PER_INTENSITY_UNIT = 100`
 maps Blender's default lamp to the contract's default light — defaults match, and scaling from
 there is predictable.
+
+**Sun intensity is divided by π**, and only the sun's. Blender's sun strength is irradiance in
+W/m², rendered as `albedo·(S/π)·NdotL`; the contract multiplier is Godot energy, which Godot
+premultiplies by π so a diffuse surface renders `albedo·E·NdotL`. Exporting `S` verbatim
+therefore makes every Blender-authored sun π× brighter in the engine than in the viewport
+(it presented as a whole-scene blowout through the glow pass). `E = S/π` in `export/light.py`
+is the exact conversion; point/spot lights use the 100 W calibration above instead.
 
 **Area lights.** Neither the contract nor Godot has an area light type. They export as point
 lights with their dimensions recorded in `AreaSize`, and the exporter warns. Dropping them

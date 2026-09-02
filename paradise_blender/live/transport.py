@@ -1,17 +1,7 @@
-"""Loopback socket transport for live preview.
-
-The hard requirement: **nothing here may block Blender's main thread.** Blender's UI is
-single-threaded, so a blocking ``send`` on a socket whose peer has stalled would freeze the
-editor -- and the peer here is a game runtime that legitimately stalls for a frame or two
-while it loads a mesh.
-
-So sends go onto a queue drained by a background thread. The main thread only ever appends,
-which is why :class:`LiveConnection.send` cannot block regardless of what the runtime is doing.
-
-The queue is **bounded**. If the runtime stops draining, an unbounded queue would grow until
-Blender ran out of memory; instead the oldest pending messages are dropped and the connection
-is marked degraded. Dropping is safe for this protocol because a later ``scene/full`` supersedes
-everything before it -- and the sequence numbers let the runtime notice the gap and ask for one.
+"""Loopback transport for live preview. Nothing here may block Blender's main thread (the
+peer is a runtime that stalls for frames), so sends go onto a BOUNDED queue drained by a
+thread; when the runtime stops draining, the oldest messages are dropped, which is safe because
+a later ``scene/full`` supersedes them and the sequence numbers expose the gap.
 """
 
 from __future__ import annotations
@@ -27,8 +17,7 @@ from .protocol import Message, decode, encode
 
 __all__ = ["LiveConnection"]
 
-#: Enough to absorb a few seconds of edits at the default rate; beyond that the peer is
-#: not keeping up and older messages have no value.
+#: A few seconds of edits at the default rate; beyond that older messages have no value.
 _MAX_PENDING = 256
 
 _CONNECT_TIMEOUT_SECONDS = 2.0
@@ -65,11 +54,9 @@ class LiveConnection:
             self._socket = socket.create_connection(
                 (self._host, self._port), timeout=_CONNECT_TIMEOUT_SECONDS
             )
-            # Clear the timeout after connecting: it applies to sends and receives too, and a
-            # 2-second send timeout would abort a large scene/full payload mid-write.
+            # The connect timeout also applies to sends and would abort a large scene/full.
             self._socket.settimeout(None)
-            # Live preview is latency-sensitive and its messages are small; Nagle's algorithm
-            # would hold a patch back waiting to coalesce it with the next one.
+            # Nagle would hold a small patch back waiting for the next one.
             self._socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         except OSError:
             self._socket = None
@@ -98,7 +85,6 @@ class LiveConnection:
                 self._dropped += 1
                 self._outbox.put_nowait(message)
             except (queue.Empty, queue.Full):
-                # The drain thread raced us; losing this one message is the correct outcome.
                 self._dropped += 1
 
     def close(self) -> None:
@@ -108,13 +94,11 @@ class LiveConnection:
 
         self._closing.set()
         self._connected.clear()
-        # A None sentinel wakes the sender out of its blocking get(). A full queue means the
-        # sender is already busy and will see _closing on its next iteration anyway.
+        # None wakes the sender's blocking get(); a full queue means it will see _closing anyway.
         with contextlib.suppress(queue.Full):
             self._outbox.put_nowait(None)
 
         if self._socket is not None:
-            # Both calls tolerate a socket the peer has already closed.
             with contextlib.suppress(OSError):
                 self._socket.shutdown(socket.SHUT_RDWR)
             with contextlib.suppress(OSError):
@@ -140,8 +124,7 @@ class LiveConnection:
             try:
                 self._socket.sendall(encode(message))
             except OSError as error:
-                # The runtime exited or the socket broke. Surface it once and stop; the
-                # session layer notices `connected` went false and tears down cleanly.
+                # Surface once and stop; the session layer notices `connected` went false.
                 if not self._closing.is_set():
                     log.warn(f"Live preview connection lost: {error}")
                 self._connected.clear()
@@ -159,8 +142,7 @@ class LiveConnection:
                 break  # peer closed
 
             buffer += chunk
-            # Messages are newline-delimited, but TCP does not preserve message boundaries --
-            # a single recv may hold several messages or half of one.
+            # TCP preserves no message boundaries: a recv may hold several lines or half of one.
             while b"\n" in buffer:
                 line, buffer = buffer.split(b"\n", 1)
                 message = decode(line)

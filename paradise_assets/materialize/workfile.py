@@ -1,25 +1,8 @@
-"""The ``.blend`` a document is worked on in: ``.editor/blend/<path>.blend``.
-
-**Derived and disposable**, like everything under ``.editor/``. Deleting the whole directory loses
-nothing -- the next open re-materializes it from the document, which is the acceptance invariant
-the asset plan states for that tree. So this is a CACHE, and it is only ever trusted while it can
-prove it matches: the scene records which document it came from and that document's
-``(mtime, size)`` stamp, and a workfile whose stamp has moved on is thrown away rather than shown.
-
-What reusing it buys is not only speed, though re-importing 21 GLBs is most of the cost of opening
-ShiningPie's district. It is that a working file keeps the things a document has no place for --
-where the camera is, what is selected, a reference image parented to nothing -- and those survive
-a reopen instead of being rebuilt into a default view every time.
-
-Opening the ``.blend`` itself (File > Open, a recent file, double-click under ``.editor/blend/``)
-still rematerializes from ``assets/``. The cache is what the session *is*; the objects in it are
-what the documents last said, and an asset edited in another tool, a git pull, or a nested prefab
-change would otherwise sit stale until someone pressed Reload. The camera and extras stay; the
-document objects are rebuilt. See :func:`refresh_from_document`.
-
-The session ADOPTS the workfile's path (``save_as_mainfile`` without ``copy``), so Blender's own
-Ctrl+S updates the working file while "Save to Prefab Document" writes the document. Two saves
-that mean different things, each going where it says.
+"""The disposable ``.editor/blend/<path>.blend`` a document is worked on in. It keeps what a
+document has no place for (camera, selection, extras) and is trusted only while its recorded
+``(mtime, size)`` stamp matches; opening it still rematerializes the objects from ``assets/``
+so edits from other tools do not sit stale. The session ADOPTS its path, so Ctrl+S updates the
+workfile while the document is written by the sync handler.
 """
 
 from __future__ import annotations
@@ -40,18 +23,13 @@ def path_for(layout: project.ProjectLayout, document_path: str) -> str:
 
 
 def save(layout: project.ProjectLayout, document_path: str) -> str | None:
-    """Write the current session as this document's working file.
-
-    Returns the path written, or ``None`` when it could not be -- a workfile is a convenience, and
-    failing to write one must never fail the operation that produced it.
-    """
+    """Write the session as the working file; ``None`` on failure, which must never fail the
+    operation that produced it."""
     destination = path_for(layout, document_path)
     try:
         os.makedirs(os.path.dirname(destination), exist_ok=True)
-        # Suppressed, because this write is the ADDON's, not the author's. `sync` hooks save_pre to
-        # write the document on every save, and opening a document calls straight through here --
-        # so without this, merely opening a file would rewrite it: dirty in `git status`, and an
-        # mtime bumped for nothing, which also invalidates that prefab's rendered thumbnail.
+        # Suppressed: without it, merely opening a document would rewrite it (dirty git
+        # status, bumped mtime, invalidated thumbnail).
         with sync.suppressed():
             bpy.ops.wm.save_as_mainfile(filepath=destination)
     except (OSError, RuntimeError):
@@ -60,14 +38,8 @@ def save(layout: project.ProjectLayout, document_path: str) -> str | None:
 
 
 def refresh_from_document(scene: bpy.types.Scene) -> str | None:
-    """Rebuild ``scene`` from the prefab it was cached from.
-
-    Returns ``None`` when the scene is not a workfile, or when the rebuild succeeded. An error
-    string means the document could not be read and the cached objects were left as they were.
-
-    Always re-reads: a nested prefab, a GLB, or a material TOML can move without the scene
-    document's ``(mtime, size)`` stamp changing, and those are the edits this exists to catch.
-    """
+    """Rebuild ``scene`` from its document; an error string means the cached objects were left
+    alone. Always re-reads: a nested prefab or GLB can change without the document's stamp."""
     from ..document.prefab import PrefabDocumentError, loads
     from . import load
 
@@ -92,17 +64,8 @@ def refresh_from_document(scene: bpy.types.Scene) -> str | None:
 
 
 def try_open(layout: project.ProjectLayout, document_path: str) -> bool:
-    """Open this document's working file, if there is a current one.
-
-    Returns True only when the file opened AND still matches the document. False means the caller
-    should materialize from the document instead -- and it may already have replaced the session
-    doing so, which is fine: the caller materializes into whatever session it now has.
-
-    Opening the file fires ``load_post``, which rematerializes from ``assets/`` before this
-    returns -- so a workfile that was stale on disk can still read as current afterwards. That
-    is the point: the session (camera, extras) comes from the cache, the objects from the
-    documents.
-    """
+    """Open the working file; True only when it opened AND matches. False may already have
+    replaced the session, so the caller materializes into whatever session it now has."""
     source = path_for(layout, document_path)
     if not os.path.isfile(source):
         return False
@@ -110,8 +73,7 @@ def try_open(layout: project.ProjectLayout, document_path: str) -> bool:
     try:
         bpy.ops.wm.open_mainfile(filepath=source)
     except RuntimeError:
-        # A corrupt or unreadable workfile is a cache miss, not an error. The document is still
-        # the source of truth and materializing from it is what the caller does next.
+        # A corrupt workfile is a cache miss, not an error.
         return False
 
     return is_current(bpy.context.scene, document_path)
@@ -124,8 +86,7 @@ def is_current(scene: bpy.types.Scene, document_path: str) -> bool:
         return False
 
     if os.path.normcase(os.path.abspath(state.path)) != os.path.normcase(os.path.abspath(document_path)):
-        # A workfile for a different document, which means the naming changed under us. Treat it
-        # as a miss rather than showing one level's contents under another's name.
+        # A different document's workfile: a miss, not one level shown under another's name.
         return False
 
     return not state.is_stale

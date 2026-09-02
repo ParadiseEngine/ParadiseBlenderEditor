@@ -1,15 +1,7 @@
-"""What the ``.blend`` carries about the document it was materialized from.
-
-The ``.blend`` is a CACHE, not a second source of truth, so it stores the minimum that lets a
-save find its way back: which document this scene came from, what that file looked like when we
-read it, and which document object each Blender object IS.
-
-**Component payloads are stored for DISPLAY ONLY.** The save path takes them from the re-read
-document, never from here -- which is what makes a component this addon has never heard of
-survive a round trip untouched. Storing them as a JSON string rather than as Blender ID property
-groups is deliberate: Blender's ID property system normalizes types on its way in and out (an
-``int`` can come back a ``float``, a tuple a list), and for data we promise to return verbatim
-"nearly the same value" is a bug. A string is a string.
+"""What the ``.blend`` (a cache) carries about its document. Component payloads are stored as a
+JSON string for DISPLAY ONLY and never written back: ID property groups normalize types
+(``int`` -> ``float``, tuple -> list), and "nearly the same value" is a bug in data promised
+verbatim. The stamp is an undo-tracked ID property, which is #31.
 """
 
 from __future__ import annotations
@@ -33,32 +25,20 @@ __all__ = [
     "write_state",
 ]
 
-#: The document object's identity, on the Blender object that stands for it.
 GUID_KEY = "paradise_guid"
 
-#: Set on an object that was RESOLVED out of a prefab rather than written in the scene.
-#:
-#: These exist only because the scene instantiates a prefab; the document has no entry for them,
-#: and their identities are minted. Saving one back would write it into the scene as a plain
-#: object -- flattening the instance and, on the next load, producing a duplicate. So they are
-#: marked, locked in the viewport, and skipped by the save path entirely.
+#: Set on an object RESOLVED out of a prefab: saving one back would flatten the instance.
 DERIVED_KEY = "paradise_derived"
 
 #: The object's components as a JSON string. Read-only display data; never written back.
 COMPONENTS_KEY = "paradise_components"
 
-#: The prefab an object instantiates, as ``{"guid": …, "path": …}``.
-#:
-#: Only NEW instances need this. An object that came from the document keeps its prefab reference
-#: in the file, and save carries that through untouched -- but an instance added here has no entry
-#: to carry anything from, and without the marker the save would write it as a plain object and
-#: lose the reference that makes it an instance.
+#: The prefab a NEW instance instantiates; an object from the document keeps its reference in
+#: the file, but a new one has no entry to carry it from.
 PREFAB_KEY = "paradise_prefab"
 
-#: Scene-level: the absolute path of the document this scene was materialized from.
 SCENE_PATH_KEY = "paradise_scene_path"
 
-#: Scene-level: ``"<mtime>:<size>"`` of that document when it was read.
 STAMP_KEY = "paradise_scene_stamp"
 
 
@@ -71,20 +51,12 @@ class DocumentState:
 
     @property
     def is_stale(self) -> bool:
-        """Whether the document changed on disk since it was read.
-
-        A save against a stale stamp would clobber whatever made the change -- another tool, a
-        hand edit, a `git pull`. The caller refuses and offers reload instead.
-        """
+        """Whether the document changed on disk since it was read."""
         return stamp_of(self.path) != self.stamp
 
 
 def stamp_of(path: str) -> str:
-    """``(mtime, size)`` as a comparable string, or ``""`` when the file is gone.
-
-    Two cheap facts rather than a hash: reading a 200 KB document to decide whether to read it is
-    silly, and mtime-plus-size catches every edit a person or a tool actually makes.
-    """
+    """``"<mtime>:<size>"``, or ``""`` when the file is gone."""
     try:
         info = os.stat(path)
     except OSError:
@@ -146,11 +118,7 @@ def guid_of(obj: bpy.types.Object) -> str | None:
 
 
 def object_with_guid(scene: bpy.types.Scene, guid: str | None):
-    """The Blender object that stands for *guid* in *scene*, or ``None``.
-
-    Case-insensitive: a guid is hex and nothing in the format promises a case. Used by the
-    Components panel to turn a parent identity into a selectable object.
-    """
+    """The Blender object for *guid*, or ``None``. Case-insensitive; nothing promises a case."""
     if not guid:
         return None
     needle = guid.lower()
@@ -167,12 +135,7 @@ def is_derived(obj: bpy.types.Object) -> bool:
 
 
 def mark_derived(obj: bpy.types.Object) -> None:
-    """Mark and LOCK an object resolved from a prefab.
-
-    Locked because the edit would be silently discarded: this addon writes prefab instances back
-    as instances, so a moved child is lost on the next load with nothing to say why. Locking makes
-    the constraint visible in the viewport instead of surprising somebody later.
-    """
+    """Mark and LOCK a prefab-resolved object: a move would be silently lost on the next load."""
     obj[DERIVED_KEY] = True
     obj.lock_location = (True, True, True)
     obj.lock_rotation = (True, True, True)

@@ -1,22 +1,7 @@
-"""JSON emitter that reproduces the Paradise export contract's on-disk form.
-
-The reference implementation is C# ``Paradise.Export.Serialization.ExportJsonWriter``
-(System.Text.Json, ``WriteIndented = true``, ``DefaultIgnoreCondition = Never``). Matching it
-means four things Python's ``json`` module will not do on its own:
-
-1. **PascalCase keys, nulls kept.** No key is ever omitted; a missing value is ``null``.
-2. **float32 numbers.** The contract's floats are C# ``float``, printed with shortest
-   round-trip precision *for 32 bits*. ``8/255`` is ``0.03137255`` in the contract but
-   ``0.03137254901960784`` from a Python double -- see :func:`f32_repr`.
-3. **Integral floats print bare.** STJ writes ``5``, not ``5.0``.
-4. **Fully expanded arrays.** STJ's indented mode puts every array element on its own line;
-   only empty collections collapse to ``[]`` / ``{}``.
-
-Writes go through a temp file + atomic rename, mirroring
-``ExportJsonWriter.WriteTextAtomically`` -- a half-written scene JSON must never be visible
-to the runtime or to a live-preview reload.
-
-Nothing here imports ``bpy``.
+"""JSON emitter matching C# ``ExportJsonWriter`` (STJ, indented, nulls kept): float32 shortest
+round-trip (``8/255`` is ``0.03137255``, not the double ``0.03137254901960784``), integral floats
+bare (``5``), every array element on its own line. Writes are temp-file + atomic rename so a
+half-written scene is never visible to the runtime. No ``bpy``.
 """
 
 from __future__ import annotations
@@ -35,31 +20,17 @@ _INDENT = "  "
 
 
 def f32(value: float) -> float:
-    """Round a Python double to the nearest IEEE-754 single, returned as a double.
-
-    Every float that reaches the contract has passed through a C# ``float`` in the reference
-    implementation, so quantizing here keeps our values bit-comparable with theirs instead of
-    carrying double-precision tails the engine would never see.
-    """
+    """Round to the nearest IEEE-754 single, as the C# ``float`` reference path does."""
     return struct.unpack("<f", struct.pack("<f", value))[0]
 
 
 def f32_repr(value: float) -> str:
-    """Format a float the way System.Text.Json formats a C# ``float``.
-
-    STJ prints the *shortest decimal string that round-trips back to the same float32*. The
-    search below is that definition executed literally: quantize to single precision, then
-    try increasing significant-digit counts until parsing the result reproduces the same
-    single. 9 digits always suffices for binary32.
-
-    Integral values print without a fractional part (``5``, not ``5.0``), matching STJ and the
-    golden fixtures.
-    """
+    """STJ's float32 spelling: the shortest decimal that round-trips to the same single (9
+    digits always suffice), integral values bare."""
     single = f32(value)
 
     if math.isnan(single) or math.isinf(single):
-        # The contract has no encoding for these; a NaN in exported data is a bug upstream
-        # (an unnormalized quaternion, a divide-by-zero scale) and must not be papered over.
+        # A NaN in exported data is an upstream bug and must not be papered over.
         raise ValueError(f"cannot serialize non-finite float: {value!r}")
 
     if single == int(single) and abs(single) < 1e16:
@@ -75,12 +46,8 @@ def f32_repr(value: float) -> str:
 
 
 def _clean_exponent(text: str) -> str:
-    """Normalize Python's ``1e-07`` toward STJ's ``1E-07`` exponent spelling.
-
-    Purely cosmetic: the contract is value-based, not byte-based (see the engine's
-    CONVENTIONS.md), and the conformance gate compares values. Matching the spelling anyway
-    keeps hand-diffing a Blender export against a Godot export practical.
-    """
+    """``1e-07`` -> STJ's ``1E-07``. Cosmetic (the contract is value-based); it keeps exports
+    hand-diffable against Godot's."""
     if "e" not in text:
         return text
     mantissa, _, exponent = text.partition("e")
@@ -149,8 +116,7 @@ def _write_array(value, depth: int, out: list[str]) -> None:  # list | tuple
     out.append("]")
 
 
-# STJ's default encoder escapes HTML-sensitive characters, but every string the contract
-# carries is a path, identifier, or enum name. Escape only what JSON itself requires.
+# Only what JSON requires; STJ's HTML escaping never applies to the paths and names carried.
 _ESCAPES = {
     '"': '\\"',
     "\\": "\\\\",
@@ -182,12 +148,7 @@ def write_json_document(output_path: str, document: JsonValue) -> None:
 
 
 def write_text_atomically(output_path: str, text: str) -> None:
-    """Write via a sibling temp file + ``os.replace``.
-
-    The rename is atomic within a directory, so a reader (the runtime, or a live-preview
-    reload triggered by our own file watch) sees either the previous document or the complete
-    new one -- never a truncated parse error.
-    """
+    """Sibling temp file + ``os.replace``, so a reader never sees a truncated document."""
     directory = os.path.dirname(os.path.abspath(output_path)) or "."
     os.makedirs(directory, exist_ok=True)
 

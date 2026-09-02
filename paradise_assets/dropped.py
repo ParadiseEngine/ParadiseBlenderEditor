@@ -1,24 +1,8 @@
-"""Turning an object dropped from the Asset Browser into a real prefab instance.
-
-Blender's Asset Browser drop is its OWN operation -- it appends or links the datablock and there
-is no hook to replace that with ours, the way :class:`bpy.types.FileHandler` lets us own a file
-drop. So the catalogue ships templates, Blender drops a copy of one, and this notices and converts
-it.
-
-**This is the fragile half of the feature and it is written defensively**, because a handler that
-mutates objects behind the user's back is exactly the shape that produced the duplicate-identity
-bug it now has to avoid:
-
-* it acts only on an object carrying :data:`catalogue.TEMPLATE_KEY` and NO identity, so it can
-  never touch a document object, and converting is idempotent -- the key is cleared first;
-* it does nothing at all unless a document is open, so a dropped template in an unrelated file is
-  left alone rather than silently rewritten;
-* it mints a fresh identity per drop, which is the whole reason it exists: every copy of a
-  template carries the catalogue's guid, and without this the second drop would collide with the
-  first and refuse to save.
-
-If this handler is ever the suspect, disabling it degrades to a visible template object rather
-than to corruption -- the template has no identity, so the save path ignores it entirely.
+"""Converting an Asset Browser drop into a prefab instance. The drop is Blender's own operation
+with no hook to replace it, so a ``depsgraph_update_post`` handler follows it. Written
+defensively: it acts only on a template with NO identity, clears the key first, and mints a
+fresh identity per drop (every template copy carries the catalogue's guid, so the second drop
+would otherwise collide). Disabling it degrades to a visible template, never corruption.
 """
 
 from __future__ import annotations
@@ -45,8 +29,7 @@ def _templates(scene) -> list:
 def _convert(scene, obj) -> None:
     raw = obj.get(catalogue.TEMPLATE_KEY)
 
-    # Cleared FIRST. If anything below raises, the object is left as an ordinary empty rather than
-    # re-entering this on the next depsgraph update, which would be an unkillable error loop.
+    # Cleared FIRST, or a raise below re-enters on the next depsgraph update forever.
     del obj[catalogue.TEMPLATE_KEY]
 
     try:
@@ -71,8 +54,7 @@ def _convert(scene, obj) -> None:
 
 @bpy.app.handlers.persistent
 def _on_depsgraph_update(scene, depsgraph) -> None:
-    # read_state is two dictionary lookups on the scene; doing it before scanning objects keeps
-    # the common case -- a file that is not a Paradise document -- at almost no cost per update.
+    # Cheap check first: this runs on every depsgraph update in every file.
     if store.read_state(scene) is None:
         return
 

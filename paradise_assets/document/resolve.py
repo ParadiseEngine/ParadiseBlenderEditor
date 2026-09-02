@@ -1,19 +1,8 @@
-"""Prefabs and their resolution -- the mirror of C# ``PrefabDocument`` and ``PrefabResolver``.
-
-Prefabs are an AUTHORING concept: the build flattens an instance into plain objects, so nothing
-downstream knows they exist. This addon resolves them for the same reason the build does -- to
-show you the objects a scene actually contains.
-
-**Everything order- and identity-related here is normative.** The C# resolver and this one must
-produce the same documents, so the rules are written down rather than left to whatever each
-implementation's loops happen to do:
-
-* object order -- resolved children follow their instance immediately, in prefab document order;
-* component order -- prefab order, then instance-only additions in instance order;
-* child identity -- ``uuid5(instance guid, prefab-local guid AS TEXT)``. Text, because .NET's
-  ``Guid.ToByteArray`` is mixed-endian and Python's ``UUID.bytes`` is big-endian: hashing raw
-  bytes would mint different identities in each language, and nothing would notice until two
-  tools disagreed about a document.
+"""Prefab resolution, mirroring C# ``PrefabResolver``. Order and identity are NORMATIVE (both
+resolvers must produce the same document): children follow their instance in prefab order;
+components in prefab order then instance additions; child identity is ``uuid5(instance guid,
+prefab-local guid AS TEXT)``, text because .NET's ``Guid.ToByteArray`` is mixed-endian. KNOWN
+GAP (#30): C# hashes the canonical lowercase text; this hashes the raw text.
 """
 
 from __future__ import annotations
@@ -26,10 +15,7 @@ from .prefab import PrefabComponent, PrefabDocument, PrefabObject
 
 __all__ = ["ResolveResult", "mint_child_guid", "resolve"]
 
-#: How deep instances may nest before resolution gives up.
-#:
-#: The cycle check already catches a prefab that reaches itself. This catches the other runaway --
-#: a chain that is acyclic but absurd -- with a number no real asset approaches.
+#: Catches an acyclic but absurd chain; the cycle check catches the rest.
 MAX_NESTING_DEPTH = 32
 
 
@@ -43,22 +29,15 @@ class ResolveResult:
 
 
 def resolve(document: PrefabDocument, prefabs) -> ResolveResult:
-    """Expands every instance in ``document``, however deeply they nest.
-
-    ``prefabs`` maps an :class:`AssetReference` to a :class:`PrefabDocument`, or ``None``.
-    """
+    """Expands every instance in ``document``, however deeply nested."""
     result = ResolveResult()
     result.expanded = _expand_document(document, prefabs, result, [], {}, 0)
     return result
 
 
 def _expand_document(document, prefabs, result, stack, cache, depth) -> int:
-    """Expands one document's instances into ``result``; returns how many THIS document had.
-
-    Deliberately not cumulative: a nested prefab is flattened once and reused by every instance of
-    it, so adding its internal expansions would report a number that grows with caching rather
-    than with the document.
-    """
+    """Expands one document's instances into ``result``; the count is not cumulative, or it
+    would grow with caching rather than with the document."""
     expanded = 0
 
     # Carriers are consumed by the instance they belong to and occupy no slot of their own.
@@ -86,8 +65,7 @@ def _expand_document(document, prefabs, result, stack, cache, depth) -> int:
             result.document.objects.append(candidate)
             continue
 
-        # FLATTEN THE PREFAB FIRST, then expand it. In this order nesting falls out: _expand only
-        # ever sees a prefab with no instances left in it, so it needs no notion of depth.
+        # Flatten first: _expand then never sees a prefab with instances left in it.
         prefab = _flatten(candidate.prefab, prefabs, result, stack, cache, depth)
         if prefab is None:
             continue  # the failure is already recorded
@@ -102,16 +80,9 @@ def _expand_document(document, prefabs, result, stack, cache, depth) -> int:
 
 
 def _flatten(reference, prefabs, result, stack, cache, depth):
-    """A prefab with its own instances already expanded, or ``None`` if it could not resolve.
-
-    Cached by path: a flattened prefab does not depend on who instantiates it -- minting happens at
-    expansion time from the instance's guid -- so one file is flattened once however many instances
-    it has.
-
-    The stack is the cycle detector. A prefab that reaches itself would otherwise recurse until the
-    interpreter gave up, and "box -> rail -> box" tells an author what to delete where a
-    RecursionError does not.
-    """
+    """A prefab with its own instances expanded, cached by path, or ``None``. The stack is the
+    cycle detector: "box -> rail -> box" tells an author what to delete where a RecursionError
+    does not."""
     key = reference.path
     lowered = [entry.lower() for entry in stack]
     if key.lower() in lowered:
@@ -236,8 +207,7 @@ def _rewrite_meta(merged, prefab_object, is_root, instance_guid, minted, overrid
     if name is not None:
         data[well_known.NAME] = name
 
-    # The ROOT's parent comes from the instance -- that is how a prefab is placed under something.
-    # A child's comes from the prefab, remapped to the minted identity.
+    # The root's parent comes from the instance; a child's from the prefab, remapped.
     if is_root:
         parent = overrides.parent if overrides is not None else None
     else:
@@ -259,13 +229,8 @@ def _rewrite_meta(merged, prefab_object, is_root, instance_guid, minted, overrid
 
 
 def _merge_data(prefab_data: dict, override_data: dict) -> dict:
-    """Field by field: the instance's value wins, everything else is inherited.
-
-    Fields the prefab's component does not declare are ADDED, not refused. Whether a field belongs
-    to the component at all is a SCHEMA question -- refusing here would forbid an instance setting
-    ``meta.Parent``, since a prefab root deliberately has none, and that is the commonest edit
-    there is.
-    """
+    """Instance value wins per field; undeclared fields are ADDED, or an instance could not set
+    ``meta.Parent`` on a root that deliberately has none."""
     merged = {key: override_data.get(key, value) for key, value in prefab_data.items()}
     for key, value in override_data.items():
         if key not in merged:
@@ -274,10 +239,5 @@ def _merge_data(prefab_data: dict, override_data: dict) -> dict:
 
 
 def mint_child_guid(instance: str, prefab_local: str) -> str:
-    """A resolved child's scene identity: ``uuid5(instance, prefab-local guid as text)``.
-
-    Deterministic, so a scene resolves to the same identities on every machine. The namespace is
-    the INSTANCE, so twenty instances of one prefab give twenty distinct sets of children with no
-    bookkeeping in the document.
-    """
+    """``uuid5(instance, prefab-local guid as text)``: deterministic, and distinct per instance."""
     return str(uuid.uuid5(uuid.UUID(instance), prefab_local))

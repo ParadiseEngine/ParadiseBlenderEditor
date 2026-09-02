@@ -1,9 +1,5 @@
-"""The "Paradise" tab in the 3D viewport sidebar (N-panel).
-
-Organized around the workflow rather than the data model: mark entities, export, play, preview.
-Entity-ness is invisible in Blender's outliner (it is a flag, not a node type), so the entity
-panel doubles as the only place an author can see whether the selected object is exported.
-"""
+"""The "Paradise" N-panel tab. Entity-ness is a flag, invisible in the outliner, so the entity
+panel is the only place an author can see whether the selected object is exported."""
 
 from __future__ import annotations
 
@@ -47,8 +43,6 @@ class PARADISE_PT_scene(_ParadisePanel, Panel):
         column.prop(settings, "data_dir")
         column.prop(settings, "scene_name_override")
 
-        # The resolved values are shown because both are derived (the //-prefix and the
-        # .blend basename), and a surprising output location is a common first confusion.
         box = layout.box()
         box.label(text=f"Output: scenes/{resolve_scene_name(context.scene)}.json", icon="FILE")
         if not bpy.data.filepath:
@@ -84,8 +78,7 @@ class PARADISE_PT_scene(_ParadisePanel, Panel):
         row = layout.row(align=True)
         row.scale_y = 1.4
         row.operator("paradise.export_scene", icon="EXPORT").force = False
-        # The rebuild-everything variant, deliberately the small button: it costs a full
-        # re-encode of every texture, and is only needed when the exporter itself changed.
+        # Small on purpose: a full re-encode, needed only when the exporter itself changed.
         row.operator("paradise.export_scene", text="", icon="FILE_REFRESH").force = True
 
         row = layout.row(align=True)
@@ -97,9 +90,6 @@ class PARADISE_PT_scene(_ParadisePanel, Panel):
         row.operator("paradise.select_entities", text=f"{count} Entity/Entities", icon="RESTRICT_SELECT_OFF")
         row.operator("paradise.repair_guids", text="", icon="FILE_REFRESH")
 
-        # Scene-wide model previews: load doubles as refresh (an unchanged file reuses its
-        # datablock, a changed one is rebuilt), so one button covers both. The count is the
-        # entities whose geometry lives in a referenced GLB rather than in this .blend.
         referenced = len(model_preview.scene_preview_entities(context.scene))
         if referenced:
             row = layout.row(align=True)
@@ -122,8 +112,6 @@ class PARADISE_PT_scene_navmesh(_ParadisePanel, Panel):
         layout = self.layout
         settings = context.scene.paradise_project
 
-        # Bake + the preview eye live on one row: the bake is what gives the eye something to
-        # show, and the pairing makes that dependency legible.
         row = layout.row(align=True)
         row.scale_y = 1.2
         row.operator("paradise.bake_navmesh", icon="GRID")
@@ -148,8 +136,6 @@ class PARADISE_PT_scene_navmesh(_ParadisePanel, Panel):
         column.prop(settings, "navmesh_cell_size")
         column.prop(settings, "navmesh_cell_height")
 
-        # Stored in the .blend and applied on every bake, including export-on-save. The Godot
-        # host note matters to anyone authoring the same scene from both tools.
         layout.label(text="Defaults mirror the Godot host's bake.", icon="INFO")
 
 
@@ -166,18 +152,9 @@ class PARADISE_UL_config_documents(bpy.types.UIList):
 
 
 class PARADISE_PT_config(_ParadisePanel, Panel):
-    """Authored components that live in FILES rather than on entities.
-
-    A project declares any number of JSON documents here -- a game's tunables, a level's
-    settings, whatever else it keeps as authored payloads -- and each is drawn from the same
-    ``data/authoring-schema.json`` the Components panel uses. The addon attaches no meaning to
-    any of them: it reads the component ids a file declares and draws whatever the schema says
-    those are. A tunable added in the game's C# appears here on the next build.
-
-    Load and Save are buttons rather than automatic on purpose: ``draw()`` may not write ID data,
-    and an automatic write would let a stale panel overwrite hand edits to a file that is the
-    game's source of truth, not ours.
-    """
+    """Authored components that live in JSON files. Load and Save are buttons on purpose:
+    ``draw()`` may not write ID data, and an automatic save would let a stale panel overwrite
+    hand edits to the game's source of truth."""
 
     bl_label = "Config"
     bl_options = {"DEFAULT_CLOSED"}
@@ -202,8 +179,6 @@ class PARADISE_PT_config(_ParadisePanel, Panel):
             box.label(text="Press + to pick one from the data directory.")
             return
 
-        # The file is CHOSEN, not typed: the picker lists the config documents actually under
-        # the data directory, so a row cannot name a file the runtime could not reach.
         column = layout.column(align=True)
         chooser = column.row(align=True)
         chooser.operator("paradise.pick_config_document",
@@ -228,8 +203,7 @@ class PARADISE_PT_config(_ParadisePanel, Panel):
             return
 
         if loaded != config_document.config_stamp(path):
-            # Someone edited the file since it was loaded -- a hand edit, a git checkout, a
-            # rebuild. Saving now would overwrite whatever that was.
+            # Saving now would overwrite whatever changed the file since the load.
             alert = layout.row(align=True)
             alert.alert = True
             alert.operator("paradise.load_config_document",
@@ -270,14 +244,8 @@ class PARADISE_PT_config(_ParadisePanel, Panel):
 
 
 class _RowIndex:
-    """Which leaves and which lists hang directly off each ROW.
-
-    Keyed by the nearest enclosing row (``Tables/0/Entries/1``), not by every object level: a
-    plain composed field keeps drawing flat under its slash path (``Box/SizeX``) exactly as it
-    always has, because changing that would churn every existing panel for a feature about lists.
-
-    Built once per group so drawing a row is a lookup rather than a scan of the whole outline.
-    """
+    """Leaves and lists per enclosing ROW (not per object level, so a composed field still
+    draws flat under its slash path)."""
 
     def __init__(self, leaves, arrays) -> None:
         self.leaves = leaves
@@ -336,14 +304,9 @@ def _draw_leaf(layout, scene, prefix, component, field, label: str) -> None:
 
 
 def _draw_array(layout, scene, prefix, component, index, array) -> None:
-    """A list: a header with its Add button, then one box per row.
-
-    Drawn by hand rather than with ``template_list`` because that needs an RNA
-    ``CollectionProperty`` of registered structs. These rows live in ID properties keyed by
-    string, on a schema that changes every game build, and a row here is a whole sub-form rather
-    than one line. The pattern instead follows ``_draw_host_list_component`` below: a box, a row
-    per item, and operators carrying an index.
-    """
+    """A list: header with Add, one box per row. Hand-drawn because ``template_list`` needs an
+    RNA CollectionProperty of registered structs, and these rows are ID properties on a schema
+    that changes every game build."""
     box = layout.box()
     header = box.row(align=True)
     header.label(text=f"{array.label}  ({array.count})", icon="LINENUMBERS_ON")
@@ -351,8 +314,7 @@ def _draw_array(layout, scene, prefix, component, index, array) -> None:
     add.prefix, add.component, add.path = prefix, component.id, array.path
 
     if array.count == 0:
-        # Said explicitly: an empty list and a list the panel cannot draw look identical
-        # otherwise, and the author has no way to tell which they are looking at.
+        # An empty list and one the panel cannot draw would otherwise look identical.
         note = box.row()
         note.enabled = False
         note.label(text="Empty — press + to add a row", icon="BLANK1")
@@ -384,7 +346,6 @@ def _draw_array(layout, scene, prefix, component, index, array) -> None:
         if array.rows_are_records:
             _draw_container(row_box, scene, prefix, component, index, container=row_path)
         else:
-            # A scalar row IS one widget; there is no container to walk into.
             _draw_leaf(row_box, scene, prefix, component, index.leaf_at(row_path), label="")
 
 
@@ -404,10 +365,8 @@ class PARADISE_PT_play(_ParadisePanel, Panel):
     def draw(self, context) -> None:
         layout = self.layout
 
-        # The runtime host is machine-scoped (an absolute path), so it is stored in addon
-        # preferences -- but Play is dead until it resolves, and "No Paradise runtime found"
-        # is not actionable from a panel that offers no way to fix it. So the same property is
-        # editable here. warn=False: this resolves on every redraw.
+        # The preference is editable here because "No runtime found" is not actionable from a
+        # panel with no way to fix it. warn=False: this resolves on every redraw.
         preferences = get_preferences(context)
         command = resolve_runtime_command(warn=False)
 
@@ -418,7 +377,6 @@ class PARADISE_PT_play(_ParadisePanel, Panel):
             box.label(text="No runtime found — set a path above", icon="ERROR")
             box.label(text="An executable, or a host .csproj")
         elif preferences.runtime_host.strip():
-            # No path echo -- the field above already shows it.
             box.label(text="Ready", icon="CHECKMARK")
         else:
             box.label(text=f"Auto-detected: {os.path.basename(command[0])}", icon="CHECKMARK")
@@ -465,9 +423,7 @@ class PARADISE_PT_entity(_ParadisePanel, Panel):
         header.label(text=obj.name, icon="OBJECT_DATA")
         header.operator("paradise.clear_entity", text="", icon="X")
 
-        # Only the HOST data lives here (see authoring/entity.py); everything that used to be
-        # a fixed field -- kind, agent, sprite, particles, audio, body -- is a schema-driven
-        # component in the Components section below.
+        # Host data only; every former fixed field is a schema-driven component below.
         layout.prop(props, "model_path")
 
         if props.model_path.strip():
@@ -492,12 +448,7 @@ class PARADISE_PT_entity(_ParadisePanel, Panel):
 
 
 class PARADISE_PT_entity_components(_ParadisePanel, Panel):
-    """The game's own components, driven by ``<data>/authoring-schema.json``.
-
-    The Blender counterpart of the Godot host's AuthoredEntityNode inspector: the game declares
-    a component once (a C# record marked [Authored]), a build dumps the schema, and this panel
-    draws it -- no addon change per component. See ``authoring/authored_components.py``.
-    """
+    """The game's components, drawn from ``<data>/authoring-schema.json``."""
 
     bl_label = "Components"
     bl_parent_id = "PARADISE_PT_entity"
@@ -516,19 +467,13 @@ class PARADISE_PT_entity_components(_ParadisePanel, Panel):
         from ..pipeline import schema_build
 
         if schema_build.last_failure():
-            # This panel is where a stale dropdown is NOTICED — the author is looking for a
-            # component that is not here — so the failure that explains it belongs here too.
             alert = layout.row(align=True)
             alert.alert = True
             alert.operator("paradise.show_build_errors",
                            text="Game build failed — components may be stale", icon="ERROR")
 
         if authored.schema_load_error(data_dir) is not None:
-            # LOUD, because there is nothing behind it any more. This host used to vendor a copy
-            # of the engine's schema and merge it underneath the game's, so a project that had
-            # never been built still offered the engine's components. That copy is gone — the
-            # launcher's dump describes the engine's components too — which makes an unbuilt
-            # project an EMPTY panel rather than a partial one.
+            # Loud: with no vendored engine schema, an unbuilt project is an EMPTY panel.
             box = layout.box()
             box.alert = True
             box.label(text="No authoring schema — no components at all.", icon="ERROR")
@@ -537,9 +482,6 @@ class PARADISE_PT_entity_components(_ParadisePanel, Panel):
             box.label(text="engine components included.")
             box.operator("paradise.build_game_schema", icon="FILE_REFRESH")
 
-        # One list, everything the entity exports: derived components as read-only rows,
-        # host-list components (colliders) with their reference lists, form components with
-        # their schema fields — in the schema's stable id order.
         for component in document.components:
             if not authored.is_authorable(component):
                 _draw_derived_components(layout, obj, component)
@@ -572,9 +514,7 @@ class PARADISE_PT_entity_components(_ParadisePanel, Panel):
         remove.component = component.id
 
         fields, hosts = contract_authoring.flatten(component)
-        # Authorable host references have a stored key too (the referenced object's name), so a
-        # component that gained one needs the same sync click a new field does — otherwise the
-        # picker below has nothing to bind to and simply does not appear.
+        # A host reference has a stored key too, so a new one needs the same sync click.
         missing = [
             item.path
             for item in [*fields, *[h for h in hosts if h.stores_slot]]
@@ -589,8 +529,7 @@ class PARADISE_PT_entity_components(_ParadisePanel, Panel):
         ):
             missing.append(contract_authoring.HOST_SOURCE_PATH)
         if missing:
-            # The schema grew since this component was enabled. Draw() may not write ID data,
-            # so the fields are created by an operator click rather than silently here.
+            # draw() may not write ID data, so new fields are created by an operator click.
             sync = box.operator(
                 "paradise.sync_authored_component",
                 text=f"Schema gained {len(missing)} field(s) — click to edit",
@@ -629,16 +568,13 @@ class PARADISE_PT_entity_components(_ParadisePanel, Panel):
                 continue
             if host.stores_slot and key in obj:
                 if host.kind == contract_authoring.HOST_ASSET:
-                    # A FILE, not an object: there is nothing in the scene to point at. Drawn as
-                    # the plain field it is — the extensions the schema declares are enforced at
-                    # export, where the path can be checked against what is actually on disk.
+                    # A file, not an object; extensions are enforced at export.
                     label = host.path
                     if host.asset_kinds:
                         label = f"{host.path} ({', '.join(host.asset_kinds)})"
                     box.prop(obj, f'["{key}"]', text=label)
                     continue
-                # An OBJECT SLOT, not a text field. You point at the object and move it with
-                # Blender's own gizmo; the exporter bakes what the KIND says to take from it.
+                # An object slot; the exporter bakes what the kind says to take from it.
                 box.prop_search(obj, f'["{key}"]', bpy.data, "objects", text=host.path)
                 continue
             row = box.row()
@@ -657,10 +593,8 @@ class PARADISE_PT_entity_components(_ParadisePanel, Panel):
                     text=f"Source ({component.authored_by})",
                 )
 
-        # Authorable lists are editable in CONFIG DOCUMENTS but not on an entity: an entity's key
-        # budget is tighter, and exporting rows from here would change what every scene emits.
-        # Said out loud regardless, because this panel's job is to be a complete inventory of what
-        # the entity exports -- a member that simply vanished from it would read as "not there".
+        # Lists are editable in config documents but not on an entity (tighter key budget, and
+        # exporting rows would change every scene). Shown anyway, or the member reads as absent.
         for array in contract_authoring.outline(component).arrays:
             row = box.row()
             row.enabled = False
@@ -770,11 +704,7 @@ class PARADISE_PT_world(_ParadisePanel, Panel):
 
 
 class PARADISE_PT_material(Panel):
-    """Contract-only material parameters, shown in the Material properties tab.
-
-    Lives next to the material it modifies rather than in the N-panel, because that is where
-    an author is when they are thinking about a material.
-    """
+    """Contract-only material parameters, in the Material properties tab."""
 
     bl_label = "Paradise"
     bl_idname = "PARADISE_PT_material"
@@ -830,13 +760,7 @@ def _draw_derived_components(layout, obj, component) -> None:
 
 
 def _draw_host_list_component(layout, context, obj, component) -> None:
-    """A component whose body is object references: the entity's collider lists — this host's
-    half of the schema's ``authoredBy: shape``. Same box, header and remove button as every
-    other component; the fields are just pointers you assign instead of values you type."""
-    # NO per-component gate any more. A component is a host list because the SCHEMA says its
-    # items are authored by pointing at a host object, and storage now follows from that rather
-    # than from a hand-written map of the two ids the engine happened to ship — so a game's
-    # component draws here exactly as the engine's does, with no Python that knows its name.
+    """A component whose body is object references (the schema's ``authoredBy: shape``)."""
     key = authored.host_ref_key(component)
     entries = authored.host_entries(obj, component)
 

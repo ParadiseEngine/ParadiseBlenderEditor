@@ -1,15 +1,6 @@
-"""Placing a new prefab instance in an open document.
-
-The counterpart to :mod:`load`, for one object rather than a whole file. It builds the same thing
-load would have built had the document already contained the instance -- same markers, same
-display -- so that the object a user drops behaves identically to one that was there all along,
-and a save followed by a reload is a no-op rather than a surprise.
-
-**What makes an instance an instance is its identity plus its prefab reference**, and both are set
-here: a freshly minted guid the document has never seen, and the prefab's own identity read from
-its sidecar. Load takes the reference from the document; a new object has no document entry yet,
-so it carries the reference on itself until the first save writes one (see
-:data:`store.PREFAB_KEY`).
+"""Placing a new prefab instance: the same markers and display :mod:`load` would have built, so
+a dropped object behaves like one that was always there. A new object has no document entry, so
+it carries its prefab reference on itself until the first save (:data:`store.PREFAB_KEY`).
 """
 
 from __future__ import annotations
@@ -67,9 +58,7 @@ def add_instance(
     scene.collection.objects.link(obj)
     obj.location = Vector(location)
 
-    # A fresh uuid4: the instance is a thing the document has never contained, so unlike a
-    # resolved child -- whose identity is MINTED from its instance so it stays stable across
-    # loads -- there is nothing to derive it from and nothing that should collide with it.
+    # A fresh uuid4: unlike a resolved child, there is nothing to derive it from.
     instance_guid = str(uuid.uuid4())
     store.tag_object(obj, instance_guid, _components(root))
     store.tag_prefab(obj, guid, relative)
@@ -86,17 +75,8 @@ def adopt_template(
     relative: str,
     layout: project.ProjectLayout,
 ) -> bool:
-    """Turn an object dropped from the Asset Browser into a real instance, in place.
-
-    The same end state as :func:`add_instance` -- fresh identity, prefab reference, parented to the
-    document root, showing the prefab's mesh -- but applied to an object Blender already created
-    rather than to one made here. Sharing this is the point: there is one definition of what makes
-    an instance, so a dropped one and a placed one cannot drift apart.
-
-    Returns False when the prefab cannot be read, leaving ``obj`` an ordinary empty. That is the
-    honest outcome for a drop whose target is missing: something visible at the drop point, and
-    nothing written into the document.
-    """
+    """Turn a dropped object into an instance in place (the same end state as
+    :func:`add_instance`); False leaves it an ordinary empty when the prefab cannot be read."""
     path = layout.resolve(relative)
     try:
         with open(path, encoding="utf-8") as handle:
@@ -117,11 +97,7 @@ def adopt_template(
 
 
 def _components(root) -> list:
-    """The prefab root's components, for the panel to show.
-
-    Display only, and deliberately the PREFAB's rather than an empty list: an instance shows what
-    it inherits, which is what the panel would show after a reload.
-    """
+    """The prefab root's components for the panel: what a reload would show."""
     return [
         {"id": component.id, "type": component.type, "data": component.data}
         for component in root.components
@@ -154,21 +130,11 @@ def _assets_relative(path: str, layout: project.ProjectLayout) -> str | None:
 
 
 def _parent_to_document_root(obj: bpy.types.Object, scene: bpy.types.Scene) -> None:
-    """Parent the new object to the document's root, and put it in the root's collection.
-
-    Every document has exactly one root, and an object with no parent would BE a second one --
-    which the reader refuses outright. So the parenting is not tidiness; without it the first save
-    produces a document that will not open.
-
-    The COLLECTION matters too, and for a different reason. Blender links a dropped asset into
-    whatever collection is active, which in a default file is "Collection" -- while the document's
-    objects were linked into the master Scene Collection. The result is parented correctly and
-    still looks wrong: the Outliner groups by collection, so the new instance appears off on its
-    own beside the level instead of within it. Moving it beside the root is what makes the
-    Outliner show what the document says.
-    """
-    # `obj` is excluded: it has an identity and no parent yet, so counting it would make every
-    # document look like it already had two roots and this would never parent anything.
+    """Parent to the document root (an unparented object would be a second root, which the
+    reader refuses) and move into the root's collection so the Outliner shows it inside the
+    level. Silently returns when there is not exactly one root, which then saves an unloadable
+    document (#32)."""
+    # `obj` itself has an identity and no parent yet; counting it would always find two roots.
     roots = [
         candidate for candidate in scene.collection.all_objects
         if candidate is not obj
@@ -181,8 +147,7 @@ def _parent_to_document_root(obj: bpy.types.Object, scene: bpy.types.Scene) -> N
 
     root = roots[0]
     obj.parent = root
-    # Identity, so the placement the user sees is the local transform that gets written -- the
-    # same reason load sets it.
+    # Identity, so the visible placement IS the local transform written (as load does).
     obj.matrix_parent_inverse.identity()
 
     _link_beside(obj, root)
@@ -201,11 +166,8 @@ def _link_beside(obj: bpy.types.Object, root: bpy.types.Object) -> None:
 
 
 def _show_prefab_mesh(obj, document, layout, prefab_path) -> None:
-    """Give the new object the prefab's mesh, so it looks like what it is.
-
-    Resolved through the same resolver the loader uses, so a prefab that instantiates another
-    shows the mesh of whatever is actually at its root rather than nothing.
-    """
+    """Give the object the prefab's mesh, through the loader's resolver so a nested prefab
+    shows its actual root mesh."""
     mesh_fields = schema.load(layout.root)
 
     def prefabs(reference):

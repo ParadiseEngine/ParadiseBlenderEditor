@@ -1,25 +1,17 @@
 """Python mirror of ``Paradise.Export.Data.LevelDocument``.
 
-One dataclass per C# record, with the **same field order** -- System.Text.Json writes
-properties in declaration order, so preserving it keeps a Blender export diffable against a
-Godot export of the same scene.
+Same field order as the C# records: System.Text.Json writes declaration order, and a Blender
+export must stay diffable against a Godot one. Every field is emitted, nulls included
+(``DefaultIgnoreCondition = Never``). Enums are ``str`` subclasses serialized by name, so the
+C# mistake of an unregistered converter emitting integers is not expressible here. Defaults
+match C# exactly. Floats are quantized to float32 by :func:`.writer.f32_repr`.
 
-Conventions carried over from the C# side, all load-bearing:
+Seven records no longer exist in C# (v6 engine declares no authored components):
+``NameComponentData``, ``TransformComponentData``, ``RenderableComponentData``,
+``AgentComponentData``, ``EntityInteractableComponentData``, ``SpriteAnimationComponentData``,
+``SSceneLightData``. Kept so v5 documents and tests still read; removal is #25.
 
-* Every field is emitted, including nulls (``DefaultIgnoreCondition = Never``).
-* Vectors/quaternions serialize as flat float arrays; matrices as 16 floats, column-major,
-  translation at indices 12/13/14 (see :mod:`.matrix`).
-* ``Color32`` serializes as ``{"r","g","b","a"}`` with 8-bit-quantized channels.
-* Enums serialize **by name** (``"Box"``, ``"Dynamic"``). The C# writer needs an explicit
-  converter registration per enum or it silently emits integers; here they are plain ``str``
-  subclasses so the mistake is not expressible.
-* Defaults match the C# defaults exactly, so a field the Blender addon does not author yet
-  still round-trips to the same value the Godot addon would produce.
-
-Values are stored as plain Python floats and quantized to float32 at serialization time by
-:func:`.writer.f32_repr` -- see that module for why.
-
-No ``bpy`` import: this module is pure data and is unit-tested standalone.
+No ``bpy`` import.
 """
 
 from __future__ import annotations
@@ -56,27 +48,10 @@ __all__ = [
     "TransformComponentData",
 ]
 
-# LevelData.CurrentSchemaVersion. Bump only in lockstep with the engine.
-#
-# v6 took the engine out of the authoring vocabulary entirely: it declares NO authored components,
-# so every record below except the two well-known ones is a GAME declaration now, and the ids this
-# host writes resolve against whatever the game declares under them. Two consequences here. The
-# entity's name and world matrix stop being engine records (NameComponentData,
-# TransformComponentData) and become the format's own `meta` and `transform` payloads -- see
-# contract/well_known.py. And the HIERARCHY comes back: the bake stopped flattening, so a document
-# carries local TRS plus a parent guid and composing the chain is the loader's job. That is why
-# export/placement.py exists and why the scene walk needs two passes.
-#
-# v5 reduced an entity to its authored components: an entry under "Entities" is now a bare ARRAY
-# of {Id, Type, Data}, not an object with eighteen fields and a Components key. The object's name
-# and its world matrix travel as ordinary components (Name, Transform); an object the author
-# switched off is one this exporter does not write; the parent link, the prefab provenance and the
-# override table are gone outright. So are the document's own blocks -- Camera, Lighting,
-# NavMeshAgent, Interactables, Materials -- with the scene's environment becoming a component on
-# an object of its own and each lamp becoming an object carrying a Light.
-#
-# v4 moved an entity's material slots onto its Renderable component; v3 replaced nine named
-# component slots with one list. Both are below the engine's floor now.
+# LevelData.CurrentSchemaVersion; bump only in lockstep with the engine. v6: the engine declares
+# no authored components (ids resolve against the game's schema), name/transform are the
+# format's `meta`/`transform` payloads (well_known.py), and the hierarchy is back -- a document
+# carries local TRS plus a parent guid, which is why export/placement.py exists.
 SCHEMA_VERSION = 6
 
 Vec3 = tuple[float, float, float]
@@ -116,34 +91,16 @@ def _matrix_json(m) -> list[float] | None:  # axes.Mat4 | None
     return None if m is None else flatten_column_major(m)
 
 
-# --------------------------------------------------------------------------------------
-# Components
-# --------------------------------------------------------------------------------------
-
-
 @dataclass
 class RenderableComponentData:
-    """A mesh reference, and nothing else.
-
-    ``mesh`` is a GLB path relative to ``data/``. Textures inside the GLB must be KTX2 -- the
-    engine reader rejects PNG/JPEG.
-
-    The material slots are NOT here. They were, from v4, and they moved to
-    :class:`MaterialsComponentData` in v5: they are not geometry, and two objects sharing a GLB and
-    differing only in their slots are two drawable VARIANTS and one mesh. Two records asserting one
-    wire fact is an ambiguity a future exporter has no way to resolve.
-
-    This host no longer writes this component at all -- what an object draws is authored, not
-    derived from it having mesh data -- but the mirror is kept because the record still exists in
-    the contract and another host writes it.
-    """
+    """v5 mesh reference (GLB path relative to ``data/``; textures must be KTX2). Material slots
+    live in :class:`MaterialsComponentData`: two objects sharing a GLB with different slots are
+    two variants of one mesh."""
 
     mesh: str | None = None
     mesh_node: str | None = None
 
     def to_json(self) -> dict[str, Any]:
-        # Declaration order matches the C# record: System.Text.Json writes properties in that
-        # order, and a Blender export has to stay diffable against a Godot one.
         return {"Mesh": self.mesh, "MeshNode": self.mesh_node}
 
 
@@ -176,8 +133,7 @@ class ColliderShapeData:
             "Size": vec3_to_json(self.size),
             "Radius": self.radius,
             "Height": self.height,
-            # NavObstacle is a Unity-era carving feature with no Godot or Blender authoring
-            # equivalent; both hosts emit null. Kept in the shape so the key set matches.
+            # No host authors NavObstacle; both emit null so the key set matches.
             "NavObstacle": None,
         }
 
@@ -248,12 +204,8 @@ class SpriteAnimationComponentData:
     billboard: bool = True
 
     def validate_and_normalize(self) -> None:
-        """Port of ``SpriteAnimationComponentData.ValidateAndNormalize``.
-
-        Both hosts normalize *before* writing so the runtime never has to defend against
-        out-of-range authoring, and so the two exporters cannot disagree on what e.g.
-        ``FrameCount = 0`` means.
-        """
+        """Port of ``SpriteAnimationComponentData.ValidateAndNormalize``; both hosts normalize
+        before writing so they cannot disagree on what ``FrameCount = 0`` means."""
         self.columns = max(1, self.columns)
         self.rows = max(1, self.rows)
         cells = self.columns * self.rows
@@ -300,11 +252,8 @@ class ParticleEmitterComponentData:
     fps: float = 0.0
 
     def validate_and_normalize(self) -> None:
-        """Port of ``ParticleEmitterComponentData.ValidateAndNormalize``.
-
-        The 64-particle ceiling is the runtime's per-emitter buffer size, not a style choice --
-        exceeding it would overrun the snapshot layout.
-        """
+        """Port of ``ParticleEmitterComponentData.ValidateAndNormalize``. The 64-particle
+        ceiling is the runtime's per-emitter buffer size; exceeding it overruns the snapshot."""
         self.max_particles = min(max(self.max_particles, 1), 64)
         self.emit_rate = _positive_or(self.emit_rate, 8.0)
         self.lifetime_seconds = _positive_or(self.lifetime_seconds, 1.5)
@@ -351,14 +300,8 @@ class ParticleEmitterComponentData:
 
 @dataclass
 class AudioEmitterComponentData:
-    """A positional sound source. Mirror of ``AudioEmitterComponentData``.
-
-    Events are carried as NAMES, not resolved ids. The audio middleware derives an id by hashing
-    the name when banks are generated, so resolving at export time would pin the scene to one
-    particular bank build; the runtime hashes instead, which survives regeneration. A name that
-    matches nothing simply plays nothing -- event names live only inside the audio project, which
-    the exporter cannot see, so a renamed event goes quiet rather than failing the export.
-    """
+    """Mirror of ``AudioEmitterComponentData``. Events travel as names, not hashed ids:
+    resolving at export would pin the scene to one bank build; the runtime hashes instead."""
 
     start_event: str | None = None
     stop_event: str | None = None
@@ -367,12 +310,8 @@ class AudioEmitterComponentData:
     attenuation_scale: float = 1.0
 
     def validate_and_normalize(self) -> None:
-        """Port of ``AudioEmitterComponentData.ValidateAndNormalize``.
-
-        A zero or negative scale collapses the authored attenuation curve, leaving the emitter
-        either silent everywhere or audible everywhere -- both of which read as a broken sound
-        rather than a bad number, so repair rather than trust it.
-        """
+        """Port of ``AudioEmitterComponentData.ValidateAndNormalize``. A non-positive scale
+        collapses the attenuation curve and reads as a broken sound, not a bad number."""
         self.attenuation_scale = _positive_or(self.attenuation_scale, 1.0)
 
     def to_json(self) -> dict[str, Any]:
@@ -387,21 +326,13 @@ class AudioEmitterComponentData:
 
 @dataclass
 class AuthoredComponentData:
-    """One game-defined component riding along with an entity: a stable id and an opaque
-    payload.
-
-    ``data`` is a plain dict on purpose -- the mirror of the C# side carrying it as a raw
-    ``JsonElement``. The engine cannot name the type (that is the entire point of the
-    mechanism), so neither does this mirror: the payload is built by
-    :func:`.authoring.build_payload` from the game's authoring schema and travels untouched.
-    """
+    """One authored component: a stable id and an opaque payload (a plain dict, mirroring the
+    C# ``JsonElement``; the engine cannot name the type and neither does this)."""
 
     id: str = ""
 
-    #: Fully qualified CLR name of the record, copied verbatim from the authoring schema. Read by
-    #: the engine only when :attr:`id` fails to resolve, but written whenever it is known: a
-    #: payload that loaded as nothing tells whoever is reading it precisely nothing without this.
-    #: Optional on the wire, so it is omitted rather than sent empty.
+    #: CLR name from the schema, verbatim; the engine's fallback when :attr:`id` fails to
+    #: resolve. Optional on the wire, so omitted rather than sent empty.
     type: str | None = None
 
     data: dict[str, Any] = field(default_factory=dict)
@@ -416,37 +347,19 @@ class AuthoredComponentData:
 
 @dataclass
 class EntityComponentsData:
-    """Every component authored on an entity: engine's and game's alike, one list.
-
-    This used to be nine typed slots plus a ``custom`` list, mirroring nine named keys in the
-    contract. The contract has one list now (schema v3), so this does too -- and the exporter no
-    longer has to know which of two places a component belongs in.
-
-    The typed records above have not gone anywhere: they are still what builds a payload, and
-    :meth:`add_engine` serializes one into an entry. What went is the idea that the engine's
-    components get a reserved key and a game's do not.
-    """
+    """Every component authored on an entity, one list (schema v3 and later)."""
 
     components: list[AuthoredComponentData] = field(default_factory=list)
 
-    #: Where the game's authoring schema lives, so :meth:`add_engine` can look a component's CLR
-    #: type name up in it. Not part of the wire format and never serialized -- :meth:`to_json`
-    #: writes only ``components`` -- but it has to be HERE rather than on each call, because the
-    #: seven call sites that add an engine component all already hold an ``ExportPaths`` and none
-    #: of them should have to think about where a type name comes from.
+    #: Where :meth:`add_engine` looks type names up. Never serialized.
     data_dir: str | None = None
 
     def add(self, component: AuthoredComponentData) -> None:
         self.components.append(component)
 
     def add_engine(self, component_id: str, payload) -> None:
-        """One of the ENGINE's components, from the typed record that builds its payload.
-
-        The CLR type name is read out of the game's dumped schema -- which describes the engine's
-        components too, because the launcher that dumps it scans its references. See
-        :func:`.component_ids.engine_type_name`, including why a schema that cannot answer is an
-        error rather than an omitted field.
-        """
+        """Add a typed record's payload; the type name comes from the game's dumped schema and
+        a schema that cannot answer is an error (:func:`.component_ids.engine_type_name`)."""
         from . import component_ids
 
         if self.data_dir is None:
@@ -462,8 +375,7 @@ class EntityComponentsData:
         ))
 
     def find(self, component_id: str) -> AuthoredComponentData | None:
-        """The entry for one id, or None. A list has no fixed positions, so a caller that needs to
-        read back what it just wrote -- the agent/rigidbody rule does -- asks by id."""
+        """The entry for one id, or None."""
         for component in self.components:
             if component.id == component_id:
                 return component
@@ -473,29 +385,9 @@ class EntityComponentsData:
         return [component.to_json() for component in self.components]
 
 
-# --------------------------------------------------------------------------------------
-# Entities
-# --------------------------------------------------------------------------------------
-
-
-# --------------------------------------------------------------------------------------
-# Objects
-# --------------------------------------------------------------------------------------
-#
-# There is no entity dataclass. An object in the document IS its component list -- see
-# LevelData.entities -- so what would have been LevelEntityData is an EntityComponentsData and
-# nothing else. The two facts every host states about every object it writes are components like
-# any other: NameComponentData and TransformComponentData, below.
-
-
 @dataclass
 class NameComponentData:
-    """What an object is called.
-
-    For DIAGNOSTICS. A scene is two hundred objects and a runtime refusal that cannot name one
-    sends someone counting rows in a JSON file. It is not an identity: nothing resolves anything
-    by it, and two objects may share a name.
-    """
+    """v5 display name, for diagnostics only: not an identity, and two objects may share one."""
 
     value: str = ""
 
@@ -505,16 +397,8 @@ class NameComponentData:
 
 @dataclass
 class MaterialsComponentData:
-    """The materials that override a mesh's own, one per GLB primitive.
-
-    An ENGINE component, and it has to be: a material assignment is Blender's material slots, so it
-    is derived by every exporter from the object it is exporting, exactly as the name and the
-    transform are. A game cannot own it for the same reason a game cannot own the transform — the
-    host that fills it in cannot be made to know a particular game's type.
-
-    A null entry keeps the GLB's own material for that primitive, and dropping one would shift
-    every override after it onto the wrong primitive.
-    """
+    """Material overrides, one per GLB primitive. A null entry keeps the GLB's own material;
+    dropping one would shift every override after it onto the wrong primitive."""
 
     slots: list[str | None] = field(default_factory=list)
 
@@ -524,24 +408,12 @@ class MaterialsComponentData:
 
 @dataclass
 class TransformComponentData:
-    """Where an object stands: its world placement, column-major, translation at 12/13/14.
-
-    The one component an exporter writes for every object it emits -- anything that exists is
-    somewhere. It replaces the four transform fields the entity record used to carry (local
-    position/rotation/scale plus two matrices), which stated the same placement four times and
-    let them disagree: a non-uniformly scaled parent made the decomposed three a lossy version of
-    the matrix nobody could tell from the exact one.
-    """
+    """v5 world placement, column-major, translation at 12/13/14."""
 
     world: Any = None
 
     def to_json(self) -> dict[str, Any]:
         return {"World": _matrix_json(self.world)}
-
-
-# --------------------------------------------------------------------------------------
-# Scene-level
-# --------------------------------------------------------------------------------------
 
 
 @dataclass
@@ -603,20 +475,11 @@ SSceneLightData = SceneLightData
 
 @dataclass
 class EnvironmentData:
-    """How the scene is lit as a whole -- a COMPONENT on an object of its own since v5.
+    """Scene lighting, a component on an object of its own since v5."""
 
-    It used to be reachable only through a named "active state" in a document-level Lighting
-    block: a second addressing scheme for a thing exactly one of which was ever used. The two
-    shadow settings moved here with it, because they were on that block for want of anywhere
-    else and they are as much part of "how this scene is lit" as the ambient is.
-    """
-
-    #: Per-layer shadow map resolution the scene asks its renderer for, in texels. None leaves
-    #: the renderer's default in place. Always serialized (null included) to mirror the C#
-    #: contract's serialization exactly.
+    #: Shadow map resolution in texels; None leaves the renderer's default.
     shadow_map_size: int | None = None
-    #: Soft-shadow blur: the PCF disk radius in shadow texels -- the penumbra width of every
-    #: shadow edge. None leaves the renderer's default.
+    #: PCF disk radius in shadow texels; None leaves the renderer's default.
     shadow_blur: float | None = None
     ambient_mode: str = "Color"
     ambient_color: Color32 = field(default_factory=lambda: Color32.from_rgba(0.5, 0.52, 0.56))
@@ -748,17 +611,10 @@ class LevelMaterialData:
 
 @dataclass
 class LevelData:
-    """Root document written to ``data/scenes/<Scene>.json``.
-
-    Since v5 it is a version and a list of objects, and an object is a list of components. Every
-    other key this used to carry -- Camera, Lighting, NavMeshAgent, Interactables, NavMeshFile,
-    Materials -- is gone: three were written by this host and read by nobody, and the two that
-    WERE read (the lighting states and the viewport camera) are now components, which is the
-    whole point. One rule for the document: a host writes components, a runtime reads components.
-    """
+    """Root document, ``data/scenes/<Scene>.json``: a version and a list of objects, each a
+    list of components."""
 
     schema_version: int = SCHEMA_VERSION
-    #: One entry per object, and an object IS its authored components.
     entities: list[EntityComponentsData] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:

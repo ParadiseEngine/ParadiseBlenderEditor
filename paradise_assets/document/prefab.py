@@ -1,19 +1,10 @@
-"""The authoring document -- what a ``*.prefab`` holds, whether a game calls it a level or a prop.
+"""The ``*.prefab`` authoring document, mirroring C# ``PrefabDocument.cs`` and its serializer.
 
-The Python mirror of ``src/Paradise.Assets.Documents/PrefabDocument.cs`` and its serializer.
-
-Deliberately NOT the export contract. The contract JSON is a bake -- world matrices, references
-resolved to values, no identities -- and this is what the bake is computed FROM, so it keeps
-exactly what baking destroys: durable identity, local transforms, parents, and references left as
-references.
-
-**An object has no privileged members.** Identity, name, parent and placement are all components
-(:mod:`well_known`), addressed the way a game's components are. That is the whole reason a prefab
-instance needs one override mechanism: a component it repeats is overridden field by field, and
-identity and placement are not special cases.
-
-Reading is strict, matching the C# reader. Writing goes through :mod:`canonical_toml`, so read ->
-write is byte-identical for a canonical input -- ``paradise-assets prefab-check`` compares bytes.
+Not the export contract: this keeps what the bake destroys (identity, local transforms, parents,
+unresolved references). An object has no privileged members; identity and placement are
+components (:mod:`well_known`), which is why one override mechanism covers everything. Reading
+is strict like the C# reader; writing goes through :mod:`canonical_toml`, and ``prefab-check``
+compares bytes.
 """
 
 from __future__ import annotations
@@ -57,13 +48,8 @@ class PrefabDocumentError(Exception):
 
 @dataclass
 class PrefabComponent:
-    """One component entry: identity, readable name, and a payload that sits flat beside them.
-
-    The payload may not use a reserved key: flattened onto the wire it would collide with the
-    entry's own structure, and ``dict.update`` in the writer would swallow the collision
-    silently. Refusing at construction makes it a named error at the code that built it.
-    (Parsed text cannot collide -- TOML itself rejects a duplicate key.)
-    """
+    """One component entry. A payload may not use a reserved key: flattened onto the wire it
+    collides with the entry's structure and ``dict.update`` would swallow it silently."""
 
     id: str
     type: str | None = None
@@ -167,18 +153,8 @@ class PrefabDocument:
         return self.root().guid  # type: ignore[return-value]
 
     def validate(self, source: str) -> None:
-        """Applies the one rule a document adds to its object list: exactly one root.
-
-        Exactly one because an instance places exactly one thing, and "which of these several is
-        the instance" has no good answer -- the rule Unity prefabs, Godot's PackedScene and Unreal
-        blueprints all settle on. It is what lets any document be instantiated into any other
-        rather than only a privileged kind.
-
-        A document that instantiates another is FINE, and so is one carrying an override carrier.
-        Both were once refused -- the first because the resolver could not recurse, the second
-        because carriers were "a scene thing" and this was "a prefab". There is one kind of
-        document now.
-        """
+        """Exactly one root: an instance places exactly one thing, which is what lets any
+        document be instantiated into any other."""
         if not self.objects:
             raise PrefabDocumentError(source, "has no objects")
 
@@ -208,9 +184,7 @@ def loads(text: str, source: str = "<document>") -> PrefabDocument:
     except tomllib.TOMLDecodeError as error:
         raise fail(f"is not valid TOML ({error})") from error
 
-    # tomllib returns a plain dict for both `x = { … }` and `[x]`, so the model type has to be
-    # recovered before anything writes the document back -- otherwise every asset reference would
-    # move to a header on the first save and scene-check would call every file non-canonical.
+    # tomllib erases the inline/header form; without this every reference moves under a header.
     root = canonical_toml.restore_inline_tables(root)
 
     _reject_unknown(root, _DOCUMENT_KEYS, "at the document root", fail)
@@ -248,21 +222,14 @@ def loads(text: str, source: str = "<document>") -> PrefabDocument:
 
     _validate_parents(parents, fail)
 
-    # Structure first, then the document's own rule. Every read goes through here, so "exactly one
-    # root" holds for anything downstream that has a document at all.
     document.validate(source)
     return document
 
 
 def dumps(document: PrefabDocument) -> str:
-    """Render a document as canonical TOML text.
-
-    Overlay edits store asset references as plain dicts (JSON cannot hold
-    :class:`~.canonical_toml.InlineTable`). Restoring them here is what keeps
-    ``Slots = [{…}, {}]`` an array of values rather than ``[[Slots]]`` headers, and what
-    stops ``format_value`` from raising on a dict that sat next to an InlineTable in the
-    same list -- the TypeError that made a Materials edit refuse to save.
-    """
+    """Render a document as canonical TOML. Overlay edits hold references as plain dicts (JSON
+    cannot carry ``InlineTable``); restoring them here is what stopped a Materials edit raising
+    ``TypeError`` at save. Non-reference records in a list still raise (#29)."""
     root: dict = {"schema_version": SUPPORTED_SCHEMA_VERSION}
     if document.objects:
         root["objects"] = [_object_table(o) for o in document.objects]
@@ -307,8 +274,7 @@ def _read_component(table: dict, object_context: str, fail) -> PrefabComponent:
 
     data = {k: v for k, v in table.items() if k not in RESERVED_KEYS}
     if removed and data:
-        # "Remove this, and also here is what it should contain" has no meaning, and is almost
-        # certainly an edit that deleted only half of what it meant to.
+        # "Removed, and here is its content" is an edit that deleted half of what it meant to.
         raise fail(f"marks a component '{REMOVED_KEY}' but also gives it fields {context}")
 
     component = PrefabComponent(identity, type_name, data, removed)
@@ -329,8 +295,7 @@ def _object_table(obj: PrefabObject) -> dict:
 
 
 def _component_table(component: PrefabComponent) -> dict:
-    # The same shape gate the reader applies, pointed the other way: a tool that builds a
-    # malformed well-known payload fails here, not as a document the next read refuses.
+    # The reader's shape gate on the way out, so a malformed payload fails at its builder.
     problem = well_known.payload_problem(component)
     if problem is not None:
         raise ValueError(f"this document {problem}, so it cannot be written")
@@ -358,12 +323,7 @@ def _reject_unknown(table: dict, known: frozenset[str], context: str, fail) -> N
 
 
 def _validate_parents(parents: dict[str, str | None], fail) -> None:
-    """Reject dangling and cyclic parents.
-
-    A dangling parent is an edit that deleted an object without reparenting its children; a cycle
-    has no world transform at all. Both must fail here rather than as infinite recursion while the
-    loader walks the hierarchy.
-    """
+    """Reject dangling and cyclic parents here rather than as infinite recursion in the loader."""
     for guid, parent in parents.items():
         if parent is not None and parent not in parents:
             raise fail(f"parents object '{guid}' to '{parent}', which does not exist")

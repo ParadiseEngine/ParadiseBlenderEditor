@@ -1,19 +1,7 @@
-"""A reference from an authored document to an asset -- the Python mirror of C# ``AssetReference``.
-
-**The GUID is authoritative and the path is the fallback.** Resolution tries the GUID first, so
-renaming or moving an asset never touches a document that references it. The path is kept because
-a GUID alone is unreadable in a diff and, more importantly, because it is the recovery route: a
-sidecar that gets lost would otherwise break every reference to its asset.
-
-Both are written, and ``verify`` refuses a document where the two name DIFFERENT assets.
-
-``path`` is always the AUTHORING path (``materials/x.toml``), never the built one. The build
-flattens a reference to whatever value the runtime resolves -- the asymmetry the export contract
-already lives by: *authored as a REFERENCE, exported as a VALUE*.
-
-The wire form is an inline table, ``{ guid = "…", path = "…" }``, and an absent reference is the
-empty one, ``{}`` -- which is what a null material slot is, and why it matters that the empty form
-exists at all.
+"""An asset reference (mirror of C# ``AssetReference``): the GUID is authoritative, the
+authoring path is the diffable fallback and the recovery route for a lost sidecar. Wire form is
+the inline table ``{ guid, path }``; ``{}`` is the null slot. KNOWN GAP (#30): the guid text is
+not validated or normalised here as C# does.
 """
 
 from __future__ import annotations
@@ -37,12 +25,8 @@ class AssetReference:
 
 
 def write(reference: AssetReference | None) -> InlineTable:
-    """Renders a reference, or ``{}`` for ``None``.
-
-    Key order is fixed at guid then path -- guid first because it is the authoritative half, and
-    fixed because the canonical writer emits model order and the C# side has to produce the same
-    bytes.
-    """
+    """Renders a reference, or ``{}``. Key order guid, path is fixed: the C# side must produce
+    the same bytes."""
     if reference is None:
         return InlineTable()
     return InlineTable({GUID_KEY: reference.guid, PATH_KEY: reference.path})
@@ -60,9 +44,7 @@ def read(value, context: str, fail) -> AssetReference | None:
     guid = value.get(GUID_KEY)
     path = value.get(PATH_KEY)
 
-    # Both keys required whenever the table is non-empty. A reference carrying only a path would
-    # resolve today and break on the first rename -- the failure the guid exists to prevent, so
-    # accepting it would quietly give up the guarantee.
+    # A path-only reference resolves today and breaks on the first rename.
     if not isinstance(guid, str) or not isinstance(path, str):
         raise fail(f"has an asset reference missing '{GUID_KEY}' or '{PATH_KEY}' {context}")
     if not guid or not path:

@@ -3,10 +3,10 @@
 **This is a cross-language contract.** The engine's writer
 (``src/Paradise.Assets.Documents/CanonicalTomlWriter.cs``) and this one must produce
 IDENTICAL BYTES for equivalent documents. Machine writes happen on both sides of the fence --
-this addon syncs scene documents back, the CLI's build and ``mv`` verbs rewrite them -- and only
-byte-identical output keeps a round trip out of the diff. ``paradise-assets scene-check`` polices
-exactly that property, so a disagreement here is not a style difference: it is a failing check on
-every scene the addon has touched.
+this addon syncs prefab documents back, the CLI's build verb rewrites them -- and only
+byte-identical output keeps a round trip out of the diff. ``paradise assets prefab-check``
+polices exactly that property, so a disagreement here is not a style difference: it is a failing
+check on every document the addon has touched.
 
 The spec, normative (numbering follows the C# doc so the two can be read side by side):
 
@@ -25,7 +25,8 @@ The spec, normative (numbering follows the C# doc so the two can be read side by
    why this module is short. See :func:`format_float`.
 8. Booleans ``true`` / ``false``.
 9. Arrays are one line: ``[1, 2, 3]`` -- ``", "`` between elements, no trailing comma, empty is
-   ``[]``. Arrays hold scalars or nested arrays, never inline tables.
+   ``[]``. Arrays hold scalars, nested arrays, or inline tables (rule 11). A list of generic
+   ``dict`` is an array of tables, rule 10.
 10. Every nested table is a ``[dotted.path]`` header; every array of tables is one
     ``[[dotted.path]]`` header per element, in element order. One blank line precedes every
     header except at the start of the document. Never dotted keys.
@@ -34,21 +35,27 @@ The spec, normative (numbering follows the C# doc so the two can be read side by
     is how a null element inside an array is spelled. Inline tables never nest another table.
 
     WRITING picks the form by TYPE, so a caller that builds a model controls what comes out.
-    READING restores it from CONTENT, not from the parse: our tomllib erases the inline/header
-    distinction entirely (the C# side could ask Tomlyn, but a rule only one side can compute is
-    no rule at all -- both readers must rebuild the same model from the same bytes). So a table
-    is inline iff it is empty or has exactly the two string
-    keys ``guid`` and ``path`` (:func:`is_written_inline`). That shape is therefore
-    RESERVED for asset references. Exact, because a vaguer rule ("all its values are scalars")
-    would have this and the C# implementation agreeing until the first document where they read it
-    differently, surfacing as a ``scene-check`` byte failure with nothing pointing at formatting.
+    READING restores it from CONTENT, not from the parse, because ``tomllib`` erases the
+    inline/header distinction and a rule only the C# side can compute is no rule at all: both
+    readers must rebuild the same model from the same bytes. The rule (ParadiseEngine#187) is
+    that a table is inline iff it is an asset reference -- empty, or exactly the two string keys
+    ``guid`` and ``path`` (:func:`is_written_inline`), a shape therefore RESERVED for references
+    -- OR it sits inside an array, where TOML permits only the inline form. Exact rather than
+    vague ("all its values are scalars"), because two implementations agreeing until the first
+    document that splits them surfaces as a byte failure with nothing pointing at formatting.
+
+    KNOWN GAP (#29): :func:`restore_inline_tables` implements only the reference half. A
+    non-reference table inside an array is restored as a generic ``dict`` and re-emitted as
+    ``[[header]]`` blocks, which C# does not do, and a list mixing a record row with a null
+    ``{}`` row cannot be written at all. Any document holding a list of records flips form on
+    the first save here until that lands.
 
     One consequence for rule 10: an empty table is written ``{}`` rather than under a header,
     because in these documents the only empty table that occurs is a reference to nothing.
+    (The C# writer currently disagrees and emits a header; ParadiseEngine#199.)
 
 The document model is plain Python: ``dict`` (insertion-ordered, which is what makes rule 3
-expressible at all), ``list``, ``str``, ``bool``, ``int``, ``float``. A list of dicts is an
-array of tables; a list of anything else is an array.
+expressible at all), ``list``, ``str``, ``bool``, ``int``, ``float``.
 
 Imports no ``bpy``: this is format code, and it has to be testable without Blender.
 """
@@ -71,30 +78,21 @@ __all__ = [
 
 _BARE_KEY = re.compile(r"^[A-Za-z0-9_-]+$")
 
-#: The two keys an asset reference has, in the order it writes them.
 GUID_KEY = "guid"
 PATH_KEY = "path"
 
 
 class InlineTable(dict):
-    """A table written on ONE line, ``{ key = value, … }`` -- rule 11.
-
-    A ``dict`` subclass so it is ergonomic to build and read, but a DISTINCT TYPE so the writer
-    never has to guess. Every ``isinstance(x, dict)`` test in this module therefore has to exclude
-    it explicitly: an ``InlineTable`` is a VALUE, not a sub-table, and a list of them is an array
-    of values rather than an array of tables. Getting that wrong turns ``Slots = [{…}]`` into
-    ``[[Slots]]`` headers, which cannot express the null slot at all.
-    """
+    """A table written on one line (rule 11). A ``dict`` subclass, so every ``isinstance(x, dict)``
+    in this module must exclude it: treating one as a sub-table turns ``Slots = [{…}]`` into
+    ``[[Slots]]`` headers, which cannot express the null slot."""
 
     __slots__ = ()
 
 
 def is_written_inline(table) -> bool:
-    """Whether a parsed table was written inline -- i.e. whether it is an asset reference,
-    the one thing this format writes inline at value position. Decision record: engine issue #187.
-
-    Exact by design -- see rule 11. Empty, or exactly ``guid`` and ``path``, both strings.
-    """
+    """Whether a parsed table is an asset reference: empty, or exactly ``guid`` and ``path``,
+    both strings (rule 11, ParadiseEngine#187)."""
     if len(table) == 0:
         return True
     if len(table) != 2:
@@ -108,13 +106,8 @@ def is_written_inline(table) -> bool:
 
 
 def restore_inline_tables(value):
-    """Rebuild :class:`InlineTable` values in something ``tomllib`` just parsed.
-
-    ``tomllib`` returns a plain ``dict`` for both forms, so the model type is recovered here by
-    the rule-11 predicate before anything writes the document back. Without this pass a document
-    read and written unchanged would move every reference from ``{ … }`` to a ``[header]``, and
-    ``scene-check`` would report every file as non-canonical.
-    """
+    """Rebuild :class:`InlineTable` values after ``tomllib``, which returns a plain ``dict``
+    for both forms; without this a read-and-write moves every reference under a header."""
     if isinstance(value, list):
         return [restore_inline_tables(element) for element in value]
     if not isinstance(value, dict):
@@ -159,11 +152,7 @@ def dump_bytes(document: dict) -> bytes:
 
 
 def _write_body(out: list[str], table: dict, prefix: str | None) -> None:
-    """Scalars and arrays first, sub-tables after, each group in model order (rule 3).
-
-    ``prefix`` is this table's own dotted path (``None`` at the root); writing its own header is
-    the caller's job, which is what lets ``[header]`` and ``[[element]]`` share this function.
-    """
+    """Scalars and arrays first, sub-tables after (rule 3); the caller writes the header."""
     for key, value in table.items():
         if _is_table(value) or _is_table_array(value):
             continue
@@ -193,15 +182,9 @@ def _is_table(value: object) -> bool:
 
 
 def _is_table_array(value: object) -> bool:
-    """A non-empty list of sub-tables. An EMPTY list is the array ``[]``, not an array of tables.
-
-    The distinction is not academic: rule 10 gives every array-of-tables element its own header,
-    so an empty one would emit nothing at all and the key would vanish from the document.
-
-    InlineTables are excluded for a sharper reason -- ``Slots = [{…}, {}]`` is an ARRAY whose
-    elements happen to be tables, and rendering it as ``[[Slots]]`` headers would lose the empty
-    element entirely, silently shifting every material override onto the wrong primitive.
-    """
+    """A non-empty list of generic sub-tables. Empty is the array ``[]``, or the key would
+    vanish (rule 10 emits one header per element); InlineTables are excluded, or the null
+    slot in ``Slots = [{…}, {}]`` would vanish and shift every override onto the wrong primitive."""
     return isinstance(value, list) and len(value) > 0 and all(_is_table(e) for e in value)
 
 
@@ -218,8 +201,7 @@ def format_value(value: object) -> str:
     # and the document silently changes type.
     if isinstance(value, bool):
         return "true" if value else "false"
-    # InlineTable BEFORE the dict-free branches for the same reason it is a subclass: it must be
-    # recognised as itself before anything treats it as a mapping.
+    # InlineTable before any mapping test: it is a dict subclass.
     if isinstance(value, InlineTable):
         return format_inline_table(value)
     if isinstance(value, int):
@@ -267,22 +249,9 @@ def format_string(value: str) -> str:
 
 
 def format_float(value: float) -> str:
-    """A float, per rule 7.
-
-    ``repr`` IS the specification here. The C# writer documents its float format as "formatted by
-    Python's ``repr`` rules -- positional when the decimal exponent of the leading digit is in
-    [-4, 16), otherwise ``d.ddde±XX``", and says the choice was made deliberately so that this
-    mirror is one call. Reimplementing the rule instead of calling ``repr`` would be reimplementing
-    the thing the rule was copied FROM.
-
-    Two adjustments, both because ``repr`` is a Python spelling and TOML is not:
-
-    * TOML has no bare ``inf`` for a Python ``float('inf')`` written as ``inf`` -- it does, and
-      the spellings agree -- but ``nan`` must not carry a sign, and ``repr(float('-nan'))`` can.
-    * A positional float must contain a ``.`` (rule 7), and ``repr`` of an integral value already
-      gives ``1.0``. But ``repr(1e16)`` is ``'1e+16'``, which has no ``.`` and needs none: it is
-      the exponential form, where TOML requires no fractional part.
-    """
+    """Rule 7: ``repr`` IS the specification (the C# writer copied CPython's rules so this could
+    be one call; do not reimplement it). Only ``nan`` needs adjusting, since ``repr`` can sign it
+    and TOML must not."""
     if math.isnan(value):
         return "nan"
     if math.isinf(value):

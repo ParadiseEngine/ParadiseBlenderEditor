@@ -1,17 +1,8 @@
-"""Inline typed widgets for the Components panel.
-
-The dialog was a workaround: Blender ID properties coerce types, so a value had to live on a
-properly typed RNA property for the length of an edit. A PropertyGroup slot is the same
-workaround without the popup -- one typed property per visible field, drawn with ``layout.prop``.
-
-Slots live on the WindowManager, not the object. They are display state rebuilt from the
-document plus overlay; the overlay is still the only thing save reads.
-
-Numbers with a schema unit use a dedicated RNA property so Blender can draw the unit on the
-field itself (``kg``, ``m``, a 0-1 factor). ``[AuthorRange]`` is applied in the update callback
--- a drag past the cap snaps back -- rather than as ID-property min/max. Those have to live on
-an ID, and writing an ID during a panel draw is what made a rigidbody edit wipe the component
-list.
+"""Inline typed widgets for the Components panel: one typed RNA property per visible field,
+on the WindowManager (the one ID type ``draw()`` may write), rebuilt from document plus overlay.
+Only the overlay is ever saved. ``[AuthorRange]`` is applied in the update callback, not as
+ID-property min/max: writing an ID during a draw is what made a rigidbody edit wipe the
+component list.
 """
 
 from __future__ import annotations
@@ -45,8 +36,7 @@ _SYNCING = False
 _ENUM_CACHE: dict[str, list] = {}
 _PICK_CACHE: list[tuple[str, str, str]] = []
 
-#: RNA properties whose widget already prints a unit (or is a 0-1 factor). The label must not
-#: also say ``(kg)`` or the row reads ``Mass (kg): 1.0 kg``.
+#: Widgets that already print a unit, so the label must not repeat it.
 _RNA_SHOWS_UNIT = frozenset({
     "value_factor", "value_mass", "value_distance", "value_angle", "value_time",
 })
@@ -79,10 +69,7 @@ def _layout_of(context):
 
 
 def _pick_asset_items(self, context):
-    """Search-popup items for one asset field: GUID identifiers, path labels.
-
-    Held in a module-level list because Blender does not retain tuples a callback returns.
-    """
+    """Search-popup items, held module-level because Blender does not retain callback tuples."""
     global _PICK_CACHE
     kinds = json.loads(self.kinds_json or "[]")
     layout = _layout_of(context)
@@ -130,8 +117,7 @@ class ParadiseFieldSlot(PropertyGroup):
     value_bool: BoolProperty(update=_commit)
     value_int: IntProperty(update=_commit)
     value_float: FloatProperty(update=_commit)
-    # Closed unit vocabulary: one RNA property each, so Blender can put the unit on the field
-    # and so ``[Unit01]`` is a 0-1 slider rather than a free drag.
+    # One RNA property per unit so Blender draws the unit on the field.
     value_factor: FloatProperty(
         min=0.0, max=1.0, soft_min=0.0, soft_max=1.0, subtype="FACTOR", update=_commit)
     value_mass: FloatProperty(min=0.0, unit="MASS", update=_commit)
@@ -183,11 +169,8 @@ def _assign_rna(slot, value) -> None:
 
 
 def draw_item(layout, context, obj, component_id: str, item, value, edited: dict, row=None) -> None:
-    """One plan row as an embedded widget, plus revert when the overlay has touched it.
-
-    Asset references are a search popup, not an EnumProperty: a dropdown of every ``.toml`` is
-    not searchable, and rewriting that enum on every redraw is what made a picked slot stick.
-    """
+    """One plan row as a widget. Asset references are a search popup, not an EnumProperty:
+    rewriting that enum on every redraw is what made a picked slot stick."""
     row = row or layout.row(align=True)
     slot = _slot_for(context, component_id, item.path)
     unit = None if (slot is not None and slot.rna in _RNA_SHOWS_UNIT) else item.field.unit
@@ -242,14 +225,10 @@ def _asset_parts(value) -> tuple[str, str]:
 
 
 def sync(context, obj, rows: list[tuple[str, object, object]]) -> None:
-    """Keep WM slots matched to the visible plan of *obj*.
-
-    *rows* is ``(component_id, plan_item, value)`` for every leaf/row that should have a widget.
-    The collection is rebuilt only when the set of paths changes -- rewriting it on every overlay
-    tick would steal the slider out from under a drag. Values refresh when the overlay itself
-    changes (revert, add/remove), not every redraw: rewriting an enum every frame is what made
-    a picked dropdown refuse a second choice.
-    """
+    """Keep WM slots matched to *obj*'s plan. Rebuilt only when the path set changes (a rebuild
+    mid-drag steals the slider); values refresh only when the overlay changes (an enum rewritten
+    every frame refused a second choice). After Reload the fingerprint is unchanged, so values
+    go stale until the selection changes (#37)."""
     wm = context.window_manager
     fingerprint = _fingerprint(obj, rows)
     overlay_fp = json.dumps(edits.read(obj), sort_keys=True)

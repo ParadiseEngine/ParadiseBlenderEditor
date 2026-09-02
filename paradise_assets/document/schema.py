@@ -1,19 +1,7 @@
-"""Reading ``authoring-schema.json`` for the one question the loader asks it.
-
-Which component fields name a MESH? The game's schema already says: the engine's
-``[AuthoredByHost(kind)]`` attribute reaches the dump as ``"authoredBy": "mesh"``, on
-``ObstacleMesh.Mesh`` and ``SkinnedMesh.Mesh`` in ShiningPie. Reading it there means the loader
-never carries a hardcoded list of field names that goes stale the day the game adds a component.
-
-**The schema is an enrichment, not a requirement.** ``assets/`` is meant to be self-contained,
-and the dump is a build product of the game that may not exist in a fresh clone. So when it is
-missing, :func:`MeshFields.is_mesh_field` falls back to "a string that ends in .glb", which is
-unambiguous in practice. A wrong guess costs a wrong preview, not data -- this addon never
-writes component payloads back, which is exactly what makes a heuristic acceptable here and
-nowhere else.
-
-The dump lives in the GAME's tree rather than in ``assets/`` because it is derived; the addon
-looks in the conventional places rather than requiring configuration.
+"""Which component fields name a MESH, read from the dump's ``authoredBy: mesh``. The dump is
+an enrichment, not a requirement: a fresh clone has none, so the fallback is "a string ending
+in .glb". A wrong guess costs a wrong preview, not data, since payload writes never consult
+this; that is what makes a heuristic acceptable here and nowhere else.
 """
 
 from __future__ import annotations
@@ -74,12 +62,7 @@ def load(project_root: str) -> MeshFields:
 
 
 def _collect(fields, type_name: str, pairs: set[tuple[str, str]]) -> None:
-    """Walk one component's fields. Only TOP-LEVEL members are collected.
-
-    A nested mesh reference would need the loader to address it by path rather than by name, and
-    no component in use has one -- so this stops at the depth the loader can actually act on
-    rather than collecting names it would then match against the wrong table.
-    """
+    """Top-level members only: the loader addresses mesh fields by name, not path."""
     if not isinstance(fields, list):
         return
     for entry in fields:

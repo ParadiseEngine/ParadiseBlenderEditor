@@ -1,14 +1,5 @@
-"""Machine-scoped settings: where the toolchain lives.
-
-All of it is about EXTERNAL TOOLS, and none of it belongs in the project. ``assets/project.toml``
-would be the natural home for "which launcher runs this game", but its loading is strict by design
--- ``ProjectManifest``'s own remarks say a value the build does not understand is an error naming
-the key -- so an addon-invented key there would fail the CLI's build rather than be ignored. That
-makes these preferences rather than project settings until the manifest has somewhere to put them.
-
-Machine-scoped is right for the rest regardless: a path to a .NET SDK project, a KTX install and a
-CLI build are facts about this computer, not about the game, and committing them would hand every
-teammate someone else's directory layout.
+"""Machine-scoped toolchain paths. "Which launcher runs this game" would belong in
+``project.toml``, but the manifest loader is strict and an addon key there would fail the build.
 """
 
 from __future__ import annotations
@@ -19,8 +10,7 @@ from bpy.types import AddonPreferences
 
 __all__ = ["PACKAGE", "ParadiseAssetsPreferences", "classes", "get_preferences"]
 
-#: This addon is installed as an extension, so the module is ``bl_ext.<repo>.paradise_assets`` and
-#: the repo name is whatever the user called it. ``__package__`` is the only thing that knows.
+#: An extension's module is ``bl_ext.<repo>.paradise_assets``; only ``__package__`` knows the repo.
 PACKAGE = __package__
 
 
@@ -73,11 +63,8 @@ class ParadiseAssetsPreferences(AddonPreferences):
             "The ktx binary itself (KTX-Software v5), e.g. .../KTX-Software/bin/ktx.exe — not "
             "the directory holding it. Exported to the build as PARADISE_KTX_PATH"
         ),
-        # FILE_PATH, and the distinction is not cosmetic: the pipeline resolves this with
-        # File.Exists on the value, so a DIRECTORY does not fail loudly -- it fails the check,
-        # falls through to a repo-local third_party/tools/KTX-Software and then to PATH, and if
-        # neither is there the build simply cannot encode a texture. Pointing this at a folder
-        # looks configured and behaves exactly like leaving it blank.
+        # FILE_PATH: the pipeline checks File.Exists, so a directory looks configured and
+        # behaves exactly like blank.
         subtype="FILE_PATH",
         default="",
     )
@@ -110,12 +97,7 @@ class ParadiseAssetsPreferences(AddonPreferences):
 
 
 def get_preferences(context=None):
-    """This addon's preferences, or ``None`` when it is not registered as an addon.
-
-    ``None`` rather than an exception: the integration tests import these modules directly rather
-    than installing the extension, and every caller here already has a "not configured" path to
-    fall into.
-    """
+    """The preferences, or ``None`` when not registered (integration tests import directly)."""
     context = context or bpy.context
     addon = context.preferences.addons.get(PACKAGE)
     return addon.preferences if addon is not None else None

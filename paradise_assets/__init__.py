@@ -1,22 +1,10 @@
-"""Paradise Assets -- open ``assets/scenes/*.scene`` in Blender and place things in it.
+"""Paradise Assets: ``assets/`` is the source of truth and the ``.blend`` a disposable cache of
+one ``*.prefab`` (the inversion of ``paradise_blender``, §2.7). Blender owns placement, the
+document owns component data (passed through untouched), the GLB owns geometry.
 
-The INVERSION of what ``paradise_blender`` does, which is why it is a separate addon rather than
-a feature of that one. There, the ``.blend`` is the source of truth and the scene is exported to
-``data/``. Here, ``assets/`` is the committed source of truth and the ``.blend`` is a disposable
-cache of one document in it -- the direction the asset-management plan's §2.7 calls the addon
-inversion. Both can be installed at once during the migration.
-
-The division of ownership, which every module here follows:
-
-* **Blender owns placement** -- names, parents, transforms, which objects exist.
-* **The document owns component data**, and this addon passes it through untouched. That is what
-  lets a scene full of components it has never heard of be opened and saved safely.
-* **The GLB owns geometry.** Meshes are instanced, not editable in place.
-
-``bpy`` MUST NOT be imported at module scope. Python runs a package's ``__init__`` before any
-submodule, so a top-level ``import bpy`` here would make :mod:`paradise_assets.document`
-unimportable outside Blender -- and those unit tests are the only thing standing between this
-addon's canonical-TOML writer and the C# one it has to match byte for byte.
+No ``bpy`` at module scope: Python runs ``__init__`` before any submodule, and the
+``document/`` unit tests are the only defence keeping the canonical-TOML writer byte-identical
+to the C# one.
 """
 
 from __future__ import annotations
@@ -33,11 +21,8 @@ def register() -> None:
     from .materialize import sync
     from .play import ops as play_ops
 
-    # Preferences FIRST: every operator below resolves the toolchain through them, and an
-    # AddonPreferences that is not registered yet reads as "nothing configured".
-    # field_widgets BEFORE ui: the Components panel draws those RNA slots.
-    # component_ops BEFORE ui: the Components panel draws those operators, and a panel that
-    # names an unregistered operator draws a dead button rather than failing loudly.
+    # Preferences first (unregistered reads as "nothing configured"); widgets and operators
+    # before ui, or the panel draws dead buttons rather than failing loudly.
     for cls in (
         *prefs.classes, *ops.classes, *play_ops.classes, *field_widgets.classes,
         *component_ops.classes, *ui.classes, *browser.classes,
@@ -47,12 +32,10 @@ def register() -> None:
 
     field_widgets.attach()
 
-    # The Asset Browser's drop is Blender's own operation and cannot be replaced, only followed --
-    # see paradise_assets.dropped for why that handler exists and how it stays harmless.
+    # The Asset Browser's drop cannot be replaced, only followed (see dropped.py).
     dropped.register_handler()
 
-    # Blender's own save writes the document too: the .blend is a disposable cache, so saving only
-    # the cache is how a day's work goes missing. See paradise_assets.materialize.sync.
+    # Ctrl+S writes the document too (materialize/sync.py).
     sync.register_handler()
     watch.register_handler()
 
@@ -72,7 +55,6 @@ def unregister() -> None:
     watch.unregister_handler()
     field_widgets.detach()
 
-    # Reverse order: a child panel registered against a parent's bl_idname must go first, or
-    # Blender warns about an unregistered parent while tearing the tab down.
+    # Reverse order, or Blender warns about an unregistered parent panel.
     while _REGISTERED:
         bpy.utils.unregister_class(_REGISTERED.pop())

@@ -1,13 +1,14 @@
-"""The engine component ids this host names.
+"""The component ids this host has something specific to do with.
 
-Transcribed from the ``[Guid]`` attribute on each record in ``LevelDocument.cs``, which is the
-source of truth -- the engine's own registry, schema and router all read that attribute and
-nothing else. (There was a ``ParadiseComponentIds`` table holding a second copy; it was deleted
-with the v4 contract, since a second copy of an identity is a thing that can disagree with the
-first.) Transcribed rather than read, because the constants live in a C# assembly this Python
-host cannot load -- and because no document states which component this host MEANS by
-``RENDERABLE``. The schema states each component's type NAME, which is why
-:func:`engine_type_name` reads it there instead of tabulating it here.
+These are the ids the engine's ``LevelDocument.cs`` records carried up to contract v5. Since v6
+the engine declares NO authored components, so a record exists only if the GAME declares it under
+the same id: against ShiningPie's dumped schema, 10 of the 13 constants below resolve to nothing
+(only ``ENVIRONMENT``, ``MATERIALS`` and ``RIGIDBODY`` are reused by the game's own records).
+Exporting a component the game does not declare fails in :func:`engine_type_name`, so a lamp on
+a non-entity object cannot be exported against that game today. Retiring this table for v6 is
+issue #25. Tabulated rather than read because no document states which component this host
+MEANS by ``RENDERABLE``; the type NAME is read off the schema instead (:func:`engine_type_name`),
+since a second hand-written copy of something the schema states is a thing that can drift.
 
 **Deliberately NOT a complete mirror.** A constant belongs here only when this host must do
 something SPECIFIC with that component -- derive it from Blender data, back it with a pointer
@@ -115,11 +116,11 @@ def engine_type_name(component_id: str, data_dir: str) -> str:
 def check_engine_ids(data_dir: str) -> list[str]:
     """Every constant above that the loaded schema does not corroborate.
 
-    The drift guard, and it replaces a unit test. The constants are transcribed by hand from the
-    ``[Guid]`` attributes in ``LevelDocument.cs`` and nothing keeps the two in step; the old guard
-    asserted each one appeared in the vendored schema, which died with the vendored schema. This
-    is the better check anyway — it runs against the engine the game is actually built against,
-    not against a copy of some engine — and it costs a dictionary lookup at export.
+    The drift guard, and it replaces a unit test. Nothing keeps the v5 constants above in step
+    with what a game declares; the old guard asserted each one against a vendored engine schema,
+    which died with the vendored schema. Checking against the schema the game is actually built
+    against is the stronger test. Expect ten warnings per export against a v6 game until #25
+    retires the table.
 
     Returns messages rather than raising: a drifted id is worth SAYING at export, but it is not
     worth refusing to export over. The one that must be fatal — a component this host is actively

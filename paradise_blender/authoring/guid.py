@@ -1,22 +1,8 @@
-"""Stable per-placement entity identity.
-
-``LevelEntityData.EntityGuid`` is how the runtime correlates an entity across reloads, across
-a live-preview patch, and across a scene rebuild. It must be stable for a given placement and
-unique within a scene.
-
-Blender makes the uniqueness half harder than Godot does. Duplicating an object (``Shift+D``,
-``Alt+D``, or a copy/paste) deep-copies its property groups, GUID included -- so a duplicate
-arrives *already colliding* with its source, silently. There is no per-object "was duplicated"
-callback to hook. So the lifecycle mirrors the Godot host's: mint lazily, and sweep for
-collisions on save (``bpy.app.handlers.save_pre``, the analogue of
-``NOTIFICATION_EDITOR_PRE_SAVE``).
-
-The sweep is also run by the exporter before it walks the scene, so an unsaved .blend still
-exports valid, unique identities rather than a scene full of duplicated GUIDs.
-
-Collision resolution keeps the *first* object in a stable ordering and re-mints the others.
-Without a deterministic order, which of two duplicates keeps the original GUID would vary
-between runs, and an entity's identity would flicker across exports.
+"""Stored per-placement entity GUIDs. Shift+D/Alt+D/copy-paste deep-copy property groups, so a
+duplicate arrives already colliding and there is no callback to hook; hence mint lazily and
+sweep on ``save_pre`` (the exporter does NOT sweep). Collisions keep the first object in a
+stable name order, or which duplicate keeps its identity would vary between runs. See #27 for
+the split between this stored GUID and the exported ``meta.Guid``.
 """
 
 from __future__ import annotations
@@ -34,11 +20,7 @@ EMPTY_GUID = uuid.UUID(int=0)
 
 
 def parse_guid(text: str) -> uuid.UUID:
-    """Parse a stored GUID string, returning :data:`EMPTY_GUID` when absent or malformed.
-
-    Accepts both the hyphenated form this addon writes and the 32-hex-digit "N" form the
-    Godot host stores in node metadata, so a scene migrated between tools keeps its identities.
-    """
+    """Parse a stored GUID (hyphenated, or the Godot host's undashed form); ``EMPTY_GUID`` if malformed."""
     if not text:
         return EMPTY_GUID
     try:
@@ -48,11 +30,7 @@ def parse_guid(text: str) -> uuid.UUID:
 
 
 def ensure_entity_guid(obj: bpy.types.Object) -> uuid.UUID:
-    """Return the object's GUID, minting and persisting one if it has none.
-
-    The exporter calls this so a freshly-created, never-saved entity exports a real identity
-    instead of the all-zero GUID -- which would collide across every such entity at runtime.
-    """
+    """The object's GUID, minted and persisted if absent (an all-zero GUID would collide)."""
     current = parse_guid(obj.paradise.entity_guid)
     if current != EMPTY_GUID:
         return current
@@ -63,11 +41,7 @@ def ensure_entity_guid(obj: bpy.types.Object) -> uuid.UUID:
 
 
 def ensure_unique_guids(scene: bpy.types.Scene) -> int:
-    """Mint missing GUIDs and re-mint duplicates. Returns the number of GUIDs changed.
-
-    Iterates in the stable name order :func:`..authoring.entity.entity_objects` provides, so
-    the object that keeps a contested GUID is the same one on every run.
-    """
+    """Mint missing GUIDs and re-mint duplicates in stable name order; returns changes."""
     seen: dict[uuid.UUID, str] = {}
     changed = 0
 
@@ -79,8 +53,7 @@ def ensure_unique_guids(scene: bpy.types.Scene) -> int:
             changed += 1
             current = parse_guid(obj.paradise.entity_guid)
         elif current in seen:
-            # Almost always a duplicated object. Re-mint the later one and say so: the author
-            # may have expected the copy to *be* the same entity.
+            # Say so: the author may have expected the copy to BE the same entity.
             log.warn(
                 f"'{obj.name}' shared an entity GUID with '{seen[current]}' (usually the result "
                 f"of duplicating an object). A new GUID was minted for '{obj.name}'."
@@ -96,12 +69,8 @@ def ensure_unique_guids(scene: bpy.types.Scene) -> int:
 
 @bpy.app.handlers.persistent
 def _on_save_pre(_file_path) -> None:  # Blender passes the path, unused
-    """Sweep every scene before the .blend is written.
-
-    ``@persistent`` is required or the handler is dropped the first time a file is loaded --
-    Blender clears non-persistent handlers on load, and the failure mode (identities silently
-    stop being maintained after the first file open) is invisible until something collides.
-    """
+    """Sweep before the .blend is written. ``@persistent`` or Blender drops the handler on the
+    first file load and identities silently stop being maintained."""
     for scene in bpy.data.scenes:
         changed = ensure_unique_guids(scene)
         if changed:

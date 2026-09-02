@@ -1,20 +1,9 @@
-"""Finding and running the two external programs: the asset CLI, and the game.
+"""Finding and running the asset CLI and the game.
 
-**Ported from ``paradise_blender/play/host.py`` rather than imported from it, and the duplication
-is deliberate.** The two addons are independent extensions and either may be installed without the
-other, so a cross-import would work on this machine and break on the first one that installed only
-this addon. What was worth copying is the part that was learned the hard way: the resolution
-ladder, the ``.csproj`` branch, ``realpath`` before use, the POSIX shell wrapper, and the rule for
-picking the one line of a failed log that explains anything.
-
-The two programs are run in opposite ways, and the asymmetry is the point:
-
-* **The CLI is run to completion, captured.** A build has an exit code and a reason, and Blender
-  can show both. It also means a failed build stops the launch instead of quietly handing the
-  runtime last build's tree.
-* **The runtime is launched DETACHED.** It is an interactive window with its own lifetime; Blender
-  must neither block on it nor die with it. The cost is that its output goes to a log rather than
-  to us, which is what :func:`first_error_line` exists to make readable.
+Duplicated from ``paradise_blender/play/host.py`` because extensions cannot import each other
+(#35). The CLI runs to completion and captured, so a failed build stops the launch instead of
+handing the runtime last build's tree; the runtime launches detached, so its output goes to a
+log and :func:`first_error_line` has to make that readable.
 """
 
 from __future__ import annotations
@@ -42,11 +31,6 @@ def log_path() -> str:
     return os.path.join(tempfile.gettempdir(), "paradise_assets_play.log")
 
 
-# --------------------------------------------------------------------------------------
-# Finding things
-# --------------------------------------------------------------------------------------
-
-
 def _well_known_dotnet() -> str | None:
     candidates = [
         "/usr/local/share/dotnet/dotnet",
@@ -58,14 +42,9 @@ def _well_known_dotnet() -> str | None:
 
 
 def _dotnet_run(project: str, *, no_build: bool = False) -> list[str] | None:
-    """``dotnet run --project <csproj> --``, or None when the SDK is not installed.
-
-    ``no_build`` is for the CLI. The watcher is a long-lived ``dotnet run`` of that same
-    csproj; a second ``dotnet run`` without ``--no-build`` (Play, Build, Verify) tries to
-    compile through the MSBuild server the first process still owns and dies on MSB0001
-    ``Invalid node id specified``. The game launcher still builds — it is a different
-    project, and Play is when an author expects a code change to show up.
-    """
+    """``dotnet run --project <csproj> --``, or None without the SDK. ``no_build`` for the CLI:
+    the watcher is a live ``dotnet run`` of the same csproj, and a second one that builds dies
+    on MSB0001 ``Invalid node id specified``."""
     if not os.path.exists(project):
         return None
     dotnet = shutil.which("dotnet") or _well_known_dotnet()
@@ -79,14 +58,9 @@ def _dotnet_run(project: str, *, no_build: bool = False) -> list[str] | None:
 
 
 def _configured(value: str, *, no_build: bool = False) -> list[str] | None:
-    """Turn a configured path into an argv prefix.
-
-    ``realpath``, not ``abspath``: a project reached through a symlink builds against the wrong
-    tree. MSBuild relativizes ProjectReferences against the path as spelled and then resolves them
-    against the canonicalized directory, so a symlinked project path silently retargets every
-    relative reference and the build dies on MSB3202 -- and Blender's file browser walks into
-    symlinks happily, so authors hit this by simply picking the file.
-    """
+    """A configured path as an argv prefix. ``realpath``, not ``abspath``: MSBuild resolves
+    ProjectReferences against the canonical directory, so a symlinked csproj dies on MSB3202,
+    and Blender's file browser walks into symlinks happily."""
     resolved = os.path.realpath(os.path.expanduser(value.strip()))
     if resolved.endswith(".csproj"):
         return _dotnet_run(resolved, no_build=no_build)
@@ -126,33 +100,20 @@ def _preference(name: str, default: str = "") -> str:
 
 
 def resolve_cli_command() -> list[str] | None:
-    """Argv prefix that runs the ``paradise`` CLI, or ``None`` when nothing is installed.
-
-    ``paradise`` is packed as a dotnet tool (``PackAsTool``/``ToolCommandName``), so the PATH and
-    ``~/.dotnet/tools`` rungs are what will find it once it ships. Until then the preference is
-    pointed at a build of ``Paradise.Cli``.
-    """
+    """Argv prefix for the ``paradise`` CLI, or ``None``."""
     return _ladder(_preference("cli"), "paradise", no_build=True)
 
 
 def resolve_runtime_command() -> list[str] | None:
-    """Argv prefix that runs the GAME, or ``None``.
-
-    There is no autodetect rung worth having here: which program plays a project is the game's
-    business, and guessing at a name would find some other project's launcher on PATH. Configured
-    or nothing.
-    """
+    """Argv prefix for the game, or ``None``. Configured or nothing: guessing a name would find
+    some other project's launcher on PATH."""
     configured = _preference("runtime_host")
     return _configured(configured) if configured.strip() else None
 
 
 def subprocess_environment() -> dict[str, str]:
-    """Environment for a ``dotnet`` child started from Blender.
-
-    Turns off the MSBuild persistent server. Two ``dotnet run`` processes otherwise share
-    one, and the second dies on MSB0001 ``Invalid node id specified`` — which is what Play
-    looked like while a watcher started from the same csproj was already alive.
-    """
+    """Child environment with the MSBuild server off: two ``dotnet run`` sharing one die on
+    MSB0001, which is what Play looked like beside a live watcher."""
     environment = dict(os.environ)
     environment["DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER"] = "1"
     ktx = _preference("ktx_path").strip()
@@ -172,11 +133,7 @@ def _cli_csproj() -> str | None:
 
 
 def ensure_cli_built() -> str | None:
-    """Compile the CLI csproj if ``dotnet run --no-build`` would have nothing to run.
-
-    Returns ``None`` when the output is already there, when the CLI is not a csproj, or
-    after a successful build. A string is why it could not be built.
-    """
+    """Compile the CLI csproj if ``--no-build`` would have nothing to run; a string is why not."""
     project = _cli_csproj()
     if project is None:
         return None
@@ -206,11 +163,6 @@ def ensure_cli_built() -> str | None:
     return None
 
 
-# --------------------------------------------------------------------------------------
-# Running the CLI
-# --------------------------------------------------------------------------------------
-
-
 class CliResult:
     """What a finished CLI run said."""
 
@@ -224,12 +176,7 @@ class CliResult:
         return self.returncode == 0
 
     def summary(self, limit: int = 300) -> str:
-        """The most useful line to put in front of the author.
-
-        The CLI ends every verb with a summary line (``build: …``, ``verify: …``) and prints the
-        detail above it, so on failure the DETAIL is what is wanted -- the first ``error:`` line --
-        and the summary is only a fallback for a failure that named none.
-        """
+        """The first ``error:`` line, since the CLI's closing summary names no file."""
         lines = [line.strip() for line in (self.stderr + "\n" + self.stdout).splitlines() if line.strip()]
         if not lines:
             return f"exit code {self.returncode}"
@@ -240,12 +187,8 @@ class CliResult:
 
 
 def run_cli(arguments: list[str], cwd: str, timeout: float = 900.0) -> CliResult | None:
-    """Run the CLI to completion in ``cwd``. ``None`` means it could not be found or started.
-
-    Synchronous on purpose. A build is a step in the middle of Play, and its failure has to be
-    able to stop the launch -- fire-and-forget would put the error in a log while the runtime
-    happily started against whatever the previous build left behind.
-    """
+    """Run the CLI to completion in ``cwd``; ``None`` when it could not start. Synchronous so a
+    failed build can stop the launch."""
     command = resolve_cli_command()
     if command is None:
         return None
@@ -270,31 +213,14 @@ def run_cli(arguments: list[str], cwd: str, timeout: float = 900.0) -> CliResult
     return CliResult(completed.returncode, completed.stdout or "", completed.stderr or "")
 
 
-# --------------------------------------------------------------------------------------
-# Launching the game
-# --------------------------------------------------------------------------------------
-
-
 def launch_runtime(arguments: list[str], cwd: str) -> tuple[subprocess.Popen | None, str | None]:
-    """Launch the runtime detached. Returns ``(process, error message)``.
+    """Launch the runtime detached; returns ``(process, error)``.
 
-    The process is returned rather than its pid so a caller can ``poll()`` it. A detached child
-    that dies immediately -- a missing asset, a bad argument -- is otherwise indistinguishable from
-    one that launched fine, because its output went to :func:`log_path` and Blender only ever saw a
-    successful fork.
-
-    ``cwd`` is not optional in practice. A runtime resolves its own non-scene paths relative to the
-    working directory, and a detached child inherits BLENDER's -- which is whatever the OS handed
-    it. Started from a terminal that is the project root and everything works; started from the
-    Dock it is ``/``, and the game dies looking for a config directory. The bug is invisible to
-    whoever wrote the launcher and reproduces only for whoever launched Blender the other way.
-
-    ONLY THE POSIX BRANCH REDIRECTS OUTPUT INTO :func:`log_path`, and that asymmetry is inherited
-    from the module this was ported from rather than introduced here. The Windows branch passes
-    ``creationflags`` and no handles, so nothing writes the log and :func:`first_error_line` has no
-    file to read. Build failures still surface on Windows -- :func:`run_cli` captures those -- but
-    a RUNTIME crash there reports only its exit code. Fixing it means handing the child its own
-    handles, which is a small change nobody here can test; it is named rather than guessed at.
+    The process, not a pid, so a caller can ``poll()`` an immediate death that would otherwise
+    look like a clean launch. ``cwd`` is required: a detached child inherits Blender's working
+    directory, which is ``/`` when launched from the Dock, and the game dies looking for its
+    config. Only the POSIX branch writes the log; a Windows runtime crash reports only its exit
+    code.
     """
     command = resolve_runtime_command()
     if command is None:
@@ -315,9 +241,8 @@ def launch_runtime(arguments: list[str], cwd: str) -> tuple[subprocess.Popen | N
                 creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
             )
         else:
-            # A GUI-launched Blender has a PATH without the dotnet directory, which `dotnet run`'s
-            # child build steps need; and a detached child's output would otherwise vanish, so a
-            # build error would manifest as "the window never appeared" with nothing to read.
+            # A GUI-launched Blender has no dotnet directory on PATH, which the child build
+            # steps need.
             dotnet_dir = os.path.dirname(shutil.which("dotnet") or "/usr/local/share/dotnet/dotnet")
             quoted = " ".join(shlex.quote(a) for a in argv)
             script = f'export PATH="{dotnet_dir}:$PATH"; exec {quoted} > {shlex.quote(log_path())} 2>&1'
@@ -333,25 +258,14 @@ def launch_runtime(arguments: list[str], cwd: str) -> tuple[subprocess.Popen | N
     return process, None
 
 
-# Substrings that mark the line a failed run is actually about. "error" catches MSBuild
-# (`error MSB3202: ...`), the exception words catch a .NET crash banner; a build log buries both
-# under hundreds of lines and ends on a useless "The build failed."
+# "error" catches MSBuild, the exception words catch a .NET crash banner.
 _FAILURE_MARKERS = ("error", "exception", "unhandled", "fatal")
 
 
 def first_error_line(path: str) -> str | None:
-    """The most explanatory line of a failed run's log.
-
-    Falls back to the FIRST line rather than the last: a launcher that fails its own precondition
-    prints the cause first and a generic hint after it, so the tail is the least informative part.
-
-    Build WARNINGS are skipped on that fallback, and skipping them is the whole point. A runtime
-    that fails a precondition need not use any of the marker words -- "Could not find a part of the
-    path 'data/game/config.json'" contains none -- so the fallback reports most real failures. And
-    the first line of a `dotnet run` log is almost never the program's: it is whatever MSBuild
-    warned about, which is both permanent and irrelevant. Reporting that back reads as the
-    diagnosis and sends the reader off to fix an SDK warning that was never going to stop anything.
-    """
+    """The most explanatory line of a failed run's log. Falls back to the FIRST non-warning
+    line: a launcher prints its cause first and hints after, and the first line of a
+    ``dotnet run`` log is usually an irrelevant SDK warning that would read as the diagnosis."""
     try:
         with open(path, encoding="utf-8", errors="replace") as handle:
             lines = [line.strip() for line in handle if line.strip()]
@@ -368,11 +282,6 @@ def first_error_line(path: str) -> str | None:
 
 
 def _is_build_noise(line: str) -> bool:
-    """A compiler or SDK warning, which a failed RUN is never explained by.
-
-    Structured rather than a bare word search, and the distinction keeps a runtime's own output
-    safe: every compiler and SDK warning is printed as ``<origin>: warning <CODE>: <text>``, so the
-    colon is part of the shape. Matching the bare word would swallow a launcher's own fatal line if
-    it happened to contain it -- precisely the line this exists to surface.
-    """
+    """A compiler/SDK warning (``<origin>: warning <CODE>:``). Shape-matched, not a bare word
+    search, or a launcher's own fatal line containing "warning" would be swallowed."""
     return ": warning " in line.lower()

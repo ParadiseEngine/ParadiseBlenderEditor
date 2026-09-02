@@ -12,8 +12,8 @@ difference between them.
 |---|---|---|
 | source of truth | the `.blend` | `assets/` in the game repo |
 | the other thing | `data/`, exported | the `.blend`, a disposable cache of one scene |
-| format | the JSON export contract | `*.scene`, canonical TOML |
-| does | author, export, play, live-preview | open a scene document, place things, save it back |
+| format | the JSON export contract | `*.prefab`, canonical TOML |
+| does | author, export, play, live-preview | open a prefab document, place things, save it back |
 
 `paradise_blender` is the older and much larger of the two: the **second** implementation of a
 contract whose reference implementation is C# `Paradise.Export` (used by `ParadiseGodotEditor`).
@@ -21,8 +21,10 @@ That framing matters for almost every decision in it: when this repo and the con
 the contract is right.
 
 `paradise_assets` is the inversion (the asset-management plan's §2.7). It reads `assets/` — the
-committed source tree the `paradise-assets` CLI compiles — and writes only scene documents. Both
-can be installed and enabled at once, which is what makes a migration possible.
+committed source tree the `paradise-assets` CLI compiles — and writes only prefab documents. Both
+can be installed and enabled at once, which is what made the migration possible. ShiningPie has
+finished that migration and no longer exports through `paradise_blender`; what that addon is for
+now (deprecated, or the JSON exporter for games without an `assets/` tree) is undecided — #35.
 
 ## Commands
 
@@ -185,8 +187,8 @@ warns "current value '0' matches no enum" and becomes unreadable. Where the cont
 
 **The canonical TOML writer is a CROSS-LANGUAGE contract, and it is checked by bytes.**
 `document/canonical_toml.py` and C# `CanonicalTomlWriter` must produce identical output;
-`paradise-assets scene-check` compares bytes, so a formatting difference is a failing CI check
-on every scene the addon has touched, not a style nit. Floats are specified as *Python's `repr`
+`paradise assets prefab-check` compares bytes, so a formatting difference is a failing CI check
+on every document the addon has touched, not a style nit. Floats are specified as *Python's `repr`
 rules* on purpose — the C# side adopted them so this side could be one call. Do not "improve"
 the formatting.
 
@@ -222,7 +224,6 @@ their editor, and a second way to type an identity is a second thing that can di
 `edits.py` imports no `bpy`, and that is load-bearing rather than tidy: it is the only new logic
 on the save path, and being importable outside Blender is what lets it be unit-tested against a
 plain dict. Keep it that way.
-The ID property holding them is display data.
 
 **`document/` must not import `bpy`** — same rule and same reason as `paradise_blender`'s
 `contract/`: the unit tests are the only defence against the writer drifting from the C# one.
@@ -255,9 +256,12 @@ needs to do; `tools/mock_runtime.py` is the executable specification.
 
 ## Style
 
-- Match the surrounding code: type hints, `from __future__ import annotations`, module
-  docstrings that explain *why* rather than restating the code.
-- Comments earn their place by recording a non-obvious constraint or a decision someone would
-  otherwise "fix" into a bug. There are several of those here; keep them.
+- Match the surrounding code: type hints, `from __future__ import annotations`.
+- Code explains itself; comments explain why. Prefer a name, a type, a small function, or an
+  assertion over a comment that says what the code does, and restructure before commenting.
+  A comment or docstring is for what code cannot say: a Blender-API gotcha, a constraint, a
+  decision and its rejected alternative, a failure mode someone would "fix" back in, a
+  cross-language contract. Delete comments that narrate control flow or restate the next line;
+  private helpers whose name says what they do get no docstring.
 - Warnings to the author should say what will go wrong at runtime and how to fix it, not just
   what was skipped. The Godot host's messages are the tone to match.

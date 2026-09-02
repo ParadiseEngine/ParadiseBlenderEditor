@@ -30,7 +30,7 @@ Godot export of the same scene):
 
 ```jsonc
 {
-  "SchemaVersion": 5,
+  "SchemaVersion": 6,
   "Entities": [
     [ { "Id": "<component guid>", "Type": "<CLR name>", "Data": { /* … */ } }, /* … */ ],
     /* one array per object */
@@ -61,8 +61,9 @@ Encoding rules, all enforced by `contract/writer.py`:
 - **Matrices are 16 floats, column-major, column-vector layout** — translation lands at flat
   indices **12/13/14**. (A uniformly scaled entity at the origin reads
   `[s,0,0,0, 0,s,0,0, 0,0,s,0, 0,0,0,1]`.)
-- **`Color32` is `{"r","g","b","a"}`** with channels quantized to bytes, so values are `n/255`.
-  Precision loss is the contract, not an approximation on our side.
+- **`Color32` is written as `"#RRGGBBAA"`**, channels quantized to bytes, so values are `n/255`.
+  Precision loss is the contract, not an approximation on our side. (The C# converter also
+  accepts the older `{"r","g","b","a"}` object form on read; the writer emits the string.)
 - **Enums serialize by name** (`"Box"`, `"Dynamic"`, `"Sprite"`).
 - **Floats are float32**, printed with shortest-round-trip precision for 32 bits.
 - **Writes are atomic** (temp file + rename), so a reader never sees a half-written document.

@@ -1,18 +1,7 @@
-"""Blender world + view settings -> ``EnvironmentData``.
-
-Split by source, deliberately:
-
-* **Read from Blender** where it expresses the same idea reliably -- the view transform and
-  exposure become the contract's tone mapping, and the world's Background node becomes the
-  flat background colour.
-* **Read from authored properties** (:mod:`..authoring.world_props`) for everything Blender
-  either has no equivalent for (Godot's procedural sky gradient) or expresses in a way that
-  moved between versions (EEVEE's AO and bloom).
-
-The ambient term is then *computed*, not copied: :mod:`..contract.sky` integrates the chosen
-sky over the hemisphere to produce the three zone colours and the L2 spherical-harmonic
-coefficients the runtime consumes. That integration is the same code path the Godot host uses,
-so a Blender scene dialled to the same gradient produces the same ambient.
+"""Blender world + view settings -> ``EnvironmentData``. Tone mapping and background come from
+Blender; the sky gradient, AO and bloom from authored properties (Blender has no equivalent, or
+one that moved between versions). Ambient is integrated by :mod:`..contract.sky`, the same code
+path the Godot host uses.
 """
 
 from __future__ import annotations
@@ -27,10 +16,8 @@ from ..contract.schema import EnvironmentData
 
 __all__ = ["export_environment", "find_sun", "resolve_background_color"]
 
-# Blender view transform -> the contract's tonemap operator names (Godot's ToneMapper enum,
-# parsed case-insensitively by the runtime). Filmic and AgX are not the same curve as Godot's,
-# but they are the closest named operator and preserve the author's intent far better than
-# forcing everything to Linear.
+# View transform -> Godot ToneMapper name. Filmic/AgX are not the same curves as Godot's, but
+# the closest named operator beats forcing Linear.
 _VIEW_TRANSFORM_TO_TONEMAP = {
     "Standard": "Linear",
     "Raw": "Linear",
@@ -43,11 +30,7 @@ _VIEW_TRANSFORM_TO_TONEMAP = {
 
 
 def find_sun(scene: bpy.types.Scene) -> bpy.types.Object | None:
-    """The first visible sun lamp -- the light that contributes the sky's sun disk.
-
-    Godot's sky sums up to four lights; scenes have one sun in practice, and matching that
-    host's ``FindSun`` keeps the two implementations comparable.
-    """
+    """The first visible sun lamp, matching the Godot host's ``FindSun``."""
     for obj in scene.objects:
         if obj.type == "LIGHT" and obj.data.type == "SUN" and obj.visible_get():
             return obj
@@ -68,8 +51,7 @@ def export_environment(scene: bpy.types.Scene) -> EnvironmentData:
     _apply_view_transform(scene, data)
 
     if world is None:
-        # No world at all: leave the contract defaults and mark the background as
-        # non-authoritative so the runtime keeps its camera-derived clear.
+        # No world: non-authoritative background so the runtime keeps its own clear.
         data.has_background = False
         return data
 
@@ -113,12 +95,7 @@ def _apply_post_processing(props, data: EnvironmentData) -> None:
 
 
 def _apply_flat_ambient(world: bpy.types.World, data: EnvironmentData) -> None:
-    """Uniform ambient from the world's background colour.
-
-    Integrating a uniform sky returns the colour itself, so the three zones are equal and no
-    SH coefficients are emitted -- ``AmbientSh`` stays null, which is what the contract
-    specifies for a non-skybox ambient mode.
-    """
+    """Uniform ambient from the background; ``AmbientSh`` stays null per the contract."""
     data.ambient_mode = "Color"
     rgb = _background_rgb(world)
     ambient = Color32.from_rgba(*rgb, 1.0)
@@ -131,12 +108,8 @@ def _apply_flat_ambient(world: bpy.types.World, data: EnvironmentData) -> None:
 
 
 def _apply_sky_gradient(scene: bpy.types.Scene, props, data: EnvironmentData) -> None:
-    """Integrate ambient from the authored procedural-sky gradient.
-
-    Mirrors the Godot host's path exactly, including where the energy multipliers are applied:
-    sky and ground energies fold into their gradient colours in sRGB (as Godot's setters do),
-    and the overall energy multiplier applies in linear space to the integral.
-    """
+    """Ambient from the authored sky gradient. Energies apply where Godot applies them: sky and
+    ground in sRGB (the setters), the overall multiplier in linear on the integral."""
     data.ambient_mode = "Skybox"
     data.sky_gradient = True
 
@@ -168,10 +141,8 @@ def _apply_sky_gradient(scene: bpy.types.Scene, props, data: EnvironmentData) ->
     )
     data.ambient_sh = sky_math.project_irradiance_sh(radiance, energy)
 
-    # The gradient endpoints the runtime re-evaluates per view ray are stored sRGB-ENCODED and
-    # untonemapped -- the natural encoding for the 8-bit Color32 contract. The runtime blends
-    # in linear and tone-maps per pixel, which is Godot's order; storing tone-mapped endpoints
-    # would hue-shift the mid-gradient, because tonemap(lerp) != lerp(tonemap).
+    # Endpoints stored sRGB-encoded and UNtonemapped: tonemap(lerp) != lerp(tonemap), so
+    # tone-mapped endpoints would hue-shift the mid-gradient.
     data.sky_top_color = _to_srgb_color32(sky_top, energy)
     data.sky_horizon_color = _to_srgb_color32(sky_horizon, energy)
     data.sky_ground_bottom_color = _to_srgb_color32(ground_bottom, energy)
@@ -183,8 +154,7 @@ def _apply_sky_gradient(scene: bpy.types.Scene, props, data: EnvironmentData) ->
     data.sky_sun_angle_max_cos = sun_params.angle_max
     data.sky_sun_inv_curve = sun_params.inv_curve
 
-    # A downward-looking camera mostly sees the sky's ground hemisphere, so its bottom colour
-    # is the honest flat clear tone. Kept sRGB: the clear bypasses the shader's tonemap/OETF.
+    # Kept sRGB: the clear bypasses the shader's tonemap/OETF.
     data.background_color = Color32.from_rgba(*props.ground_bottom_color, 1.0)
 
 
@@ -220,23 +190,16 @@ def _sun_params(scene: bpy.types.Scene, props) -> sky_math.SunParams:
 
 
 def _background_rgb(world: bpy.types.World | None) -> tuple[float, float, float]:
-    """Linear RGB of the world's background, including its strength.
-
-    Reads the Background node feeding the World Output. Blender world colours are linear
-    scene-referred, so no transfer function is applied -- the same rule as materials.
-    """
+    """Linear RGB of the world background (already linear; no transfer function)."""
     if world is None:
         return (0.05, 0.05, 0.05)
 
-    # See the note in export/material.py: `use_nodes` is deprecated in Blender 5.x.
     if world.node_tree is None or not getattr(world, "use_nodes", True):
         return tuple(world.color)
 
     background = _find_background_node(world)
     if background is None:
-        # An arbitrary node tree (Sky Texture, HDRI, node group) cannot be evaluated from
-        # Python without rendering. The viewport colour is the closest available stand-in;
-        # an author who needs fidelity uses the authored sky gradient instead.
+        # A node tree cannot be evaluated from Python without rendering.
         return tuple(world.color)
 
     color_input = background.inputs.get("Color")
@@ -264,11 +227,7 @@ def _find_background_node(world: bpy.types.World) -> bpy.types.Node | None:
 
 
 def _srgb_scaled(srgb_rgb, energy: float) -> tuple[float, float, float]:
-    """Premultiply an sRGB-authored colour by an energy, then linearize.
-
-    The multiply happens in sRGB because that is where Godot's ``set_sky_*_color`` setters
-    apply it; linearizing first would give a different result for energies != 1.
-    """
+    """Multiply in sRGB (where Godot's ``set_sky_*_color`` setters do), then linearize."""
     return tuple(srgb_to_linear(min(max(c * energy, 0.0), 1.0)) for c in srgb_rgb)
 
 

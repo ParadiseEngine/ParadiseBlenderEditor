@@ -255,11 +255,18 @@ def loads(text: str, source: str = "<document>") -> PrefabDocument:
 
 
 def dumps(document: PrefabDocument) -> str:
-    """Render a document as canonical TOML text."""
+    """Render a document as canonical TOML text.
+
+    Overlay edits store asset references as plain dicts (JSON cannot hold
+    :class:`~.canonical_toml.InlineTable`). Restoring them here is what keeps
+    ``Slots = [{…}, {}]`` an array of values rather than ``[[Slots]]`` headers, and what
+    stops ``format_value`` from raising on a dict that sat next to an InlineTable in the
+    same list -- the TypeError that made a Materials edit refuse to save.
+    """
     root: dict = {"schema_version": SUPPORTED_SCHEMA_VERSION}
     if document.objects:
         root["objects"] = [_object_table(o) for o in document.objects]
-    return canonical_toml.dumps(root)
+    return canonical_toml.dumps(canonical_toml.restore_inline_tables(root))
 
 
 def _read_object(table: dict, index: int, fail) -> PrefabObject:

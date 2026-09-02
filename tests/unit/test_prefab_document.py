@@ -87,6 +87,24 @@ class TestRoundTrip:
 
         assert mesh["path"] == "Models/crate.glb"
 
+    def test_a_plain_dict_asset_slot_dumps_as_an_inline_table(self):
+        # The overlay records ``{guid, path}`` as a JSON object, which loads back a plain dict.
+        # Writing that next to an InlineTable in the same list used to TypeError (mixed array)
+        # or, if every row was a dict, emit [[Slots]] headers that drop empty elements.
+        document = prefab.loads(CANONICAL, "x.scene")
+        document.objects[0].component(RENDERABLE).data["Slots"] = [
+            {"guid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "path": "materials/a.toml"},
+            {},
+        ]
+
+        text = prefab.dumps(document)
+
+        assert "Slots = [" in text
+        assert "[[objects.components.Slots]]" not in text
+        assert '{ guid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", path = "materials/a.toml" }' in text
+        assert "{}" in text
+        assert prefab.loads(text, "x.scene").objects[0].component(RENDERABLE).data["Slots"][1] == {}
+
     def test_an_empty_scene_is_just_its_version(self):
         assert prefab.dumps(prefab.PrefabDocument()) == "schema_version = 1\n"
 

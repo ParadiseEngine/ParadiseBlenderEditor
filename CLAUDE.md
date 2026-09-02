@@ -248,7 +248,9 @@ difference as a correctness failure either.
 ## Cross-repo boundary
 
 This is an independent git repository, like its siblings in the workspace. **Never create a
-commit spanning repos.**
+commit spanning repos.** PRs are assigned to quabug; a PR that fixes an issue carries
+`Closes #NNN` (one line per issue) at the top of its body and in the commit message so merging
+closes it, with `Towards #NNN` only for deliberately partial work.
 
 The live-preview engine listener (`--live <port>` in `Paradise.Sample.Runtime`) belongs to
 `ParadiseGodotEditor` and is a separate change there. `docs/live-preview.md` specifies what it

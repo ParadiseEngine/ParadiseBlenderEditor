@@ -41,7 +41,11 @@ __all__ = [
     "load",
 ]
 
-_CANDIDATES = ("build/authoring-schema.json", "data/authoring-schema.json")
+#: Where the game's dump is looked for, relative to the project root, in order. ``.editor/`` is
+#: where a launcher build writes it now (the editor cache: a function of the game's records, so a
+#: ``paradise assets clean`` must not take it with ``build/``); the other two are older layouts,
+#: kept so a checkout that has not rebuilt since keeps its vocabulary.
+_CANDIDATES = (".editor/authoring-schema.json", "build/authoring-schema.json", "data/authoring-schema.json")
 
 EDITABLE_TYPES = frozenset({
     "bool", "int", "float", "string", "enum", "vector2", "vector3", "quaternion", "color",

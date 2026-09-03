@@ -12,7 +12,7 @@ import os
 __all__ = ["MeshFields", "load"]
 
 #: Where a dumped schema is looked for, relative to the project root, in order.
-_CANDIDATES = ("build/authoring-schema.json", "data/authoring-schema.json")
+_CANDIDATES = (".editor/authoring-schema.json", "build/authoring-schema.json", "data/authoring-schema.json")
 
 
 class MeshFields:

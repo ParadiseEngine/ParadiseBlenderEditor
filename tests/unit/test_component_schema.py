@@ -24,6 +24,23 @@ def _project(components) -> str:
     return root
 
 
+def test_the_editor_cache_dump_wins_over_the_older_layouts():
+    # A launcher build writes .editor/authoring-schema.json now; a stale build/ or data/ copy
+    # from before the move must not shadow it, or a freshly added field never reaches the panel.
+    root = _project([])
+    os.makedirs(os.path.join(root, ".editor"), exist_ok=True)
+    with open(os.path.join(root, ".editor", "authoring-schema.json"), "w", encoding="utf-8") as handle:
+        json.dump({"version": 1, "components": [
+            {"id": "b7ab4dd8-c8da-4dc2-9e5e-192fd74deb11", "type": "Game.Fresh", "displayName": "Fresh",
+             "fields": [{"name": "Count", "type": "int"}]},
+        ]}, handle)
+
+    vocabulary = component_schema.load(root)
+
+    assert vocabulary.source.endswith(os.path.join(".editor", "authoring-schema.json"))
+    assert vocabulary.get("b7ab4dd8-c8da-4dc2-9e5e-192fd74deb11") is not None
+
+
 def test_a_project_with_no_dump_has_no_vocabulary():
     # A fresh clone has never built the game. That is a normal state, not an error: the panel
     # says "build the game to edit fields" rather than reporting the addon as broken.

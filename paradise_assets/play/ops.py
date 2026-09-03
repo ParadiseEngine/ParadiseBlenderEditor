@@ -421,7 +421,9 @@ class PARADISE_ASSETS_OT_build_schema(_CliOperator, Operator):
             return self._report_failure(result)
         schema = os.path.join(self._layout.editor, project.SCHEMA_FILE_NAME)
         if not os.path.isfile(schema):
-            self.report({"ERROR"}, f"The build succeeded but wrote no {schema}; is ParadiseAuthoringSchemaPath set?")
+            self.report(
+                {"ERROR"},
+                f"The build succeeded but wrote no {schema}; is ParadiseAuthoringSchemaPath set?")
             return {"CANCELLED"}
         self.report({"INFO"}, f"Schema dumped to {schema}")
         for area in context.screen.areas:

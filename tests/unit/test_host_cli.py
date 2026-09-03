@@ -85,7 +85,8 @@ def test_schema_build_runs_the_runtime_host_csproj(tmp_path, monkeypatch):
 def test_a_prebuilt_runtime_host_has_no_schema_build(monkeypatch):
     monkeypatch.setattr(host.shutil, "which", lambda name: "/opt/homebrew/bin/dotnet")
     monkeypatch.setattr(
-        host, "_preference", lambda name, default="": "/opt/game/ShiningPie" if name == "runtime_host" else default
+        host, "_preference",
+        lambda name, default="": "/opt/game/ShiningPie" if name == "runtime_host" else default,
     )
 
     assert host.schema_build_stage() is None

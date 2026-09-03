@@ -8,7 +8,10 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-__all__ = ["ASSETS_DIR", "BUILD_DIR", "EDITOR_DIR", "MANIFEST_NAME", "SCHEMA_CANDIDATES", "SCHEMA_FILE_NAME", "ProjectLayout", "locate"]
+__all__ = [
+    "ASSETS_DIR", "BUILD_DIR", "EDITOR_DIR", "MANIFEST_NAME", "SCHEMA_CANDIDATES", "SCHEMA_FILE_NAME",
+    "ProjectLayout", "locate",
+]
 
 ASSETS_DIR = "assets"
 EDITOR_DIR = ".editor"

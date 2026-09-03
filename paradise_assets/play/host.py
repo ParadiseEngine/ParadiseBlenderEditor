@@ -166,7 +166,7 @@ def schema_build_stage() -> list[str] | None:
     return [dotnet, "build", project, "-v", "q", "--nologo"]
 
 
-def start_schema_build(cwd: str) -> "CliJob | None":
+def start_schema_build(cwd: str) -> CliJob | None:
     """Start the launcher build without waiting; ``None`` when there is nothing to build."""
     stage = schema_build_stage()
     return None if stage is None else CliJob([stage], cwd)

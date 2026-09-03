@@ -1,23 +1,7 @@
-"""Collider authoring.
-
-Godot supplies typed shape resources (``BoxShape3D``, ``SphereShape3D``, ``CapsuleShape3D``)
-attached to ``CollisionShape3D`` nodes, so its exporter just reads the shape's own dimensions.
-Blender has no collision primitives at all. So a collider here is an ordinary object -- an
-empty or a mesh -- carrying a :class:`ParadiseColliderProperties` group that says which
-contract shape it represents.
-
-Dimensions come from one of two sources, chosen by :attr:`ParadiseColliderProperties.size_source`:
-
-* ``BOUNDS`` (default) -- derive from the object's local bounding box. Works with the
-  ordinary modelling workflow: box a cube around the thing, mark it a collider, done.
-* ``EXPLICIT`` -- type the numbers. Needed when the visual proxy is not the collision volume
-  (a low cylinder standing in for a capsule, say) and for reproducing exact values from a
-  Godot-authored scene.
-
-Blender's own Rigid Body physics is deliberately *not* read. It looks like the obvious source,
-but its collision shapes are approximations chosen for Blender's solver (``CONVEX_HULL``,
-``MESH``) and mostly have no contract equivalent, so reading them would silently produce
-wrong-sized colliders for anything but the box case.
+"""Collider authoring: Blender has no collision primitives, so a collider is an ordinary object
+carrying a shape kind, sized from its bounds or typed explicitly. Blender's own Rigid Body
+shapes are NOT read: ``CONVEX_HULL``/``MESH`` have no contract equivalent and would silently
+produce wrong-sized colliders.
 """
 
 from __future__ import annotations
@@ -69,8 +53,7 @@ class ParadiseColliderProperties(PropertyGroup):
         name="Dimensions", items=SIZE_SOURCE_ITEMS, default="BOUNDS"
     )
 
-    # Explicit dimensions, in the collider's own local space BEFORE scale folding. Stored in
-    # Blender axes; the exporter converts. Only the fields the chosen shape uses are read.
+    # Local space, Blender axes, BEFORE scale folding.
     size: FloatVectorProperty(  # type: ignore[valid-type]
         name="Size",
         description="Box full size (not half-extents)",
@@ -98,9 +81,7 @@ class ParadiseColliderProperties(PropertyGroup):
 
     is_static: BoolProperty(name="Static", default=False)  # type: ignore[valid-type]
 
-    # Godot stores a 20-bit layer mask on the owning body. The contract carries a single layer
-    # INDEX, so a multi-bit mask is lossy -- the exporter warns. Authored as an index directly
-    # here, which makes the lossy case unrepresentable rather than merely detected.
+    # An INDEX, not Godot's bit mask, so the lossy multi-bit case is unrepresentable.
     layer: IntProperty(  # type: ignore[valid-type]
         name="Layer",
         description="Collision layer index. The runtime rebuilds the mask as 1 << index",
@@ -116,13 +97,8 @@ def is_collider(obj: Object) -> bool:
 
 
 def collider_dimensions(obj: Object) -> tuple[tuple[float, float, float], float, float]:
-    """Resolve ``(size, radius, height)`` for a collider, in Blender axes and local space.
-
-    Returned values are pre-fold: the caller applies
-    :mod:`..contract.collider_fold` with the scale relative to the entity root, then converts
-    axes. Doing it in that order matters -- folding after the axis change would pair the box
-    extents with the wrong scale components.
-    """
+    """``(size, radius, height)`` in Blender axes, pre-fold. The caller folds scale BEFORE
+    converting axes; the other order pairs extents with the wrong scale components."""
     props = obj.paradise_collider
 
     if props.size_source == "EXPLICIT":
@@ -133,8 +109,7 @@ def collider_dimensions(obj: Object) -> tuple[tuple[float, float, float], float,
     # Sphere: the largest half-extent, so the shape encloses the visual bounds.
     radius_from_bounds = max(size) / 2.0
 
-    # Capsule: Blender Z is the contract's Y once converted, so the capsule axis is Blender Z
-    # and its cross-section is X/Y.
+    # Capsule axis is Blender Z (contract Y after conversion).
     capsule_radius = max(size[0], size[1]) / 2.0
     capsule_height = size[2]
 
@@ -146,16 +121,8 @@ def collider_dimensions(obj: Object) -> tuple[tuple[float, float, float], float,
 
 
 def _local_bounds(obj: Object) -> tuple[float, float, float]:
-    """Local-space extents of an object.
-
-    ``obj.dimensions`` is world-space (scale already applied), which would double-count scale
-    once the fold runs, so the untransformed bounds are used instead.
-
-    Empties need their own branch: ``bound_box`` is all zeros for them, because an empty has no
-    geometry -- only a display gizmo. Using it directly would silently export a zero-sized
-    collider, which is the natural way to author a box collider (add a Cube empty, size it) and
-    would produce a scene where nothing collides with anything.
-    """
+    """Local extents. Not ``obj.dimensions`` (world-space; the fold would double-count scale),
+    and an empty's ``bound_box`` is all zeros, which would silently export a zero-sized collider."""
     if obj.type == "EMPTY":
         # A cube/sphere empty of display size s spans -s..s on each axis, so its extent is 2s.
         extent = obj.empty_display_size * 2.0

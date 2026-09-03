@@ -1,21 +1,7 @@
-"""The navmesh bake button and its viewport preview.
-
-The bake normally runs invisibly inside a scene export, which makes tuning walkable geometry
-blind: you move a wall, export, and have no idea what the doorway cut actually looks like until
-the game runs. The ``paradise.bake_navmesh`` operator runs the same bake on demand and rebuilds
-a wireframe overlay from the triangulation the bridge ACTUALLY wrote (via ``--debug-json``) —
-not from the input geometry, so erosion, doorway cuts, and dropped slivers are all visible.
-
-The preview object is deliberately inert:
-
-* not an entity and owns no colliders, so both the scene export and the bake itself ignore it;
-* unselectable (``hide_select``), so it cannot be grabbed, re-parented, or accidentally marked
-  as an entity — delete or rebuild it from the panel instead;
-* wireframe drawn in front, because the walkable surface sits a cell (0.1) above the floor and
-  would otherwise z-fight or vanish inside the very rooms it is meant to explain.
-
-Visibility is a per-scene setting (``paradise_project.navmesh_preview``) so it survives a
-.blend reload with the scene, like every other project-scoped switch.
+"""On-demand navmesh bake with a wireframe preview built from the triangulation the bridge
+ACTUALLY wrote (``--debug-json``), so erosion and doorway cuts are visible. The preview object
+is inert (not an entity, unselectable) and drawn in front, since the surface sits a cell above
+the floor and would z-fight.
 """
 
 from __future__ import annotations
@@ -68,8 +54,7 @@ class PARADISE_OT_bake_navmesh(Operator):
         try:
             output = bake_navmesh(scene, scene_name, export_paths(scene), debug_json)
             if output is None:
-                # bake_navmesh already logged the specific reason to the console; the operator
-                # repeats a summary through report() so it reaches the status bar.
+                # report() so the summary reaches the status bar, not only the console.
                 log.warn(
                     "NavMesh bake produced nothing — no walkable geometry, or the bridge is "
                     "not configured (see addon preferences).",
@@ -87,8 +72,7 @@ class PARADISE_OT_bake_navmesh(Operator):
         triangles = triangulation.get("triangles") or []
         _rebuild_preview(scene, vertices, triangles)
 
-        # Baking is an explicit request to look at the result: flip the toggle on rather than
-        # leaving a freshly baked preview invisible behind a switch the author forgot about.
+        # Baking is a request to look: do not leave the preview hidden behind a forgotten toggle.
         scene.paradise_project.navmesh_preview = True
         sync_preview_visibility(scene)
 

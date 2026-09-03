@@ -14,12 +14,16 @@ namespace ParadiseBlenderBridge;
 /// binary. This lives here because DotRecast is C#-only; the Godot host gets its bake from
 /// Godot's own NavigationServer3D, and Blender has no equivalent.
 ///
-/// <b>engine-schema</b> prints <c>Paradise.Export.AuthoringSchema.Json</c> — the engine's own
-/// authored-component schema. The addon no longer vendors a copy of it: a game's launcher merges
-/// every assembly it references into the document it dumps, so the engine's components reach the
-/// addon inside the GAME's schema, described by the engine that game actually builds against.
-/// This verb is now a diagnostic — what does the engine publish, before any game merges it — for
-/// when a component is missing from a panel and you need to know which half is at fault.
+/// <b>engine-schema</b> IS GONE, and not because it was unused. It printed
+/// <c>Paradise.Export.AuthoringSchema.Json</c>, the engine's own authored-component schema —
+/// a diagnostic for "what does the engine publish, before any game merges it". Since contract v6
+/// the answer is NOTHING: the engine declares no authored components at all, every record moved
+/// to the games, and the constant it printed does not exist. A verb that can only ever print an
+/// empty document is worse than an absent one, because its emptiness reads as a failure.
+///
+/// The schema a host needs is the GAME's, dumped by a launcher that merges every assembly it
+/// references. `tests/fixtures/engine-authoring-schema.json` is the last thing this verb ever
+/// printed, kept as a test fixture — see the note beside it.
 ///
 /// <b>contract-check</b> is the drift gate. The Blender addon writes the contract in pure
 /// Python, so nothing structurally guarantees it stays in step with C# <c>Paradise.Export</c>
@@ -43,7 +47,6 @@ internal static class Program
             {
                 "navmesh" => NavMeshCommand.Run(args[1..]),
                 "contract-check" => ContractCheckCommand.Run(args[1..]),
-                "engine-schema" => PrintEngineSchema(),
                 "--help" or "-h" or "help" => Usage(),
                 _ => Fail($"Unknown verb '{args[0]}'."),
             };
@@ -77,20 +80,10 @@ internal static class Program
                   reader and writer, and report any semantic difference. Exit code 1 means
                   the Python contract implementation has drifted.
 
-              engine-schema
-                  Print the engine's authored-component schema (the generated
-                  Paradise.Export.AuthoringSchema.Json constant). A diagnostic: the addon reads
-                  the GAME's dumped schema, which already carries these components because the
-                  launcher that dumps it scans its references.
             """);
         return 2;
     }
 
-    private static int PrintEngineSchema()
-    {
-        Console.WriteLine(Paradise.Export.AuthoringSchema.Json);
-        return 0;
-    }
 
     internal static int Fail(string message)
     {

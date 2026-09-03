@@ -1,17 +1,6 @@
-"""Collider objects -> ``ColliderShapeData``.
-
-Follows the contract's folding rule (see :mod:`..contract.collider_fold`): the shape is
-expressed in the **entity root's local space with the collider's relative scale folded into
-its dimensions**, while the root's own scale stays in the entity's ``WorldMatrix``.
-
-Order of operations matters and is easy to invert:
-
-1. compute the collider's scale **relative to the entity root**, in Blender axes
-2. fold that into the shape dimensions, in Blender axes
-3. convert the resulting dimensions and the pose into contract axes
-
-Folding after the axis change would pair a box's X extent with the wrong scale component,
-because the basis change permutes Y and Z.
+"""Collider objects -> ``ColliderShapeData``, in the entity root's local space with the
+collider's relative scale folded in (:mod:`..contract.collider_fold`). Fold in Blender axes
+FIRST, then convert: folding after the basis change pairs extents with the wrong scale components.
 """
 
 from __future__ import annotations
@@ -58,8 +47,7 @@ def export_shape(entity: bpy.types.Object, collider: bpy.types.Object) -> Collid
 
     data = ColliderShapeData(
         id=collider.name,
-        # Root-exclusive, matching the Godot/Unity convention: empty when the collider IS the
-        # entity root. Blender has no node paths, so the object name is the addressable id.
+        # Empty when the collider IS the root (Godot/Unity convention).
         path="" if collider is entity else collider.name,
         is_trigger=props.is_trigger,
         is_static=props.is_static,
@@ -70,15 +58,13 @@ def export_shape(entity: bpy.types.Object, collider: bpy.types.Object) -> Collid
 
     if props.shape == PhysicsShapeType.BOX:
         folded = collider_fold.box_size(size, relative)
-        # Convert extents, then take absolute values: the basis change negates one axis, and a
-        # box extent is a magnitude, not a signed offset.
+        # abs after converting: the basis change negates one axis, and an extent is a magnitude.
         converted = _convert_extent(folded)
         data.size = converted
     elif props.shape == PhysicsShapeType.SPHERE:
         data.radius = collider_fold.sphere_radius(radius, relative)
     elif props.shape == PhysicsShapeType.CAPSULE:
-        # The contract's capsule is Y-aligned. In Blender axes that is Z, so the fold helpers
-        # -- which are written in contract axes -- need the relative scale converted first.
+        # The fold helpers are written in contract axes; convert the scale first.
         contract_relative = _convert_extent(relative)
         data.radius = collider_fold.capsule_radius(radius, contract_relative)
         data.height = collider_fold.capsule_height(height, contract_relative)
@@ -96,9 +82,5 @@ def export_shape(entity: bpy.types.Object, collider: bpy.types.Object) -> Collid
 
 
 def _convert_extent(extent) -> tuple[float, float, float]:
-    """Permute a Blender-axis magnitude triple into contract axes.
-
-    ``(x, y, z) -> (x, z, y)`` -- the same permutation the basis change applies, but without
-    the sign flip, because these are unsigned extents rather than positions.
-    """
+    """``(x, y, z) -> (x, z, y)``: the basis permutation without the sign flip, for magnitudes."""
     return (abs(extent[0]), abs(extent[2]), abs(extent[1]))

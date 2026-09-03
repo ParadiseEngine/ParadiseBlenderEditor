@@ -76,6 +76,15 @@ jobs:
       - name: Install dev tooling
         run: python -m pip install --upgrade pytest
 
+      - name: Blender GPU libraries
+        # EEVEE (and Workbench) load libEGL/libGL. Without them a thumbnail render aborts the
+        # Blender process -- SIGABRT, not a Python exception -- and the suite dies on the
+        # first prefab. The thumbnail code falls back to Workbench when EGL is missing, but
+        # Workbench still needs GL.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libgl1-mesa-dri libxkbcommon0 libxi6 libxrender1 libxxf86vm1 libsm6 libxfixes3
+
       - name: Cache Blender
         id: blender-cache
         uses: actions/cache@v4
@@ -95,6 +104,9 @@ jobs:
       - name: Run the full suite
         env:
           BLENDER: /home/runner/blender/blender
+          # Mesa software rasterizer: EEVEE and Workbench still load GL, and a GitHub
+          # runner has no GPU. Without this, Blender aborts on the first thumbnail render.
+          LIBGL_ALWAYS_SOFTWARE: "1"
         run: |
           # Both must be absolute PATHS, not command names. run_tests.sh guards with
           # `[ -x "$PYTHON" ] || PYTHON=python3`, and `[ -x python ]` is false for a bare name —

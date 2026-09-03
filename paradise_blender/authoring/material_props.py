@@ -1,16 +1,6 @@
-"""Extra material parameters the contract carries but no DCC tool models natively.
-
-``LevelMaterialData`` has fields with no counterpart in either Godot's ``StandardMaterial3D``
-or Blender's Principled BSDF: the procedural animated-material recipes (``lava``, ``jade``,
-``nebula``, ...) and glTF-style transmission. The Godot addon authors them as *resource
-metadata* -- values Godot stores and ignores, which the exporter picks up. This module is the
-same idea in Blender, as a property group on the material.
-
-The invariant worth stating: **nothing here changes how Blender renders the material.** These
-are instructions for the Paradise runtime shader. A material with ``material_kind = "lava"``
-looks like whatever its Principled BSDF says inside Blender and looks like flowing lava in the
-engine. That divergence is intentional but surprising, so the N-panel labels the section
-accordingly.
+"""Contract-only material parameters (recipes, transmission) that no DCC tool models. Nothing
+here changes how Blender renders the material; a ``lava`` material looks like its BSDF in
+Blender and like lava in the engine, which the panel labels accordingly.
 """
 
 from __future__ import annotations
@@ -25,10 +15,8 @@ __all__ = [
     "unregister_pointers",
 ]
 
-# Recipe names understood by the runtime shader. The contract's "no recipe" value is the empty
-# string, but Blender rejects an empty enum identifier (it warns "current value '0' matches no
-# enum" and the property becomes unreadable), so the sentinel NONE is used here and mapped back
-# to "" by resolved_material_kind at export.
+# The contract's "no recipe" is "", but Blender rejects an empty enum identifier (the property
+# becomes unreadable), so NONE is the sentinel and resolved_material_kind maps it back.
 NONE_KIND = "NONE"
 
 MATERIAL_KIND_ITEMS = [
@@ -101,11 +89,7 @@ class ParadiseMaterialProperties(PropertyGroup):
 
 
 def resolved_material_kind(props: ParadiseMaterialProperties) -> str:
-    """The contract value: the empty string when no recipe is selected.
-
-    Bridges the :data:`NONE_KIND` sentinel back to what ``LevelMaterialData.MaterialKind``
-    expects, so the sentinel never escapes the authoring layer.
-    """
+    """The contract value, ``""`` for the :data:`NONE_KIND` sentinel."""
     return "" if props.material_kind == NONE_KIND else props.material_kind
 
 

@@ -10,8 +10,8 @@ Legend: **✔** full parity · **≈** parity with a documented difference · **
 | contract area | Godot host | Blender host | notes |
 |---|---|---|---|
 | Entity transforms | ✔ verbatim | ≈ | Blender is Z-up, so transforms are rebased (`CONVENTIONS.md` §1). Pinned against Blender's glTF exporter. |
-| Object identity | ✖ | ✖ | Schema v5 removed `EntityGuid` from the document; nothing exports one. `object.paradise.entity_guid` survives as host bookkeeping. What identifies an object on the wire is its `Name` component, which is for DIAGNOSTICS and is not unique. |
-| Parent/child | ✖ | ✖ | The parent link went with the entity record. An object's placement is stated in world space, once. |
+| Object identity | ✔ stored | ≈ derived | Since v6 every object carries `meta.Guid`. Godot stores a minted GUID in node metadata; this host derives `uuid5(namespace, object name)` (`CONVENTIONS.md` §4) so an export never mutates the LFS-locked `.blend`. Every host reference bakes the same value. |
+| Parent/child | ✔ | ✔ | `meta.Parent` plus a LOCAL `transform`. The parent is the nearest EXPORTED ancestor, so an empty that authors nothing does not break the chain. |
 | Entity order | tree order | sorted by name | Blender guarantees no iteration order; sorting keeps exports diff-stable. |
 | Mesh reference | ✔ shared GLB, derived | ≈ AUTHORED | The Godot host still derives a `Renderable` from the node's mesh. This host does not: what an object draws is a component an author attaches, pointing at the object whose geometry to export (`authoredBy: mesh`). Still exported per mesh datablock and deduplicated. |
 | Materials | ✔ `BaseMaterial3D` | ≈ | Principled BSDF. Colour space is inverted (§2) — Blender is already linear. |
@@ -64,10 +64,8 @@ textures from files under `data/`. The exporter warns and omits the reference.
 **Interaction collider geometry is not forwarded.** The contract's interactable component
 carries only a display name today. Both hosts behave identically here.
 
-**An object reference is baked as a NAME.** `authoredBy: entity` resolves to the target's `Name`
-component, because that is the one thing every exported object carries. Names are not unique and
-nothing here makes them so, so a scene with two objects sharing a name has an ambiguous reference
-— the runtime resolving it is what must say so.
+**An object reference is baked as a GUID.** `authoredBy: entity` resolves to the target's durable
+identity, the same GUID its `meta` carries. Names are not unique; the GUID is.
 
 **Schema v5 is a hard break.** The engine refuses a v4 document by version rather than reading it:
 a v4 entity is a JSON object where v5 expects an array, so it would parse as nothing and load an
@@ -81,8 +79,9 @@ Parity is not asserted by inspection. Three mechanisms enforce it:
 1. **`contract-check`** round-trips every exported document through the engine's own
    `ExportJsonReader`/`ExportJsonWriter`. Anything the Python writer got wrong — a misspelled
    key, an enum written as a number, a missing field — shows up as a difference.
-2. **Shared defaults.** `authoring/defaults.py` mirrors `ParadiseAuthoringDefaults`, so
-   agent data cannot silently diverge between hosts.
+2. **Shared defaults.** Field defaults come from the game's dumped `authoring-schema.json`
+   (`contract/authoring.py`), the same document the Godot host reads, so agent data cannot
+   silently diverge between hosts.
 3. **Shared math.** `collider_fold.py`, `layers.py`, `sky.py`, and the matrix layout are
    direct ports with unit tests pinned to the C# behaviour, including the half-away-from-zero
    rounding in `Color32.ToByte` that Python's built-in `round` would get wrong.

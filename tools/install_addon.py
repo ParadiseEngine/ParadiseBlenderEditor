@@ -29,7 +29,14 @@ import os
 import platform
 import sys
 
-PACKAGE = "paradise_blender"
+#: The extensions this repository ships. Both are linked by default, and both can be enabled at
+#: once -- they are complements during the migration, not alternatives:
+#:
+#:   paradise_blender  the .blend is the source of truth and exports to data/
+#:   paradise_assets   assets/ is the source of truth and the .blend is a cache of one scene
+#:
+#: Pass a package name to link just one.
+PACKAGES = ("paradise_blender", "paradise_assets")
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -65,19 +72,27 @@ def _version_key(text: str) -> tuple[int, ...]:
         return (0,)
 
 
-def install(remove: bool) -> int:
+def install(remove: bool, packages: tuple[str, ...] = PACKAGES) -> int:
+    """Link (or unlink) each package, reporting the worst outcome.
+
+    Each is independent: one failing to link should not stop the other, because the common
+    reason for a failure is a real directory already installed under that name.
+    """
     roots = extension_roots()
     if not roots:
         print("No Blender configuration directory found. Run Blender once first.", file=sys.stderr)
         return 1
 
-    source = os.path.join(REPO, PACKAGE)
+    return max(_install_one(package, roots[0], remove) for package in packages)
+
+
+def _install_one(package: str, target_root: str, remove: bool) -> int:
+    source = os.path.join(REPO, package)
     if not os.path.isdir(source):
         print(f"'{source}' does not exist — run this from the repository.", file=sys.stderr)
         return 1
 
-    target_root = roots[0]
-    target = os.path.join(target_root, PACKAGE)
+    target = os.path.join(target_root, package)
 
     if remove:
         if os.path.islink(target):
@@ -114,7 +129,6 @@ def install(remove: bool) -> int:
 
     os.symlink(source, target, target_is_directory=True)
     print(f"Linked {target} -> {source}")
-    print("\nRestart Blender, then enable 'Paradise Engine Tools' in Preferences > Add-ons.")
     return 0
 
 
@@ -122,7 +136,19 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--remove", action="store_true", help="unlink instead of linking")
     parser.add_argument("--list", action="store_true", help="list candidate extension directories")
+    parser.add_argument(
+        "package",
+        nargs="*",
+        metavar="PACKAGE",
+        help=f"which extension(s) to link (default: all of {', '.join(PACKAGES)})",
+    )
     args = parser.parse_args()
+
+    # Validated here rather than through `choices`, which with nargs="*" needs the empty list
+    # smuggled into the choices to accept "no argument" and then prints that in the help.
+    unknown = [name for name in args.package if name not in PACKAGES]
+    if unknown:
+        parser.error(f"unknown package(s) {', '.join(unknown)}; expected one of {', '.join(PACKAGES)}")
 
     if args.list:
         roots = extension_roots()
@@ -133,7 +159,14 @@ def main() -> int:
             print(f"{marker} {root}")
         return 0
 
-    return install(args.remove)
+    status = install(args.remove, tuple(args.package) or PACKAGES)
+    if status == 0 and not args.remove:
+        print(
+            "\nRestart Blender, then enable the add-ons in Preferences > Add-ons:\n"
+            "  'Paradise Engine Tools'  — author and export scenes to data/\n"
+            "  'Paradise Assets'        — open assets/scenes/*.scene and place things in it"
+        )
+    return status
 
 
 if __name__ == "__main__":

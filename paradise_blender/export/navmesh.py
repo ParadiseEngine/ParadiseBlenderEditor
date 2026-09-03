@@ -1,46 +1,16 @@
-"""Navmesh baking via the .NET bridge.
+"""Navmesh baking via the .NET bridge, since DotRecast has no Python equivalent.
 
-Navmesh is the one part of the contract that cannot be produced in Python. The runtime reads a
-DotRecast ``MeshSet`` binary, and DotRecast is a C# library with no Python equivalent -- so
-this module collects walkable geometry from the Blender scene and hands it to
-``tools/ParadiseBlenderBridge``, which runs the Recast bake and writes the binary using the
-same ``Paradise.Export.NavMesh.NavMeshBinaryWriter`` the Godot host uses. Same library, same
-quantization, same output format.
+Geometry is the COLLIDER shapes of non-agent entities that have colliders (the Godot host's
+``StaticColliders`` filter), never the render mesh: a shelf model over a solid box collider
+bakes walkable polys inside a volume the simulation treats as solid, and a planner corner in
+there wedges every agent against the real obstacle (ShiningPie's store shelves). Non-box shapes
+fall back to the evaluated render mesh. Bake parameters live in the .blend and default to the
+Godot host's (cell 0.1, height 1.8, radius 0.4, climb 0.3, slope 45); radius 0 makes paths run
+flush against faces and capsules grind along walls. A failed bake never aborts the export.
 
-The Godot host bakes from ``NavigationMesh.ParsedGeometryType.StaticColliders``, which
-naturally excludes moving agents. Blender has no collision-shape parsing, so the equivalent
-filter here is: **entities that are not agents and do have physics colliders**. An entity with
-no colliders is scenery you can walk through, and an agent is the thing doing the walking --
-neither belongs in the walkable surface.
-
-What gets rasterized for a qualifying entity is its **declared collider shapes, not its
-render mesh**. The runtime collides agents against the colliders, so the navmesh must
-describe that world: a shelf model full of open geometry over a solid box collider would
-otherwise bake walkable polys inside a volume the simulation treats as solid, and a planner
-corner in there wedges every agent that follows it against the real obstacle (found the hard
-way with ShiningPie's store shelves). Box colliders — the only static shape in practice —
-are emitted as twelve exact triangles; any non-box collider falls back to the entity's
-evaluated render mesh, the pre-existing behavior.
-
-Bake parameters are authored per scene (``ParadiseScenePreferences``, surfaced in the panel's
-NavMesh section) and travel inside the .blend, because they shape exported data. Their
-defaults mirror the Godot host's exactly (cell 0.1, agent height 1.8, radius 0.4, max climb
-0.3, slope 45), so an untouched scene bakes identically from either tool. The radius in
-particular is not a default to tidy up: with radius 0 the planned paths run flush against
-obstacle faces and agent capsules grind along walls.
-
-A failed or skipped bake leaves ``NavMeshFile`` null rather than aborting the scene export --
-a scene with no walkable geometry is perfectly valid.
-
-**The bake ran on every export**, including the majority that move nothing walkable. It costs
-~3.5 s on ShiningPie's district -- nearly all of it ``dotnet run`` starting a process, since the
-Recast pass itself sees only 1404 collider triangles -- which is a tenth of the export but the
-whole of it once textures are cached. It is now skipped when its input is unchanged: the
-geometry-and-settings payload handed to the bridge is the COMPLETE input of the bake, so hashing
-that JSON is an exact key rather than a heuristic -- see :mod:`..pipeline.cache`. What the key
-cannot see is the bridge's own code changing underneath an unchanged scene;
-:func:`..pipeline.bridge.bridge_identity` covers its build output, and the panel's Bake NavMesh
-button always re-bakes for real.
+The bake costs ~3.5 s on ShiningPie (almost all ``dotnet run`` startup), so it is cached on the
+complete bridge payload (:mod:`..pipeline.cache`); the bridge's own build is covered by
+:func:`..pipeline.bridge.bridge_identity`, and the panel button always re-bakes.
 """
 
 from __future__ import annotations
@@ -68,12 +38,9 @@ __all__ = [
     "export_navmesh",
 ]
 
-#: Cache namespace for baked navmeshes.
 CACHE_KIND = "navmesh"
 
-#: The engine defaults — what ``NavMeshBake.cs`` uses on the Godot host, and the defaults of
-#: the per-scene properties below. Kept as the documented reference point (and the fallback
-#: when a scene has no Paradise settings registered, e.g. bare unit contexts).
+#: The Godot host's ``NavMeshBake.cs`` defaults; also the fallback for a scene with no settings.
 BAKE_SETTINGS = {
     "cellSize": 0.1,
     "cellHeight": 0.1,
@@ -85,12 +52,7 @@ BAKE_SETTINGS = {
 
 
 def bake_settings(scene: bpy.types.Scene) -> dict[str, float]:
-    """The scene's bake parameters, in the shape the bridge's ``BakeSettings`` deserializes.
-
-    Authored per scene (see ``ParadiseScenePreferences``) because they shape exported data:
-    the same .blend must bake the same navmesh on every machine. Defaults mirror the Godot
-    host, so an untouched scene still bakes identically from either tool.
-    """
+    """The scene's bake parameters in the bridge's ``BakeSettings`` shape."""
     props = getattr(scene, "paradise_project", None)
     if props is None:
         return dict(BAKE_SETTINGS)
@@ -108,13 +70,8 @@ def bake_settings(scene: bpy.types.Scene) -> dict[str, float]:
 def export_navmesh(
     scene: bpy.types.Scene, scene_name: str, paths: ExportPaths, force: bool = False
 ) -> None:
-    """Bake the navmesh beside the scene document.
-
-    Nothing records the result in the document any more: the ``NavMeshFile`` key went with the
-    rest of the document shell in schema v5, and it was a field stating what the filename already
-    says — the bake writes ``<scene>.navmesh.bin`` next to ``<scene>.json``, so a consumer that
-    can open one can find the other.
-    """
+    """Bake ``<scene>.navmesh.bin`` beside the document. Nothing in the document names it since
+    v5; ``pipeline/prune.py`` keeps it by that naming rule."""
     bake_navmesh(scene, scene_name, paths, force=force)
 
 
@@ -125,20 +82,9 @@ def bake_navmesh(
     debug_json_path: str | None = None,
     force: bool = False,
 ) -> str | None:
-    """Run the Recast bake and write ``scenes/<name>.navmesh.bin``.
-
-    Returns the output path, or ``None`` when there was nothing to bake or the bridge was
-    unavailable/failed — every one of which is a degraded state the caller reports, not an
-    exception (a scene with no walkable geometry is perfectly valid).
-
-    An unchanged input reuses the cached bake instead of spending ~3.5 s reproducing it. Two
-    requests always bake for real: ``force``, and any request for ``debug_json_path``, since the
-    triangulation the viewport preview draws is produced by the bridge run itself and is not part
-    of the cached artifact.
-
-    ``debug_json_path`` additionally asks the bridge for the baked triangulation (contract
-    axes) — what the viewport preview is built from.
-    """
+    """Run the Recast bake; ``None`` when nothing was baked (a degraded state, not an error).
+    ``force`` and ``debug_json_path`` always bake for real: the preview triangulation comes from
+    the bridge run and is not part of the cached artifact."""
     try:
         vertices, triangles = collect_walkable_geometry(scene, paths.data_dir)
     except Exception as error:  # a bad mesh must not abort the scene export
@@ -146,10 +92,11 @@ def bake_navmesh(
         return None
 
     if not triangles:
-        # Silent: most scenes under construction have no walkable geometry yet, and warning
-        # on every export would train authors to ignore the log.
+        # Silent: warning on every export of a scene under construction trains authors to
+        # ignore the log.
         return None
 
+    from ..pipeline import dotnet
     from ..pipeline.bridge import bridge_identity, resolve_bridge_command
 
     command = resolve_bridge_command()
@@ -162,19 +109,15 @@ def bake_navmesh(
         return None
 
     output_path = paths.nav_mesh_output_path(scene_name)
-    input_path = os.path.join(tempfile.gettempdir(), f"paradise_navmesh_{scene_name}.json")
+    # Unique per call: a fixed name let two Blender instances baking one scene race on it.
+    handle, input_path = tempfile.mkstemp(prefix=f"paradise_navmesh_{scene_name}_", suffix=".json")
+    os.close(handle)
     argv = [*command, "navmesh", "--input", input_path, "--output", output_path]
     if debug_json_path is not None:
         argv += ["--debug-json", debug_json_path]
 
-    # sort_keys is not cosmetic: this string IS the cache key, so an unstable dict order would
-    # mean a fresh bake every time despite an identical scene.
-    #
-    # Vertex/triangle ORDER is deliberately left as the depsgraph yields it, and does not need to
-    # be canonicalized. The failure it could cause only runs one way: reordered geometry hashes
-    # differently, which is a cache MISS and a redundant bake, never a stale hit. A stale hit
-    # needs the opposite -- changed geometry with an unchanged digest -- which is a SHA-256
-    # collision. Sorting here would buy nothing and cost a sort of every vertex on every export.
+    # sort_keys: this string IS the cache key. Vertex order is left as the depsgraph yields it;
+    # a reordering can only cause a miss, never a stale hit.
     payload = json.dumps(
         {"vertices": vertices, "triangles": triangles, "settings": bake_settings(scene)},
         sort_keys=True,
@@ -197,6 +140,7 @@ def bake_navmesh(
             text=True,
             timeout=300,
             check=False,
+            env=dotnet.subprocess_environment(),
         )
 
         if result.returncode != 0:
@@ -221,14 +165,8 @@ def collect_walkable_geometry(
     scene: bpy.types.Scene,
     data_dir: str,
 ) -> tuple[list[float], list[int]]:
-    """Triangulated world-space geometry of static, collidable entities, in contract axes.
-
-    Returns a flat ``[x, y, z, ...]`` vertex list and a flat triangle index list -- the shape
-    ``NavMeshBinaryWriter`` consumes.
-
-    Winding passes through unchanged: the basis change is a proper rotation, so it cannot flip
-    face orientation (see :func:`..contract.axes.convert_triangle_indices`).
-    """
+    """Flat world-space triangles of static, collidable entities, in contract axes. Winding
+    is untouched: the basis change is a proper rotation and cannot flip a face."""
     depsgraph = bpy.context.evaluated_depsgraph_get()
     vertices: list[float] = []
     triangles: list[int] = []
@@ -237,15 +175,11 @@ def collect_walkable_geometry(
         # An agent stands ON the navmesh; baking its capsule would punch a hole where it spawns.
         if authored_components.has_component(obj, authoring_router.AGENT):
             continue
-        # RESOLVED ONCE, and passed down. collider_entries reads the schema document to find the
-        # collider component before it can answer, so asking twice per object — the gate here and
-        # the walk in _append_colliders — did that lookup twice for every entity in the scene.
+        # Resolved once: collider_entries reads the schema document each call.
         entries = authored_components.collider_entries(obj, data_dir)
         if not entries:
             continue
-        # Dynamic bodies move; baking one freezes it into the walkable surface at its SPAWN --
-        # the car would leave a permanent hole in the navmesh where it started. The Godot host
-        # gets this for free by parsing StaticColliders only; this is the same filter.
+        # A dynamic body baked at its spawn leaves a permanent hole where the car started.
         if authored_components.stored_value(obj, authoring_router.RIGIDBODY, "BodyType") == "Dynamic":
             continue
 
@@ -277,15 +211,8 @@ _BOX_TRIANGLES = (
 def _append_colliders(
     entries, vertices: list[float], triangles: list[int]
 ) -> bool:
-    """Append world-space triangles for the entity's BOX colliders; True if any was emitted.
-
-    Takes the resolved references rather than the object: the caller has already asked which
-    colliders this entity has, and asking again would re-read the schema document per object.
-
-    Triggers are not solid and are skipped, mirroring the runtime's obstacle collection. The
-    collider object's own world matrix carries every inherited rotation and scale, so the
-    emitted box is exactly the volume the contract exports.
-    """
+    """Append world-space triangles for the entity's box colliders; True if any was emitted.
+    Triggers are skipped, mirroring the runtime's obstacle collection."""
     from ..authoring.collider import collider_dimensions, is_collider
     from ..contract.schema import PhysicsShapeType
 
@@ -321,7 +248,6 @@ def _append_object(
     try:
         mesh = evaluated.to_mesh()
     except RuntimeError:
-        # Objects with no evaluable geometry (an empty mesh, a failed modifier stack).
         return
 
     if mesh is None:

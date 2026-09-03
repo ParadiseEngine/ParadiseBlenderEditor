@@ -4,12 +4,27 @@ Guidance for Claude Code when working in this repository.
 
 ## What this is
 
-A Blender addon that authors scenes for Paradise Engine, exports them to the engine-neutral
-data contract, launches them in the standalone runtime, and live-previews them while editing.
+**Two** Blender addons, which point in opposite directions. Know which one you are in before
+changing anything — they disagree about what the source of truth is, and that is the whole
+difference between them.
 
-It is the **second** implementation of a contract whose reference implementation is C#
-`Paradise.Export` (used by `ParadiseGodotEditor`). That framing matters for almost every
-decision here: when this repo and the contract disagree, the contract is right.
+| | `paradise_blender` | `paradise_assets` |
+|---|---|---|
+| source of truth | the `.blend` | `assets/` in the game repo |
+| the other thing | `data/`, exported | the `.blend`, a disposable cache of one scene |
+| format | the JSON export contract | `*.prefab`, canonical TOML |
+| does | author, export, play, live-preview | open a prefab document, place things, save it back |
+
+`paradise_blender` is the older and much larger of the two: the **second** implementation of a
+contract whose reference implementation is C# `Paradise.Export` (used by `ParadiseGodotEditor`).
+That framing matters for almost every decision in it: when this repo and the contract disagree,
+the contract is right.
+
+`paradise_assets` is the inversion (the asset-management plan's §2.7). It reads `assets/` — the
+committed source tree the `paradise-assets` CLI compiles — and writes only prefab documents. Both
+can be installed and enabled at once, which is what made the migration possible. ShiningPie has
+finished that migration and no longer exports through `paradise_blender`; what that addon is for
+now (deprecated, or the JSON exporter for games without an `assets/` tree) is undecided — #35.
 
 ## Commands
 
@@ -41,6 +56,11 @@ paradise_blender/
   play/           runtime resolution and detached launch
   live/           live-preview protocol, transport, session, sync
   ui/             the Paradise sidebar tab
+paradise_assets/
+  document/     ★ pure Python, imports no bpy — the *.prefab format and the canonical TOML writer
+  materialize/    document <-> Blender objects: load, save, mesh instancing, ID-property store
+  ops.py          open_prefab / save_prefab / reload_prefab, add_prefab_instance, refresh_catalogue
+  ui.py           the Paradise Assets sidebar tab
 tools/
   ParadiseBlenderBridge/   .NET CLI: navmesh bake + contract conformance check
   mock_runtime.py          reference live-preview listener (the protocol's executable spec)
@@ -66,7 +86,7 @@ position/rotation/scale separately: the basis change permutes axes, so Blender s
 authored through widgets documented as sRGB (recipe tints, fog); those call sites say so.
 
 **Blender handlers need `@bpy.app.handlers.persistent`.** Without it Blender drops them on file
-load, and the failure is invisible: export-on-save and GUID maintenance simply stop working
+load, and the failure is invisible: export-on-save and the schema watcher simply stop working
 after the user opens another .blend.
 
 **Never block the main thread in `live/`.** Blender's UI is single-threaded and the peer is a
@@ -74,7 +94,8 @@ game runtime that stalls for frames at a time. Sends go through a bounded queue 
 background thread.
 
 **An export reuses unchanged artifacts, and the rule for what may be cached is strict.**
-`pipeline/cache.py` stores KTX2 transcodes and navmesh bakes under `<project>/.paradise-cache/`,
+`pipeline/cache.py` stores KTX2 transcodes and navmesh bakes under `<project>/.editor/cache/`
+(the engine's `ArtifactCache` directory, digest and layout, so either tool's artifacts serve the other),
 keyed on a digest of the step's *complete* input — image bytes plus the encode's argv, or the
 geometry-and-settings payload plus the bridge's build output. On ShiningPie that takes a
 re-export from 44 s to 3.6 s. **Do not extend this to the mesh GLBs.** Their inputs are a
@@ -116,7 +137,7 @@ moved on every export, which churned the exported transforms and defeated any co
 reuse. `export/mesh.py:_capture_transform` saves the channels instead.
 
 **The entity property group holds HOST data only.** `ParadiseEntityProperties` is
-deliberately five members (`is_entity`, `entity_guid`, `model_path`, the two collider lists);
+deliberately four members (`is_entity`, `model_path`, the two collider lists);
 every component — the engine's identity/agent/rigidbody/audio/particles included — is authored
 through the schema in the Components panel and routed to its typed slot by
 `contract/authoring_router.py`. Do not add fixed fields back: the ~40-field mirror this
@@ -163,6 +184,51 @@ warns "current value '0' matches no enum" and becomes unreadable. Where the cont
 `""` (e.g. `MaterialKind`), use a `NONE` sentinel and map it back at export — see
 `authoring/material_props.py`.
 
+## Things that will bite you in `paradise_assets`
+
+**The canonical TOML writer is a CROSS-LANGUAGE contract, and it is checked by bytes.**
+`document/canonical_toml.py` and C# `CanonicalTomlWriter` must produce identical output;
+`paradise assets prefab-check` compares bytes, so a formatting difference is a failing CI check
+on every document the addon has touched, not a style nit. Floats are specified as *Python's `repr`
+rules* on purpose — the C# side adopted them so this side could be one call. Do not "improve"
+the formatting.
+
+**An object nobody moved must keep its authored numbers verbatim.** Documents store values that
+came from C# `float`, Blender stores float32, and the axis rebase runs a square root — the round
+trip is accurate to ~4e-8 relative, which is fine as a position and fatal as text, because
+`repr` of a value that moved in its last bit is a completely different string. `save._unchanged`
+is what keeps a one-object edit from rewriting every transform in the file. Its epsilon is not
+tuning: below it, the load itself would churn the document.
+
+**Normalize a document quaternion before composing it.** They are float32-quantized, so none is
+exactly unit, and the length error leaks through the rotation matrix and comes back out of the
+decompose as SCALE — it turned a stored `20.0` into `19.999998` on ShiningPie's skyline props.
+
+**Components are passed through, never rebuilt.** `save.py` takes payloads from the RE-READ
+document, not from Blender. That one decision is what lets a scene full of components this addon
+has never heard of be opened and saved without corruption.
+
+**Editing a field does not change that, and the shape of the edit is why.** `edits.py` holds an
+OVERLAY — `{component id: {field: value}}`, only the members an author actually touched — applied
+over the file's version at merge time. So a component nobody edited is still written byte-for-byte,
+a field nobody edited keeps whatever the file says (including one this addon has no schema for),
+and the overlay is cleared once the save has written it, so an old edit cannot resurrect itself
+over a newer value. The ID property holding the payloads is still display data; do not write back
+from it.
+
+A field is offered as editable only when the GAME's schema describes it *and* nothing else
+authors it: `[AuthoredByHost]` fields are shown locked, because their value comes from the object
+they point at and typing one in would be authoring in the place the export overwrites. `meta` and
+`transform` are refused by the vocabulary outright — Blender's name field and transform gizmo are
+their editor, and a second way to type an identity is a second thing that can disagree.
+
+`edits.py` imports no `bpy`, and that is load-bearing rather than tidy: it is the only new logic
+on the save path, and being importable outside Blender is what lets it be unit-tested against a
+plain dict. Keep it that way.
+
+**`document/` must not import `bpy`** — same rule and same reason as `paradise_blender`'s
+`contract/`: the unit tests are the only defence against the writer drifting from the C# one.
+
 ## When the contract changes
 
 The engine's `Paradise.Export.Data.LevelDocument` is the source of truth. On a schema change:
@@ -183,7 +249,9 @@ difference as a correctness failure either.
 ## Cross-repo boundary
 
 This is an independent git repository, like its siblings in the workspace. **Never create a
-commit spanning repos.**
+commit spanning repos.** PRs are assigned to quabug; a PR that fixes an issue carries
+`Closes #NNN` (one line per issue) at the top of its body and in the commit message so merging
+closes it, with `Towards #NNN` only for deliberately partial work.
 
 The live-preview engine listener (`--live <port>` in `Paradise.Sample.Runtime`) belongs to
 `ParadiseGodotEditor` and is a separate change there. `docs/live-preview.md` specifies what it
@@ -191,9 +259,12 @@ needs to do; `tools/mock_runtime.py` is the executable specification.
 
 ## Style
 
-- Match the surrounding code: type hints, `from __future__ import annotations`, module
-  docstrings that explain *why* rather than restating the code.
-- Comments earn their place by recording a non-obvious constraint or a decision someone would
-  otherwise "fix" into a bug. There are several of those here; keep them.
+- Match the surrounding code: type hints, `from __future__ import annotations`.
+- Code explains itself; comments explain why. Prefer a name, a type, a small function, or an
+  assertion over a comment that says what the code does, and restructure before commenting.
+  A comment or docstring is for what code cannot say: a Blender-API gotcha, a constraint, a
+  decision and its rejected alternative, a failure mode someone would "fix" back in, a
+  cross-language contract. Delete comments that narrate control flow or restate the next line;
+  private helpers whose name says what they do get no docstring.
 - Warnings to the author should say what will go wrong at runtime and how to fix it, not just
   what was skipped. The Godot host's messages are the tone to match.

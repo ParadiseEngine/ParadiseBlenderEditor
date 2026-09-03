@@ -1,10 +1,5 @@
-"""Authoring operators: mark entities and colliders, and find them again.
-
-The "find them again" half matters more than it looks. Godot shows entity-ness in the
-outliner because it is a node type; in Blender it is a hidden flag on an ordinary object, so
-without :class:`PARADISE_OT_select_entities` an author has no way to see which objects in a
-large scene are actually exported.
-"""
+"""Authoring operators: mark entities and colliders, and find them again (entity-ness is a
+hidden flag, invisible in the outliner)."""
 
 from __future__ import annotations
 
@@ -12,7 +7,6 @@ import bpy
 from bpy.types import Operator
 
 from .. import log
-from . import guid
 from .collider import is_collider
 from .entity import entity_objects, is_entity
 
@@ -36,9 +30,6 @@ class PARADISE_OT_make_entity(Operator):
             if not obj.paradise.is_entity:
                 obj.paradise.is_entity = True
                 marked += 1
-            # Mint immediately rather than waiting for save: the live-preview sync keys on
-            # GUIDs, so an entity created during a preview session needs one right away.
-            guid.ensure_entity_guid(obj)
 
         log.info(f"Marked {marked} object(s) as Paradise entities.", self)
         return {"FINISHED"}
@@ -61,8 +52,7 @@ class PARADISE_OT_clear_entity(Operator):
             if obj.paradise.is_entity:
                 obj.paradise.is_entity = False
                 cleared += 1
-        # The GUID is deliberately left in place: re-marking the object later restores its
-        # original identity instead of orphaning whatever referenced it.
+        # The GUID stays, so re-marking restores the identity instead of orphaning references.
         log.info(f"Cleared {cleared} object(s).", self)
         return {"FINISHED"}
 
@@ -99,8 +89,7 @@ class PARADISE_OT_assign_colliders(Operator):
     bl_label = "Assign Colliders To Entity"
     bl_options = {"REGISTER", "UNDO"}
 
-    #: Which component field the references fill: ``<component-id>/<field-path>``. Every host
-    #: reference lives in one store and is told apart by this.
+    #: ``<component-id>/<field-path>``, the key that tells references apart in the one store.
     key: bpy.props.StringProperty(default="")  # type: ignore[valid-type]
 
     @classmethod
@@ -118,14 +107,12 @@ class PARADISE_OT_assign_colliders(Operator):
             if obj is entity or obj in existing:
                 continue
             if not is_collider(obj):
-                # Assigning an unmarked object would export a collider with no shape kind,
-                # so require the mark rather than guessing Box.
+                # An unmarked object would export a collider with no shape kind.
                 skipped_non_colliders += 1
                 continue
             entry = collection.add()
             entry.target = obj
-            # The store is shared by every component's host fields, so a row has to say which field
-            # it fills or nothing can tell them apart.
+            # A row must say which field it fills; the store is shared by every component.
             entry.key = self.key
             added += 1
 
@@ -155,8 +142,7 @@ class PARADISE_OT_remove_collider(Operator):
 
     def execute(self, context):
         collection = context.active_object.paradise.host_refs
-        # ABSOLUTE within its own store, which is what host_entries hands out — so removing from a
-        # filtered view still takes the row the user pointed at.
+        # Absolute index (what host_entries hands out), so a filtered view removes the right row.
         if 0 <= self.index < len(collection):
             collection.remove(self.index)
         return {"FINISHED"}
@@ -173,26 +159,12 @@ class PARADISE_OT_select_entities(Operator):
         bpy.ops.object.select_all(action="DESELECT")
         entities = entity_objects(context.scene)
         for obj in entities:
-            # A hidden or unselectable object cannot be selected; skipping it silently is
-            # better than raising, but it means the count reported is what was reachable.
+            # Hidden objects cannot be selected; the count reports what was reachable.
             if obj.visible_get():
                 obj.select_set(True)
         if entities:
             context.view_layer.objects.active = entities[0]
         log.info(f"{len(entities)} Paradise entity/entities in this scene.", self)
-        return {"FINISHED"}
-
-
-class PARADISE_OT_repair_guids(Operator):
-    """Mint missing entity GUIDs and re-mint duplicates"""
-
-    bl_idname = "paradise.repair_guids"
-    bl_label = "Repair Entity GUIDs"
-    bl_options = {"REGISTER", "UNDO"}
-
-    def execute(self, context):
-        changed = guid.ensure_unique_guids(context.scene)
-        log.info(f"Repaired {changed} entity GUID(s).", self)
         return {"FINISHED"}
 
 
@@ -203,5 +175,4 @@ classes = (
     PARADISE_OT_assign_colliders,
     PARADISE_OT_remove_collider,
     PARADISE_OT_select_entities,
-    PARADISE_OT_repair_guids,
 )

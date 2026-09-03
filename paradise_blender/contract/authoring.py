@@ -1,51 +1,22 @@
 """Python mirror of ``Paradise.Authoring``'s schema document, and the payload builder.
 
-A game declares components once, as C# records marked ``[Authored]``; a Roslyn generator dumps
-their description to ``<data>/authoring-schema.json``. This module is how the Blender host reads
-that description and turns authored values back into the JSON payloads the runtime deserializes
--- the same two halves the Godot host implements in ``AuthoredEntityCore`` (``LoadSchema`` and
-``ExportAuthoredComponents``). When this module and that class disagree, that class is right:
-it defined the wire format the engine's generated readers were written against.
+The reference implementation is the Godot host's ``AuthoredEntityCore`` (``LoadSchema``,
+``ExportAuthoredComponents``, ``ValueOf``); when the two disagree, that class is right, because
+the engine's generated readers were written against it. The wire rules that are easy to break:
 
-The wire format, stated once (reference: ``AuthoredEntityCore.ValueOf``):
+* Every plain field is written, defaults filling anything unset: the reader keeps a record
+  initializer only for an ABSENT key, so omitting unset fields would pin them to C# defaults
+  this host cannot see.
+* An empty string with no declared default is ``null`` (the record had no initializer);
+  a field that declared ``""`` keeps ``""``.
+* Enums travel by member name, the ``JsonStringEnumConverter`` spelling.
+* A list row is an index segment in the same slash-path grammar (``Tables/0/Entries/1/Weight``).
+  The schema says a member IS a list and nothing about its length, so row counts are DATA
+  supplied by the caller (:func:`outline`, :func:`counts_of`).
+* An ``authoredBy`` list is never editable as rows: a row editor over a collider's shapes would
+  be a second, lying copy of the pointer list the entity already holds.
 
-* Every plain field of an enabled component is written, defaults filling anything unset --
-  the reader keeps a record initializer only for a key that is *absent*, and an editor that
-  omitted unset fields would silently pin them to C#-side defaults it cannot see.
-* An empty string with **no declared default** is written as ``null``: the record had no
-  initializer, so its own default is null and the contract preserves that. A field that
-  declared ``""`` keeps writing ``""``.
-* Enums travel by member **name** (``"Chase"``), exactly the string the schema's ``values``
-  lists -- matching the typed contract's ``JsonStringEnumConverter`` spelling.
-* ``vector2``/``vector3``/``quaternion`` are flat float arrays; ``color`` is ``{r,g,b,a}``
-  floats.
-* Composition is a tree: the schema flattens to slash paths (``"Box/SizeX"``) for editing, and
-  the payload builder re-nests them. Path and tree cannot disagree because one is derived from
-  the other.
-* A LIST extends the same grammar with an index segment: ``"Tables/0/Entries/1/Weight"``. The
-  schema declares that a member *is* a list and can say nothing about how long it is, so the
-  row count is DATA and arrives from the caller -- see :func:`outline` and :func:`counts_of`.
-  A numeric segment re-nests into a JSON array rather than an object, which is the only place
-  the two halves of this module need to agree about a spelling.
-* Fields (or whole components) with ``authoredBy`` are host-object *references*: authored by
-  pointing at one of the host's own objects, exported as the value baked out of it. This host
-  implements FIVE kinds, in two families that differ in the SHAPE of what comes back:
-
-  - RECORD references fill the leaves a record declares under them.
-    :data:`HOST_TRANSFORM` bakes where the object stands (``bake_transform_refs``);
-    :data:`HOST_SHAPE` bakes the collider drawn on it (``bake_shape_refs``).
-  - LEAF references ARE the value, written at the reference's own path (``bake_leaf_refs``).
-    :data:`HOST_MESH` bakes the object's geometry as an exported GLB, :data:`HOST_ENTITY` bakes
-    the object's NAME, and :data:`HOST_ASSET` is a file browser rather than an object slot.
-
-  Four of the five are the same picker; only what the exporter takes off what you point at
-  differs. Every other kind (``sprite``, ``light``, ``node``) is still reported and skipped, which
-  the reader treats as unauthored; :func:`flatten` surfaces them so the UI can say so instead of
-  drawing a control that exports nothing. An ``authoredBy`` LIST stays a reference regardless of
-  kind: a row editor over a collider's shapes would be a second, lying copy of the pointer list
-  the entity already holds.
-
-No ``bpy`` import: this module is pure data and is unit-tested standalone.
+No ``bpy`` import: unit-tested standalone.
 """
 
 from __future__ import annotations
@@ -78,8 +49,12 @@ __all__ = [
     "build_payload",
     "counts_of",
     "default_of",
+    "field_caption",
     "flatten",
+    "has_slider",
+    "id_subtype",
     "merge",
+    "numeric_widget_options",
     "outline",
     "read",
     "relative_to",
@@ -95,21 +70,15 @@ __all__ = [
     "value_at",
 ]
 
-# AuthoringSchemaDocument.CurrentVersion / MinimumSupportedVersion. Bump only in lockstep with
-# the engine.
-#
-# The minimum EQUALS the current, and that is deliberate rather than an oversight. v3 made `id` a
-# GUID; a v1 or v2 document keys its components by a NAME, and there is no way to derive a
-# component's GUID from `paradise.rigidbody`. Such a document cannot be upgraded on the way in,
-# only regenerated -- so it is refused, which names the problem, instead of being read into
-# components whose ids resolve to nothing.
+# Lockstep with AuthoringSchemaDocument.CurrentVersion / MinimumSupportedVersion. The minimum
+# EQUALS the current on purpose: v3 made `id` a GUID, and a v1/v2 document keyed by name cannot
+# be upgraded on read, only regenerated -- refusing it names the problem.
 CURRENT_VERSION = 3
 MINIMUM_SUPPORTED_VERSION = 3
 
 SCHEMA_FILE_NAME = "authoring-schema.json"
 
-# AuthoredFieldTypes -- the closed set. Anything else in a document is a schema from a newer
-# engine than this reader, which the version gate should have caught first.
+# AuthoredFieldTypes, the closed set.
 TYPE_FLOAT = "float"
 TYPE_INT = "int"
 TYPE_BOOL = "bool"
@@ -122,71 +91,121 @@ TYPE_VECTOR3 = "vector3"
 TYPE_QUATERNION = "quaternion"
 TYPE_COLOR = "color"
 
-#: ``authoredBy`` kinds. The engine's closed set is shape/mesh/sprite/light/asset/transform
-#: (``Paradise.Authoring``'s ``AuthoredBySources``); this host implements exactly one of them.
+#: Schema ``unit`` -> Blender ID-property subtype. Kilograms is absent because ID properties
+#: have no MASS subtype, so the caption carries ``kg`` instead.
+_SUBTYPE_FOR_UNIT = {
+    "meters": "DISTANCE",
+    "radians": "ANGLE",
+    "seconds": "TIME",
+    "unit01": "FACTOR",
+}
+
+_SHORT_UNIT = {
+    "kilograms": "kg",
+}
+
+
+def id_subtype(unit: str | None) -> str | None:
+    """Blender ID-property subtype for a schema unit, or None when the widget cannot carry it."""
+    return _SUBTYPE_FOR_UNIT.get(unit) if unit else None
+
+
+def field_caption(name: str, unit: str | None) -> str:
+    """The label for a number field: units the widget already displays stay off it."""
+    if not unit or unit in _SUBTYPE_FOR_UNIT:
+        return name
+    return f"{name} ({_SHORT_UNIT.get(unit, unit)})"
+
+
+def has_slider(field: FlatField) -> bool:
+    """Whether both ends of a range exist (or the unit is unit01), so the draw can cap a slider."""
+    if field.unit == "unit01":
+        return True
+    return field.minimum is not None and field.maximum is not None
+
+
+def numeric_widget_options(field: FlatField) -> dict[str, object]:
+    """ID-property UI metadata for a float/int: range plus the unit's Blender subtype."""
+    if field.type not in (TYPE_FLOAT, TYPE_INT):
+        return {}
+    options: dict[str, object] = {}
+    if field.minimum is not None:
+        options["min"] = field.minimum
+    if field.maximum is not None:
+        options["max"] = field.maximum
+    subtype = id_subtype(field.unit)
+    if subtype:
+        options["subtype"] = subtype
+    if field.unit == "unit01":
+        options.setdefault("min", 0.0)
+        options.setdefault("max", 1.0)
+        options["subtype"] = "FACTOR"
+    return options
+
+
+#: ``authoredBy`` kinds; the closed set is ``Paradise.Authoring``'s ``AuthoredBySources``.
+#: Record kinds fill the leaves a record declares under the reference.
 HOST_TRANSFORM = "transform"
-
-#: A reference to a COLLISION SHAPE -- the engine's ``AuthoredBySources.Shape``. Authored as an
-#: object slot exactly as a transform is; what differs is that the exporter bakes the collider
-#: drawn on the object rather than where the object stands.
 HOST_SHAPE = "shape"
+HOST_LIGHT = "light"
+HOST_CAMERA = "camera"
 
-#: A reference to a RENDERABLE MESH. An object slot again, and the exporter writes the referenced
-#: object's mesh out as a GLB and bakes the data-relative field naming it.
-#:
-#: Pointing at ITSELF is the normal case here, unlike every other kind: an object usually draws its
-#: own mesh, and the slot exists so that "this draws" is a thing an author says rather than a thing
-#: an exporter infers from the object having mesh data.
+#: Leaf kinds: the reference IS the value. A mesh slot usually points at the object itself; the
+#: slot exists so that "this draws" is something an author says rather than something an
+#: exporter infers from the object having mesh data.
 HOST_MESH = "mesh"
-
-#: A reference to ANOTHER OBJECT in the scene, baked as its NAME -- the one thing every exported
-#: object carries. The odd kind: what travels is the reference itself rather than a value read off
-#: what it points at.
+HOST_SPRITE = "sprite"
+#: Baked as the target's identity, the same value its ``meta.Guid`` carries.
 HOST_ENTITY = "entity"
-
-#: A reference to a FILE under ``data/``. Not an object slot: a file browser, filtered by the
-#: field's declared extensions, storing the data-relative field the runtime resolves.
+#: A file browser over ``data/``, filtered by the field's declared extensions.
 HOST_ASSET = "asset"
 
-#: The kinds whose reference IS the value -- one scalar field, filled in place, rather than a
-#: record whose declared leaves an exporter fills. What separates them is not the picker but the
-#: SHAPE of what comes back: a pose is four numbers a record takes some of, a mesh path is a
-#: string.
-HOST_LEAF_KINDS = (HOST_MESH, HOST_ENTITY, HOST_ASSET)
+#: Self kinds: no picker, read off the entity being exported.
+HOST_ID = "id"
+HOST_NAME = "name"
+HOST_PARENT = "parent"
+HOST_LOCAL_POSITION = "local-position"
+HOST_LOCAL_ROTATION = "local-rotation"
+HOST_LOCAL_SCALE = "local-scale"
 
-#: Pose leaves a ``transform`` reference can bake into, by NAME. A record declares whichever
-#: parts of the pose it means and an exporter fills those, ignoring the rest -- which is what
-#: keeps the host general: it never learns what a particular record means by a pose.
+HOST_RECORD_KINDS = (HOST_TRANSFORM, HOST_SHAPE, HOST_LIGHT, HOST_CAMERA)
+HOST_LEAF_KINDS = (HOST_MESH, HOST_ENTITY, HOST_ASSET, HOST_SPRITE)
+HOST_SELF_KINDS = (
+    HOST_ID,
+    HOST_NAME,
+    HOST_PARENT,
+    HOST_LOCAL_POSITION,
+    HOST_LOCAL_ROTATION,
+    HOST_LOCAL_SCALE,
+)
+
+#: A kind outside this set is still reported, so the panel can say what is missing instead of
+#: drawing a control that exports nothing.
+HOST_IMPLEMENTED_KINDS = HOST_RECORD_KINDS + HOST_LEAF_KINDS + HOST_SELF_KINDS
+
+#: Storage path of a component-level host reference; matches the Godot host's ``/Source``.
+HOST_SOURCE_PATH = "Source"
+
+#: The pose leaves a ``transform`` reference may fill. A record declares the parts it means and
+#: the exporter ignores the rest, so the host never learns what a particular record means by a pose.
 TRANSFORM_FIELDS = ("Position", "Rotation", "Yaw", "Scale")
 
-# AuthoredBySources. (v1 spelled this kind "nativeShape" and it was normalized on read; the v3
-# floor makes such a document unreadable, so the alias is gone rather than dead.)
 SOURCE_SHAPE = "shape"
 
-#: Ceiling on the rows one list may hold.
-#:
-#: A clamp, not a policy. A row count reaches :func:`outline` from a store an author can hand-edit
-#: in Blender's Custom Properties panel and from a file the game writes; a ``draw()`` that loops a
-#: billion times hangs Blender with no way back to the button that would fix it. Far above any
-#: real authored list, so nothing legitimate ever meets it.
+#: A clamp, not a policy: a row count arrives from a hand-editable store or a game-written file,
+#: and a ``draw()`` looping a billion times hangs Blender with no way back to the fixing button.
 MAX_ROWS = 4096
 
-#: Suffix marking a stored row COUNT rather than a value: ``Tables#`` holds how many rows
-#: ``Tables`` has, ``Tables/0/Entries#`` how many the entries of table 0 has.
-#:
-#: This is storage naming, and it lives here only because the path algebra is forced to recognize
-#: it: :func:`renumber` has to carry ``Tables/2/Entries#`` along with ``Tables/2/Entries/0/Weight``
-#: when row 2 moves, which it cannot do without knowing the suffix exists. It never reaches a file.
-#:
-#: ONE character, deliberately -- see ``config_store`` for the budget it is spent against. ``#``
-#: is safe because it cannot occur in a C# member name and is not in base64url's alphabet, so no
-#: field path and no component token can ever produce one.
+#: Suffix of a stored row-count key (``Tables#``, ``Tables/0/Entries#``). Known here only so
+#: :func:`renumber` can carry a nested list's count along when its row moves. ONE character
+#: because of the 63-char ID-property key budget (see ``config_store``); ``#`` cannot occur in a
+#: C# member name or in base64url, so no field path or component token can produce it.
 COUNT_SUFFIX = "#"
 
 
 class SchemaError(ValueError):
-    """A document this reader cannot use. Raised loudly on purpose: the symptom of a silently
-    skipped schema is "my component vanished from the dropdown" with no cause anywhere."""
+    """Raised loudly on purpose: a silently skipped schema presents as "my component vanished
+    from the dropdown" with no cause anywhere."""
 
 
 @dataclass
@@ -249,8 +268,8 @@ class AuthoredFieldSchema:
             minimum=data.get("minimum"),
             maximum=data.get("maximum"),
             default=data.get("default"),
-            # JSON null and JSON absent are the same thing to Python's .get, but the contract
-            # distinguishes "declared ''" from "no initializer" -- key presence is the tell.
+            # The contract distinguishes "declared ''" from "no initializer"; key presence is
+            # the tell, and .get() would erase it.
             has_default="default" in data and data["default"] is not None,
             values=list(data["values"]) if data.get("values") else None,
             authored_by=data.get("authoredBy"),
@@ -269,15 +288,11 @@ class AuthoredFieldSchema:
 class AuthoredComponentSchema:
     """One authored component: the id it travels under, and the fields a human edits."""
 
-    #: The component's stable identity, a GUID in canonical lowercase-hyphenated form. The only
-    #: member anything may match on.
+    #: Canonical lowercase-hyphenated GUID; the only member anything may match on.
     id: str = ""
 
-    #: Fully qualified CLR name, e.g. ``Paradise.Export.Data.RigidbodyComponentData``. The
-    #: FALLBACK key, and what makes a GUID id survivable in a text document: it is how a human
-    #: reading a schema, a diff, or a broken payload tells which component a bare GUID means.
-    #: Copied verbatim onto the exported payload -- never synthesized, because the engine's
-    #: type-name fallback is an exact ordinal match.
+    #: Fully qualified CLR name. Copied verbatim onto the payload, never synthesized: the
+    #: engine's type-name fallback is an exact ordinal match.
     type: str = ""
 
     display_name: str = ""
@@ -287,15 +302,13 @@ class AuthoredComponentSchema:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> AuthoredComponentSchema:
-        # Lowercased once, here, mirroring AuthoredModel's `parsed.ToString("D")`: a hand-typed
-        # uppercase [Guid] in a game repo would otherwise open a SECOND storage namespace on the
-        # same object, and the two would not see each other's values.
+        # Lowercased here (AuthoredModel's `parsed.ToString("D")`): a hand-typed uppercase [Guid]
+        # would otherwise open a second storage namespace on the same object.
         component_id = data.get("id", "").strip().lower()
         component_type = data.get("type", "")
         return cls(
             id=component_id,
             type=component_type,
-            # Falls back to the TYPE, not the id -- a bare GUID is not a label anyone can read.
             display_name=data.get("displayName") or component_type or component_id,
             gizmo=AuthoredGizmoSchema.from_json(data["gizmo"]) if data.get("gizmo") else None,
             authored_by=data.get("authoredBy"),
@@ -310,8 +323,7 @@ class AuthoringSchemaDocument:
 
 
 def read(text: str) -> AuthoringSchemaDocument:
-    """Parse one document, mirroring ``AuthoringSchemaReader.Read`` -- including its version
-    gate, which is what keeps a newer engine's schema from being half-understood."""
+    """Parse one document with ``AuthoringSchemaReader.Read``'s version gate."""
     try:
         data = json.loads(text)
     except json.JSONDecodeError as error:
@@ -338,14 +350,11 @@ def read(text: str) -> AuthoringSchemaDocument:
 
 
 def merge(documents: list[AuthoringSchemaDocument]) -> AuthoringSchemaDocument:
-    """Combine documents into one, earlier sources winning on a duplicate id and components
-    ordered by TYPE -- ``AuthoringSchemaReader.Merge``. Earlier-wins so a host can pass the
-    engine's schema first and have it be authoritative.
+    """``AuthoringSchemaReader.Merge``: earlier documents win on a duplicate id.
 
-    Ordered by type rather than by id because an id is a GUID: sorting on it would shuffle the
-    list into an order no reader could predict, and every consumer here wants a stable one (the
-    panel draws in it, and ``build_component_payloads`` exports in it so two exports of the same
-    scene agree)."""
+    Ordered by type, not id: an id is a GUID, and a GUID order is one no reader can predict,
+    while the panel draws and the exporter writes in this order.
+    """
     by_id: dict[str, AuthoredComponentSchema] = {}
     for document in documents:
         for component in document.components:
@@ -356,39 +365,22 @@ def merge(documents: list[AuthoringSchemaDocument]) -> AuthoringSchemaDocument:
     )
 
 
-# ---------------------------------------------------------------------------------------------
-# The game's schema, by data directory.
-#
-# HERE, in the Blender-free layer, rather than beside the panel that draws it — because
-# component_ids.engine_type_name has to read it during EXPORT, and contract/ may not import
-# anything that imports bpy. paradise_blender.authoring.authored_components re-exports both
-# functions, so every existing caller keeps its spelling.
-# ---------------------------------------------------------------------------------------------
-
-# One cache entry per data directory: (stamp, document, error). Keyed by directory rather than
-# held as a single value because two .blend files in different projects can be open in one
-# Blender session.
+# The schema cache lives in the bpy-free layer because export (component_ids.engine_type_name)
+# reads it and contract/ may not import bpy. Keyed per data directory: two projects can be open
+# in one Blender session.
 _cache: dict[str, tuple[tuple[int, int], AuthoringSchemaDocument, str | None]] = {}
 
 
 def schema_for_data_dir(data_dir: str) -> AuthoringSchemaDocument:
-    """The game's schema, re-read when the file changes.
+    """The game's schema, re-read when the file's stamp changes.
 
-    ONE DOCUMENT, AND IT IS THE GAME'S. This host used to merge a vendored copy of the engine's
-    own schema underneath it, because the game's dump described only the game. It no longer has
-    to: a launcher built with ``ParadiseAuthoringScanReferences`` merges every assembly it
-    references — the engine included — into the document it dumps, so the file already describes
-    everything an editor can author. The vendored copy was then not merely redundant but
-    ACTIVELY WRONG: merges are first-wins, so a checked-in copy that had drifted from the engine
-    the game actually builds against would win against the truth.
-
-    The consequence to know: with nothing vendored there is no floor. A data directory with no
-    dumped schema yields an EMPTY document — not the engine's components as before — so the
-    Components panel is empty until the game is built once. That is what
-    :func:`schema_load_error` is for, and the panel says it loudly.
-
-    A missing or unreadable file still yields an empty document rather than an exception: every
-    caller sees "no components" instead of dying mid-draw."""
+    One document, the game's. A vendored engine schema used to be merged underneath it; since a
+    launcher built with ``ParadiseAuthoringScanReferences`` dumps the engine's components too,
+    that copy was a hazard (merges are first-wins, so a drifted copy beat the truth). The cost:
+    with no dump there is no floor, and the panel is empty until the game is built once, which
+    :func:`schema_load_error` explains. Unreadable yields empty rather than raising, so a
+    ``draw()`` never dies over it.
+    """
     path = schema_path(data_dir)
     stamp = schema_stamp(path)
     cached = _cache.get(data_dir)
@@ -408,8 +400,6 @@ def schema_for_data_dir(data_dir: str) -> AuthoringSchemaDocument:
             with open(path, encoding="utf-8") as file:
                 document = read(file.read())
         except (OSError, SchemaError) as failure:
-            # Named loudly: the symptom of a silently skipped schema is "my component is
-            # missing", which gives an author nothing to go on.
             error = f"'{path}' is not a readable authoring schema: {failure}"
             log.warn(error)
 
@@ -425,15 +415,12 @@ def schema_load_error(data_dir: str) -> str | None:
 
 
 def schema_path(data_dir: str) -> str:
-    """Where a game's dumped schema lives -- ``<data>/authoring-schema.json``, matching the
-    Godot host's ``ParadisePaths.DataDirPrefix + SchemaFileName``."""
+    """``<data>/authoring-schema.json``, where the Godot host also looks."""
     return os.path.join(data_dir, SCHEMA_FILE_NAME)
 
 
 def schema_stamp(path: str) -> tuple[int, int]:
-    """A cheap change detector for hot reload: (mtime_ns, size). Size is in the stamp because
-    mtime granularity can be coarse enough for a rebuild to land inside one tick -- the same
-    reason the Godot host hashes length into its stamp."""
+    """(mtime_ns, size). Size is included because a rebuild can land inside one mtime tick."""
     try:
         stat = os.stat(path)
     except OSError:
@@ -465,26 +452,13 @@ class FlatField:
 
 @dataclass
 class HostRef:
-    """A field authored by REFERENCING a host object rather than by typing its numbers.
+    """A field authored by referencing a host object rather than by typing its numbers.
 
-    ``kind`` names what the object IS (see ``HOST_TRANSFORM`` and the engine's
-    ``AuthoredBySources``). Whether THIS host can author one depends on the kind:
-    :data:`HOST_TRANSFORM` is authorable here -- an object slot, baked at export -- and every
-    other kind is still reported so the UI can say what is missing and why, instead of silently
-    exporting a component with holes.
-
-    ``leaves`` is the field schemas the reference fills, for an authorable kind: the record
-    declares which parts of the pose it means, and that list IS the contract between the picker
-    and the exporter.
-
-    The SCHEMAS travel, not their names, and that is load-bearing. They are captured during the
-    walk, where the parent field is in hand — the alternative was re-deriving them afterwards by
-    matching the ref's path against the component's fields, which worked only for a top-level
-    reference: ``path`` is built by the same ``prefix + name`` recursion every composed field
-    uses, so a reference nested inside one (``Container/Destination``) matched no top-level name
-    and its leaves came back EMPTY. The pose baked correctly and was then dropped from the payload
-    entirely, with no warning on either side. A second traversal that has to stay in step with the
-    first is the bug; not having one is the fix.
+    ``leaves`` holds the SCHEMAS the reference fills, captured during the walk where the parent
+    field is in hand. Re-deriving them afterwards by matching the ref's path against the
+    component's top-level fields worked only for a top-level reference: a nested one
+    (``Container/Destination``) matched nothing, its leaves came back empty, and the pose baked
+    correctly and was then silently dropped from the payload.
     """
 
     path: str
@@ -492,81 +466,57 @@ class HostRef:
     is_list: bool = False
     leaves: tuple[AuthoredFieldSchema, ...] = ()
 
-    #: For a LEAF reference (:data:`HOST_LEAF_KINDS`), the field's own type -- the reference is the
-    #: value, so there are no leaves to fill and the bake writes at ``path`` itself. None for a
-    #: record reference, which is told apart from a leaf one by exactly this.
+    #: Set for a leaf or self reference (the reference IS the value, written at ``path``);
+    #: None for a record reference. This is what tells the two apart.
     leaf_type: str | None = None
 
-    #: The extensions an :data:`HOST_ASSET` reference accepts, straight off the field.
     asset_kinds: tuple[str, ...] = ()
 
     @property
     def bakes(self) -> tuple[str, ...]:
-        """The leaf NAMES, for a caller that only needs to know which parts of the pose to fill."""
+        """The leaf names."""
         return tuple(leaf.name for leaf in self.leaves)
 
     @property
     def is_authorable(self) -> bool:
-        """Whether this host can actually author the reference, rather than only report it.
+        """Whether this host can author the reference rather than only report it.
 
-        FIVE KINDS, in two families. Four are an object slot and differ only in what the exporter
-        bakes out of what you point at: :data:`HOST_TRANSFORM` takes where the object STANDS,
-        :data:`HOST_SHAPE` the collider drawn ON it, :data:`HOST_MESH` the geometry exported FROM
-        it, and :data:`HOST_ENTITY` its NAME. The fifth, :data:`HOST_ASSET`, is a file browser.
-
-        The picker being identical across four of them is the point -- a kind is a statement about
-        what the object IS, and a host implements as many of them as it can rather than one.
-
-        What separates the families is not the picker but the shape of the answer: a record
-        reference has LEAVES to fill, a leaf reference IS the value. ``leaf_type`` is set for
-        exactly the second, and is what this checks.
+        A list of references never is: a row editor over a pointer list would be a second,
+        lying copy of the list the entity already holds.
         """
         if self.is_list:
-            # A list of references is a row editor over a pointer list, which this host does not
-            # draw on an entity -- see the arrays note in build_payload.
             return False
-        if self.kind in HOST_LEAF_KINDS:
+        if self.kind in HOST_SELF_KINDS or self.kind in HOST_LEAF_KINDS:
             return self.leaf_type is not None
-        return self.kind in (HOST_TRANSFORM, HOST_SHAPE) and bool(self.leaves)
+        return self.kind in HOST_RECORD_KINDS and bool(self.leaves)
+
+    @property
+    def stores_slot(self) -> bool:
+        """Whether enabling the component writes a picker key. Self kinds bake from THIS
+        object and must not grow a stored name that can disagree with it."""
+        return self.is_authorable and self.kind not in HOST_SELF_KINDS
 
 
 @dataclass
 class FlatArray:
-    """One authored LIST, addressed by the instance path its rows hang under.
-
-    ``path`` is an INSTANCE path, not a schema path: the ``Entries`` of table 0 and of table 1 are
-    two ``FlatArray`` entries (``Tables/0/Entries``, ``Tables/1/Entries``) because they hold
-    different numbers of rows. No schema path can express that, which is the whole reason
-    :func:`outline` takes counts instead of deriving them.
-
-    Reported separately from fields and host refs because a list is neither: an empty one has no
-    leaves at all, and the UI still has to draw its header and its Add button.
-    """
+    """One authored list, addressed by its INSTANCE path (``Tables/0/Entries``), since two
+    rows' nested lists hold different counts and no schema path can say so. Reported apart from
+    fields because an empty list has no leaves yet still needs a header and an Add button."""
 
     path: str
-    #: The declaring member's name, for a panel header. The last segment of ``path`` for a list
-    #: nested inside a row, where the schema's own ``name`` is empty.
     label: str
     count: int
-    #: ``items.fields`` -- False for a scalar list (``List<string>``), where a row IS one widget
-    #: and there is no container to walk into.
     rows_are_records: bool
-    #: First string-ish leaf of a row, RELATIVE to the row (``"Table"``), so a panel can title a
-    #: row by its content rather than by its index alone. None when a row has no such leaf.
+    #: First string-ish leaf of a row, relative to it, so a panel can title rows by content.
     row_title_path: str | None = None
     doc: str | None = None
 
 
 @dataclass
 class FlatOutline:
-    """Everything :func:`outline` found: the editable leaves, the host references, the lists.
-
-    ``sequence`` is the leaves and lists INTERLEAVED in declaration order, and it is the primary
-    result -- ``fields`` and ``arrays`` are filtered views of it, materialized once, so the three
-    can never drift out of step. The interleaving is what keeps a written payload's keys in
-    schema order: seeding every list before every leaf would hoist each row's nested list above
-    its siblings, turning a no-op save into a whole-file diff.
-    """
+    """``sequence`` interleaves leaves and lists in declaration order; ``fields``/``arrays`` are
+    views of it. Interleaving keeps payload keys in schema order: seeding lists first would hoist
+    each row's nested list above its siblings and turn a no-op save into a whole-file diff."""
 
     sequence: list[FlatField | FlatArray] = dataclass_field(default_factory=list)
     hosts: list[HostRef] = dataclass_field(default_factory=list)
@@ -577,20 +527,12 @@ class FlatOutline:
 def outline(
     component: AuthoredComponentSchema, counts: Mapping[str, int] | None = None
 ) -> FlatOutline:
-    """The component's field tree as leaf paths, the host references it wants baked, and the
-    lists it declares -- expanded to ``counts`` rows apiece.
+    """The field tree as leaf paths, host references, and lists expanded to ``counts`` rows.
 
-    Mirrors ``AuthoredEntityCore.ReadFields``: composed fields recurse with a path prefix and
-    ``authoredBy`` fields become host references rather than editable leaves. Beyond it, a list
-    expands to one subtree per row, at indexed paths.
-
-    ``counts`` maps an array's INSTANCE path to its row count. Absent (or ``None``) means every
-    list is empty, which is what a schema alone can say. Callers with data derive it: from a
-    payload with :func:`counts_of`, or from a store with ``config_store.counts_for_store``.
-
-    ``arrays`` comes out parent-before-child and rows in ascending index -- ``Tables``, then
-    ``Tables/0/Entries``, then ``Tables/1/Entries``. :func:`build_payload` seeds in that order and
-    depends on it: a nested list can only be created once the row holding it exists.
+    Mirrors ``AuthoredEntityCore.ReadFields``. ``counts`` maps an instance path to a row count
+    (:func:`counts_of` from a payload, ``config_store.counts_for_store`` from a store); absent
+    means every list is empty. ``arrays`` comes out parent-before-child, which
+    :func:`build_payload` relies on: a nested list can only be created once its row exists.
     """
     plan = FlatOutline()
     _walk(component.fields, "", counts or {}, plan)
@@ -602,11 +544,7 @@ def outline(
 def flatten(
     component: AuthoredComponentSchema, counts: Mapping[str, int] | None = None
 ) -> tuple[list[FlatField], list[HostRef]]:
-    """The two-tuple facade over :func:`outline`.
-
-    Kept because most call sites read exactly these two lists, and widening the arity would touch
-    every one of them to no purpose. Reach for :func:`outline` when you need ``arrays`` too.
-    """
+    """The (fields, hosts) facade over :func:`outline`, kept so call sites that need no arrays stay put."""
     plan = outline(component, counts)
     return plan.fields, plan.hosts
 
@@ -626,16 +564,13 @@ def _walk_field(
 ) -> None:
     """One field at an already-built path.
 
-    The path is a PARAMETER rather than derived from ``field.name``, and that is the trick the
-    whole list expansion rests on: an array element's schema (``field.items``) has an empty name,
-    so passing its indexed path lets a row take the exact same branch as a named field. A list of
-    records, a list of scalars and a list of lists then need no separate code between them.
+    The path is a parameter rather than derived from ``field.name`` so that an array element
+    (whose schema has an empty name) takes the same branch as a named field; lists of records,
+    scalars and lists then share one code path.
     """
     if field.type == TYPE_ARRAY:
         items = field.items
         if items is None or items.authored_by is not None:
-            # Still a host reference: the Godot host bakes these from objects the entity points
-            # at, and a row editor over them would be a second, lying copy of that pointer list.
             plan.hosts.append(
                 HostRef(path=path, kind=items.authored_by if items else "rows", is_list=True)
             )
@@ -656,30 +591,25 @@ def _walk_field(
         return
 
     if field.authored_by is not None:
-        # The leaves are what an exporter fills, so they travel with the reference — captured HERE,
-        # where the parent field is in hand and the path is already correct at any depth.
-        #
-        # WHICH leaves depends on the KIND, because the two bakes know different amounts about what
-        # they are filling. A pose has a closed vocabulary this contract defines (TRANSFORM_FIELDS),
-        # and a record is free to carry others a host would only be inventing meaning for. A SHAPE
-        # is the other way round: the exporter bakes a whole ColliderShapeData and writes back
-        # whatever names the record declared, so the record itself says which parts of a shape it
-        # means -- take them all and let the bake fill the ones it has.
+        # A pose has a closed vocabulary (TRANSFORM_FIELDS); a record may carry other leaves a
+        # host would only be inventing meaning for. Shape/light/camera are the other way round:
+        # the exporter bakes a whole record and the referencing record says which parts it means.
         children = tuple(field.fields or ())
-        leaves = (
-            tuple(child for child in children if child.name in TRANSFORM_FIELDS)
-            if field.authored_by == HOST_TRANSFORM
-            else children if field.authored_by == HOST_SHAPE
-            else ()
-        )
+        if field.authored_by == HOST_TRANSFORM:
+            leaves = tuple(child for child in children if child.name in TRANSFORM_FIELDS)
+        elif field.authored_by in HOST_RECORD_KINDS:
+            leaves = children
+        else:
+            leaves = ()
         plan.hosts.append(HostRef(
             path=path,
             kind=field.authored_by,
             leaves=leaves,
-            # A LEAF reference has no leaves to fill because it IS one: the mesh path, the target's
-            # name, the asset field. Carrying its type is what lets build_payload write the baked
-            # value at the reference's own path instead of under it.
-            leaf_type=field.type if field.authored_by in HOST_LEAF_KINDS else None,
+            leaf_type=(
+                field.type
+                if field.authored_by in HOST_LEAF_KINDS or field.authored_by in HOST_SELF_KINDS
+                else None
+            ),
             asset_kinds=tuple(field.asset_kinds or ()),
         ))
         return
@@ -706,12 +636,8 @@ def _walk_field(
 
 
 def _row_count(counts: Mapping[str, int], path: str) -> int:
-    """How many rows to expand, clamped to :data:`MAX_ROWS` and floored at zero.
-
-    Clamped rather than trusted -- see :data:`MAX_ROWS`. A count that is not a number at all reads
-    as an empty list rather than raising: the store it came from is hand-editable, and refusing to
-    draw the whole panel over one bad key would hide the field that says which key.
-    """
+    """Rows to expand, clamped to :data:`MAX_ROWS`. A non-number reads as empty rather than
+    raising: the store is hand-editable, and refusing to draw the panel would hide the bad key."""
     try:
         value = int(counts.get(path, 0))
     except (TypeError, ValueError):
@@ -720,11 +646,8 @@ def _row_count(counts: Mapping[str, int], path: str) -> int:
 
 
 def _title_path(items: AuthoredFieldSchema) -> str | None:
-    """The first string-ish leaf of a row, for a panel to title the row by.
-
-    First rather than best: a schema declares no "name" member, and the leading string of a record
-    is what an author reads as its identity in practice (``LootTable.Table``, ``ItemDef.Id``).
-    """
+    """The first string-ish leaf of a row: a schema declares no "name" member, and the leading
+    string is what an author reads as a record's identity (``LootTable.Table``, ``ItemDef.Id``)."""
     for field in items.fields or ():
         if field.type in (TYPE_STRING, TYPE_ENUM) and field.authored_by is None:
             return field.name
@@ -732,12 +655,7 @@ def _title_path(items: AuthoredFieldSchema) -> str | None:
 
 
 def counts_of(component: AuthoredComponentSchema, payload: Any) -> dict[str, int]:
-    """Row counts for every array INSTANCE in a payload, keyed as :func:`outline` takes them.
-
-    This is the only place the addon learns how many rows exist. The schema declares that a member
-    IS a list; only the data says how long it is, so every consumer of :func:`outline` ultimately
-    traces back to here or to the equivalent scan over stored values.
-    """
+    """Row counts for every array instance in a payload, keyed as :func:`outline` takes them."""
     counts: dict[str, int] = {}
     _count_into(component.fields, "", payload, counts)
     return counts
@@ -754,17 +672,13 @@ def _count_into(
 def _count_field(
     field: AuthoredFieldSchema, path: str, value: Any, counts: dict[str, int]
 ) -> None:
-    """Mirror of :func:`_walk_field`, over data instead of over counts.
-
-    Same reason for taking an explicit path: a row is counted by the same branch that counts a
-    named member, so a list nested inside a list needs no special case.
-    """
+    """Mirror of :func:`_walk_field` over data, with the same explicit-path reason."""
     if field.type == TYPE_ARRAY:
         items = field.items
         if items is None or items.authored_by is not None:
             return
-        # A member the file spells as something other than a list is an EMPTY list, not a crash:
-        # the panel's job is to show the author what is there and let them fix it.
+        # A member spelled as a non-list is an empty list, not a crash: the panel must still
+        # draw so the author can fix it.
         rows = value if isinstance(value, list) else []
         counts[path] = min(len(rows), MAX_ROWS)
         for index, row in enumerate(rows[:MAX_ROWS]):
@@ -784,12 +698,8 @@ def _count_field(
 
 
 def row_container_of(path: str) -> str:
-    """The nearest enclosing ROW of a path, or ``""`` for one not inside any list.
-
-    ``"Tables/0/Entries/1/Weight"`` -> ``"Tables/0/Entries/1"``; ``"Box/SizeX"`` -> ``""``. Used to
-    group leaves under the row that owns them, which is how a panel draws rows without searching
-    the whole outline per row.
-    """
+    """The nearest enclosing row of a path (``Tables/0/Entries/1/Weight`` -> ``Tables/0/Entries/1``),
+    or ``""`` outside any list."""
     parts = path.split("/")
     for index in range(len(parts) - 1, -1, -1):
         if parts[index].isdigit():
@@ -806,15 +716,11 @@ def relative_to(path: str, container: str) -> str:
 
 
 def row_index_of(path: str, array_path: str) -> int | None:
-    """Which row of ``array_path`` this path belongs to, or None when it belongs to none.
+    """Which row of ``array_path`` this path belongs to, or None.
 
-    Segment-exact at BOTH ends, and both halves earn their keep. The prefix must end at a
-    separator or ``Tables`` would match ``TablesEnabled`` and renumber a sibling field along with
-    the list; and the index must be a whole segment or ``Tables/10/X`` reads as row 1 of something.
-
-    A count key of a list nested at this row (``Tables/2/Entries#``) belongs to row 2, so the
-    suffix is stripped before the digits are read -- that is what carries a nested list's own
-    count along when its row moves.
+    Segment-exact at both ends: without the separator ``Tables`` matches ``TablesEnabled`` and
+    renumbers a sibling field; without a whole-segment index ``Tables/10/X`` reads as row 1.
+    A nested count key (``Tables/2/Entries#``) belongs to row 2, so the suffix is stripped first.
     """
     head = array_path + "/"
     if not path.startswith(head):
@@ -828,12 +734,9 @@ def row_index_of(path: str, array_path: str) -> int | None:
 def renumber(path: str, array_path: str, mapping: Mapping[int, int | None]) -> str | None:
     """``path`` with its row index under ``array_path`` remapped; None when its row is going away.
 
-    Descendants ride along for free, which is the whole trick: only the ONE segment naming the row
-    is rewritten, so ``Tables/2/Entries/1/Weight``, ``Tables/2/Entries#`` and ``Tables/2/Table``
-    all move together, in one pass, with no knowledge of what is beneath them.
-
-    A path outside ``array_path`` comes back unchanged rather than as None -- callers rewrite a
-    whole component's keys through this, and "not mine" must be distinguishable from "delete".
+    Only the one segment naming the row is rewritten, so every descendant (including a nested
+    count key) moves with it. A path outside ``array_path`` comes back unchanged, not None:
+    callers rewrite a whole component's keys, and "not mine" must differ from "delete".
     """
     index = row_index_of(path, array_path)
     if index is None:
@@ -848,12 +751,8 @@ def renumber(path: str, array_path: str, mapping: Mapping[int, int | None]) -> s
 
 
 def removal_mapping(count: int, index: int) -> dict[int, int | None]:
-    """Remove row ``index`` of ``count``: everything above shifts down one.
-
-    The removed row is simply ABSENT from the mapping, which :func:`renumber` reads as "delete" --
-    so one mapping expresses both the shift and the removal, and no caller has to special-case
-    the row that is going away.
-    """
+    """Remove row ``index``: rows above shift down, and the removed row is absent from the
+    mapping, which :func:`renumber` reads as delete."""
     return {i: (i if i < index else i - 1) for i in range(count) if i != index}
 
 
@@ -865,9 +764,8 @@ def swap_mapping(count: int, a: int, b: int) -> dict[int, int]:
 
 
 def default_of(field: AuthoredFieldSchema) -> Any:
-    """A field's default, read AT ITS SCHEMA TYPE -- a bool for a bool, never everything as a
-    number. An enum with no declared default still starts on a legal member, or the dropdown
-    would open on a value the runtime cannot parse."""
+    """A field's default at its schema type. An enum with no declared default starts on a legal
+    member, or the dropdown would open on a value the runtime cannot parse."""
     declared = field.default
     if field.type == TYPE_BOOL:
         return bool(declared) if isinstance(declared, bool) else False
@@ -891,8 +789,7 @@ def default_of(field: AuthoredFieldSchema) -> Any:
                 float(declared.get("a", 1.0))
             ]
         return [0.0, 0.0, 0.0, 1.0]
-    # An unknown leaf type from a same-version schema; treat as a number rather than dropping
-    # the field, matching the Godot host's fallback.
+    # Unknown leaf type: a number rather than a dropped field, matching the Godot host.
     return float(declared) if _is_number(declared) else 0.0
 
 
@@ -910,51 +807,32 @@ def build_payload(
     values: Mapping[str, Any],
     counts: Mapping[str, int] | None = None,
 ) -> dict[str, Any]:
-    """The component's exported ``Data`` payload, from a flat ``{path: value}`` mapping.
+    """The component's exported ``Data`` payload from a flat ``{path: value}`` mapping.
 
-    Every plain field is written at its schema type, defaults filling anything ``values`` does
-    not carry -- see the module docstring for the wire rules.
+    An authorable host reference is written even when the caller baked nothing: an unassigned
+    slot then exports the record's own defaults, which the runtime may refuse, and it can only
+    refuse an export that is honest rather than one that omits the key and calls it unauthored.
+    Non-authorable references are skipped, since absent IS "unauthored" to the reader.
 
-    An AUTHORABLE host reference (:data:`HOST_TRANSFORM`) contributes its declared leaves, so a
-    baked pose lands under the reference's own object exactly as a composed field would: the
-    runtime deserializes one record either way and cannot tell that half of it came from an
-    object slot. Its leaves take the record's own defaults when the caller baked nothing, which
-    is what an unassigned object slot means -- and leaves the RUNTIME free to refuse that, which
-    it can only do if the export is honest rather than inventing a pose.
-
-    Every other host reference is skipped: an absent key is "unauthored" to the reader, which is
-    the truthful description of a bake this host does not perform.
-
-    ``counts`` is the exact inverse of :func:`counts_of`, and the ``None`` case is meaningful
-    rather than merely a default: it says the caller holds no list data AT ALL -- an entity
-    export, which cannot author lists yet -- so arrays stay absent from the payload and that path
-    keeps producing the bytes it always has. A caller that passes counts (even empty ones) is
-    saying the opposite, and gets ``[]`` for a list it authored with no rows.
+    ``counts=None`` means the caller holds no list data at all (an entity export, which cannot
+    author lists yet), so arrays stay absent and that path keeps its historical bytes; passing
+    counts, even empty, yields ``[]`` for a list authored with no rows.
     """
     plan = outline(component, counts)
     payload: dict[str, Any] = {}
     for item in plan.sequence:
         if isinstance(item, FlatArray):
-            # A list authored with no rows has to reach the file as [] rather than vanish from
-            # it: the member IS authored, and it is authored empty. Written INTERLEAVED with the
-            # leaves rather than in a pass of its own, so each key lands in schema order and a
-            # save with no edits does not reshuffle the file.
             if counts is not None:
                 _write_path(payload, item.path, [])
             continue
         _write_path(payload, item.path, _wire_value(item, values.get(item.path, item.default)))
 
-    # Authorable references, after the plain fields. Their leaves are not in `plan.sequence` --
-    # `_walk_field` stops at a host reference by design, so nothing can edit them as fields -- so
-    # they are written from the schemas the ref CARRIES, which are correct at any nesting depth.
+    # Reference leaves are not in `plan.sequence` (the walk stops at a host reference so nothing
+    # can edit them as fields); they are written from the schemas the ref carries.
     for host in plan.hosts:
         if not host.is_authorable:
             continue
         if host.leaf_type is not None:
-            # THE REFERENCE IS THE VALUE. Written at the host's own path, and written even when the
-            # caller baked nothing — an unassigned slot then exports the field's own empty value,
-            # which the runtime is free to refuse and can only refuse if the export is honest
-            # rather than omitting the key and calling it unauthored.
             _write_path(payload, host.path, _wire_value(
                 FlatField(path=host.path, type=host.leaf_type, asset_kinds=host.asset_kinds),
                 values.get(host.path)))
@@ -967,8 +845,7 @@ def build_payload(
 
 
 def _leaf_field(path: str, leaf: AuthoredFieldSchema) -> FlatField:
-    """A baked leaf as the flat field ``_wire_value`` expects. Built here rather than during the
-    walk because these deliberately never enter it — see :func:`build_payload`."""
+    """A baked leaf as the flat field ``_wire_value`` expects."""
     return FlatField(
         path=path,
         type=leaf.type,
@@ -985,14 +862,10 @@ def _leaf_field(path: str, leaf: AuthoredFieldSchema) -> FlatField:
 
 
 def value_at(payload: Any, path: str, fallback: Any = None) -> Any:
-    """Read a slash path out of a payload, following LIST indices as well as object members.
+    """Read a slash path out of a payload, the inverse of :func:`_write_path`.
 
-    The exact inverse of :func:`_write_path`, and the CONTAINER decides how a segment is read
-    rather than the segment's spelling: a numeric part indexes a list but is a plain member name
-    against an object, so a record with a member literally called ``0`` still reads correctly.
-
-    Returns ``fallback`` for anything absent, so a member the file omits falls through to the
-    field's schema default rather than storing a hole.
+    The container decides how a segment is read, not its spelling: a numeric part indexes a list
+    but is a member name against an object, so a record with a member called ``0`` still reads.
     """
     value = payload
     for part in path.split("/"):
@@ -1015,13 +888,12 @@ def _wire_value(field: FlatField, value: Any) -> Any:
     if field.type in (TYPE_STRING, TYPE_ENUM):
         text = str(value) if value is not None else ""
         if field.type == TYPE_ENUM:
-            # Never export a name outside the schema's own list -- a typo here is a runtime
-            # parse error in the game, with this entity's name nowhere in the message.
+            # A name outside the schema's list is a runtime parse error with this entity's
+            # name nowhere in the message.
             if field.values and text not in field.values:
                 return field.values[0]
             return text
-        # An empty string with no declared default is ABSENT, not empty: the record that
-        # produced this field had no initializer, so its own default is null.
+        # No declared default means the record had no initializer, so its default is null.
         if text == "" and not field.has_default:
             return None
         return text
@@ -1039,30 +911,19 @@ def _wire_value(field: FlatField, value: Any) -> Any:
             floats = [0.0, 0.0, 0.0, 1.0]
         return {"r": floats[0], "g": floats[1], "b": floats[2], "a": floats[3]}
     if field.type in (TYPE_OBJECT, TYPE_ARRAY):
-        # NULL, not a number. A composed leaf reaches here only as the unbaked part of a host
-        # reference — a shape's NavObstacle, say — and the fall-through below would coerce it to
-        # a float, which is what it used to do: `"NavObstacle": 0`. That payload is not readable
-        # as the record it claims to be, so the runtime's registry drops the WHOLE component and
-        # the volume it described silently stops existing. Null is what the record's own field
-        # holds when nobody authored it, and it round-trips.
+        # Null, never the float fall-through: `"NavObstacle": 0` made the payload unreadable as
+        # its record, so the runtime dropped the WHOLE component and the volume silently vanished.
         return None
     return float(value)
 
 
 def _write_path(root: dict[str, Any], path: str, value: Any) -> None:
-    """Write a slash path into a nested payload, creating objects AND lists as needed -- the
-    inverse of the flattening that produced the path.
+    """Write a slash path into a nested payload, creating objects and lists as needed.
 
-    The rule that makes one grammar serve both containers: **which container a segment creates is
-    decided by the segment AFTER it**, not by the segment itself. ``Tables/0/Table`` means a list
-    at ``Tables`` and an object at its index 0, and the only place that is legible is the next
-    segment's spelling.
-
-    Indices are dense and ascending by construction -- :func:`outline` emits ``0..count-1`` in
-    order -- so the growth below never runs in normal use. It exists so a hand-built mapping with
-    a hole yields an EMPTY ROW, which the engine's generated reader fills from the record's own
-    initializers, rather than a JSON ``null`` that same reader would dereference. Nothing
-    compacts a hole away: silently reindexing would hide the bug that produced it.
+    Which container a segment creates is decided by the segment AFTER it: ``Tables/0/Table``
+    means a list at ``Tables`` and an object at index 0. A hole in a hand-built mapping yields
+    an empty row (which the generated reader fills from initializers) rather than a JSON null
+    (which it would dereference); nothing compacts holes, since reindexing would hide the bug.
     """
     parts = path.split("/")
     target: Any = root
@@ -1072,8 +933,7 @@ def _write_path(root: dict[str, Any], path: str, value: Any) -> None:
 
 
 def _child(container: Any, part: str, wants_list: bool) -> Any:
-    """The child container at ``part``, created (or replaced, if it is the wrong kind) to hold
-    what the next segment needs."""
+    """The child container at ``part``, created or replaced to be the kind the next segment needs."""
     kind: Any = list if wants_list else dict
     if isinstance(container, list):
         index = int(part)
@@ -1098,11 +958,7 @@ def _assign(container: Any, part: str, value: Any) -> None:
 
 
 def _grow(target: list[Any], index: int, kind: Any) -> None:
-    """Extend a list so ``index`` exists.
-
-    ``kind`` is a FACTORY, not a value. One shared ``{}`` appended twice would make two rows the
-    SAME object, so an edit to either would appear in both -- a bug that survives every test
-    written against a single row, and shows up only as two rows that will not stop agreeing.
-    """
+    """Extend a list so ``index`` exists. ``kind`` is a factory: one shared ``{}`` appended twice
+    makes two rows the same object, which no single-row test catches."""
     while len(target) <= index:
         target.append(kind())

@@ -1,0 +1,15 @@
+empty = ""
+plain = "crate_01"
+quote = "say \"hi\""
+backslash = "C:\\path\\to"
+controls = "a\bb\tc\nd\fe\rf"
+other_controls = "\u0001\u001F\u007F"
+unicode = "天堂小镇 — café ✓"
+emoji = "🐧🎮"
+spaces = "  leading and trailing  "
+bare-key_1 = true
+"quoted key" = 1
+"quoted.key" = 2
+"" = 3
+"ünïcödé" = 4
+list = ["a", "", "\"", "\\", "\n", "🐧"]

@@ -1,27 +1,10 @@
 """File-backed authored components: the store behind the Game Config panel.
 
-Authored components live at three scopes in a Paradise project, and this module is the machinery
-for the two that are files rather than entities:
-
-* **documents** -- any number of JSON files a project declares, each holding authored payloads.
-  A game's tunables and a level's settings are two rows in one list, not two features; the addon
-  attaches no meaning to any of them.
-* **objects** -- the entity's own components, which are :mod:`.authored_components`' job and are
-  not touched here.
-
-The storage is Blender ID properties on the SCENE, which is why so little code is needed: the
-helpers in :mod:`.authored_components` only ever use ``get`` / ``[key]`` / ``id_properties_ui``,
-and a Scene supports all three exactly as an Object does. The schema half
-(:mod:`..contract.authoring`) is reused verbatim -- a config group is an authored component, so
-its fields flatten to slash paths and re-nest into a payload by the same code an entity's do.
-
-Two rules the panel over this store lives by, both Blender's rather than ours:
-
-* **Loading is an operator, never a draw.** ``draw()`` may not write ID data, so the values cannot
-  be faulted in when the panel first appears.
-* **Saving is explicit -- never on export, never on .blend save.** The config file is the game's
-  source of truth and is edited by hand; an automatic write from a stale or never-loaded panel
-  would replace real tuning with schema defaults, and would look like a successful save.
+Values are ID properties on the Scene, reusing :mod:`.authored_components`' helpers and the
+contract's flatten/payload code. Two rules: loading is an operator, never a ``draw()`` (Blender
+forbids ID writes there); saving is explicit, never on export or .blend save, because the config
+file is hand-edited truth and an automatic write from a stale panel would replace real tuning
+with schema defaults while looking like a successful save.
 """
 
 from __future__ import annotations
@@ -54,16 +37,10 @@ __all__ = [
     "values_for_store",
 ]
 
-#: Prefix for one document's stored values: ``pc<key>:``, where the key is the document row's own
-#: stable id. Distinct from :data:`.authored_components.VALUE_PREFIX` so an entity's components and
-#: a document's can never alias, and per-document so two documents declaring the SAME component id
-#: stay separate.
-#:
-#: Terse on purpose. Blender caps an ID property NAME at 63 characters and a key is
-#: ``prefix + <compacted id> + "/" + field path``. The id is a GUID and would be 36 characters
-#: spent verbatim, so it goes through :func:`.authored_components.key_token` first and costs 22 --
-#: without that, ShiningPie's ``FollowYawSmoothingSeconds`` alone would not fit. Every character
-#: spent on the prefix is still one a project cannot spend on a readable field name.
+#: ``pc<row key>:`` -- distinct from the entity prefix so the two stores never alias, per
+#: document so two documents with the same component id stay apart. Terse because a key is
+#: ``prefix + 22-char token + "/" + path`` under Blender's 63-character cap; every prefix
+#: character is one a field name cannot have.
 PREFIX_FORMAT = "pc{key}:"
 
 
@@ -78,23 +55,14 @@ def active_document(scene):
     index = scene.paradise_project.active_config_document
     return documents[index] if 0 <= index < len(documents) else None
 
-#: Blender's limit on an ID property name. Exceeding it raises a KeyError naming no field, so
-#: :func:`load_into` checks first and says which one.
+#: Blender's cap on an ID property name; exceeding it raises naming no field.
 MAX_KEY_LENGTH = 63
 
-#: Where the stamp of the file a store was loaded from is kept, so the panel can notice the file
-#: moving underneath it. Suffixed per prefix: two scopes, two files, two stamps.
-#:
-#: VERSIONED, and the version is load-bearing rather than cosmetic. A store written before row
-#: counts existed holds none, so every authored list would draw as empty -- and the next Save
-#: would then write ``[]`` over the file's real rows. Changing the suffix makes such a store read
-#: as NEVER LOADED, so the panel offers Load instead of a lie. The orphaned ``__stamp`` key is
-#: harmless and :func:`_forget_values` still sweeps it, because it matches the same prefix.
+#: Versioned on purpose: a store written before row counts existed would draw every list empty
+#: and the next Save would write ``[]`` over the file's real rows. A new suffix makes such a
+#: store read as never loaded, so the panel offers Load instead of a lie.
 _STAMP_SUFFIX = "__stamp2"
 
-#: Suffix marking a stored row COUNT. Re-exported from the contract module, which owns the
-#: spelling because its path algebra has to recognize it (see :data:`..contract.authoring.
-#: COUNT_SUFFIX`); named here too so the storage layer reads as if it owned its own key grammar.
 COUNT_SUFFIX = authoring.COUNT_SUFFIX
 
 
@@ -103,8 +71,7 @@ class ConfigStoreError(RuntimeError):
 
 
 def component_key_prefix(prefix: str, component_id: str) -> str:
-    """Everything one component's keys share, in one document's namespace. Defined once so a
-    SCAN for them cannot fall out of step with the builders below."""
+    """The prefix every key of one component shares; scans must use this."""
     return f"{prefix}{authored.key_token(component_id)}/"
 
 
@@ -113,25 +80,14 @@ def config_value_key(prefix: str, component_id: str, path: str) -> str:
 
 
 def count_key(prefix: str, component_id: str, array_path: str) -> str:
-    """Where one list's row count is stored: ``pc1:<token>/Tables#``.
-
-    A count key is always SHORTER than the leaf keys beneath it, which is why nothing checks it
-    against :data:`MAX_KEY_LENGTH` separately -- a row whose leaves fit implies a count that fits.
-    """
+    """``pc1:<token>/Tables#``. Always shorter than the leaf keys beneath it, so it needs no
+    length check of its own."""
     return f"{component_key_prefix(prefix, component_id)}{array_path}{COUNT_SUFFIX}"
 
 
 def counts_for_store(store, prefix: str, component_id: str) -> dict[str, int]:
-    """Row counts as :func:`..contract.authoring.outline` takes them, read off the count keys.
-
-    A flat SCAN rather than a schema walk, and that is not laziness: the count of
-    ``Tables/1/Entries`` cannot be ADDRESSED without already knowing the count of ``Tables``, so
-    a walk would have to interleave reading with descending. Reading every count in one pass
-    sidesteps the chicken-and-egg entirely.
-
-    Stale entries -- the count key of a row since removed -- are harmless, because ``outline``
-    only ever asks about paths it actually reaches.
-    """
+    """Row counts as :func:`..contract.authoring.outline` takes them. A flat scan, not a schema
+    walk: ``Tables/1/Entries`` cannot be addressed without already knowing ``Tables``' count."""
     head = component_key_prefix(prefix, component_id)
     counts: dict[str, int] = {}
     for key in store.keys():  # noqa: SIM118
@@ -157,23 +113,14 @@ def loaded_stamp(store, prefix: str) -> tuple[int, int] | None:
 
 
 def _store_stamp(store, prefix: str, path: str) -> None:
-    """Remember which revision of the file the store holds.
-
-    Kept as TEXT, not a pair of ints: a nanosecond mtime is ~1.7e18, and Blender stores an ID
-    property integer as a C int, which overflows well below that.
-    """
+    """Stored as text: a nanosecond mtime (~1.7e18) overflows the C int an ID property holds."""
     mtime, size = config_document.config_stamp(path)
     store[prefix + _STAMP_SUFFIX] = f"{mtime}:{size}"
 
 
 def load_into(store, prefix: str, document, schema: authoring.AuthoringSchemaDocument) -> list[str]:
     """Populate the store from a config document; returns the ids the schema does not declare.
-
-    A field the payload omits gets its schema default rather than being skipped, so the panel
-    shows the value the game will actually run on: the game-side reader fills an absent member
-    from the record's own initializer, and an editor that left the row blank would be lying about
-    what is in effect.
-    """
+    An omitted field gets its schema default, which is what the game-side reader runs on."""
     unknown: list[str] = []
     for component_id in config_document.declared_ids(document):
         component = authored.component_by_id(schema, component_id)
@@ -181,14 +128,11 @@ def load_into(store, prefix: str, document, schema: authoring.AuthoringSchemaDoc
             unknown.append(component_id)
             continue
         payload = config_document.payload_of(document, component_id) or {}
-        # How many rows each list holds is DATA, and the file is the only thing that knows.
         counts = authoring.counts_of(component, payload)
         plan = authoring.outline(component, counts)
 
-        # PLANNED first, committed second. An over-long key is a refusal, and a refusal that had
-        # already half-written the store would leave the panel showing a document that is partly
-        # this file and partly whatever was there before -- a state no button reports and no
-        # author could diagnose.
+        # Plan, then commit: a length refusal after a half-write would leave a store that is
+        # partly this file and partly the previous one, which no button reports.
         writes: list[tuple[str, object]] = [
             (count_key(prefix, component_id, array.path), array.count) for array in plan.arrays
         ]
@@ -203,9 +147,8 @@ def load_into(store, prefix: str, document, schema: authoring.AuthoringSchemaDoc
             if len(key) > MAX_KEY_LENGTH:
                 raise ConfigStoreError(_too_long(component_id, prefix, key, counts))
 
-        # Rows are DATA, not schema: reloading a document with FEWER rows than the store already
-        # holds must not leave the old tail behind, or the next save would resurrect rows the
-        # file no longer has. Plain fields were idempotent under the old code; rows are not.
+        # Clear old rows first: a reload with fewer rows must not leave a tail the next save
+        # would resurrect.
         _forget_component(store, prefix, component_id)
         for key, value in writes:
             store[key] = value
@@ -216,13 +159,8 @@ def load_into(store, prefix: str, document, schema: authoring.AuthoringSchemaDoc
 
 
 def _too_long(component_id: str, prefix: str, key: str, counts) -> str:
-    """Why a key did not fit, and what to do about it.
-
-    Names the path, because the fix is to shorten it in the game's C# and Blender's own error for
-    this says only that a name was too long. For a path inside a LIST it also says that the limit
-    is data-dependent: the same schema loads at nine rows and refuses at ten, which is otherwise
-    an utterly baffling failure to hit for the first time on an ordinary edit.
-    """
+    """Why a key did not fit. Names the path (the fix is in the game's C#) and, inside a list,
+    says the limit is data-dependent: the same schema loads at nine rows and refuses at ten."""
     path = key[len(prefix):]
     detail = (
         f"'{component_id}.{path}' does not fit Blender's {MAX_KEY_LENGTH}-character property "
@@ -244,22 +182,15 @@ def _forget_component(store, prefix: str, component_id: str) -> None:
 
 
 def _plain(stored):
-    """An ID property's value as plain Python.
-
-    An ``IDPropertyArray`` assigned straight back would work, but a list is what every other
-    writer here stores, and mixing the two makes a key's type an accident of which code path
-    last touched it.
-    """
+    """An ID property's value as plain Python, so a key's type is not an accident of which
+    writer last touched it."""
     is_array = hasattr(stored, "__len__") and not isinstance(stored, str)
     return list(stored) if is_array else stored
 
 
 def values_for_store(store, prefix: str, component: authoring.AuthoredComponentSchema) -> dict:
-    """The stored values as the flat ``{path: value}`` mapping ``build_payload`` takes.
-
-    Counts are read from the store rather than taken as an argument, so no caller can forget
-    them -- one that did would silently produce a payload with every list emptied.
-    """
+    """The stored values as ``build_payload``'s flat mapping. Counts come from the store, not
+    an argument, because a caller that forgot them would silently empty every list."""
     counts = counts_for_store(store, prefix, component.id)
     values: dict[str, object] = {}
     for field in authoring.flatten(component, counts)[0]:
@@ -271,13 +202,9 @@ def values_for_store(store, prefix: str, component: authoring.AuthoredComponentS
 
 
 def payloads_from(store, prefix: str, document, schema) -> dict[str, dict]:
-    """One payload per component the document declares AND the schema still knows.
-
-    An id the schema dropped is deliberately absent from the result, which is what makes the save
-    non-destructive for it: :func:`..contract.config_document.merge_payloads` leaves an entry it is
-    given no update for exactly as it found it, so a stale group survives a save instead of being
-    rewritten from a schema that no longer describes it.
-    """
+    """One payload per component the schema still knows. A dropped id is absent on purpose:
+    ``merge_payloads`` leaves an entry it gets no update for untouched, so a stale group survives
+    the save instead of being rewritten from a schema that no longer describes it."""
     payloads: dict[str, dict] = {}
     for component_id in config_document.declared_ids(document):
         component = authored.component_by_id(schema, component_id)
@@ -300,13 +227,8 @@ _document_items_cache: list[tuple[str, str, str]] = []
 
 
 def _discoverable_items(self, context):
-    """Config documents under the data directory, minus the ones already in the list.
-
-    Recomputed on invoke rather than cached across calls: a game build or a git checkout can add
-    one at any time, and a dropdown that needed a Blender restart to notice would be worse than
-    a directory walk nobody sees. Held in a module global because Blender reads these strings
-    lazily and frees anything Python has stopped referencing.
-    """
+    """Config documents under the data directory not yet in the list. Held in a module global
+    because Blender reads enum strings lazily and frees anything Python stops referencing."""
     global _document_items_cache
     scene = context.scene
     taken = {row.file for i, row in enumerate(scene.paradise_project.config_documents)
@@ -346,8 +268,7 @@ class PARADISE_OT_pick_config_document(Operator):
             settings.active_config_document = len(settings.config_documents) - 1
         else:
             entry = settings.config_documents[self.index]
-            # Pointing a row at a different file makes its loaded values that file's, not this
-            # one's. Drop them so the row reads as unloaded rather than showing the old document.
+            # Drop the old file's values so the row reads as unloaded.
             _forget_values(context.scene, prefix_for(entry))
 
         entry.file = self.file
@@ -362,28 +283,13 @@ def _forget_values(scene, prefix: str) -> None:
         del scene[key]
 
 
-# --------------------------------------------------------------------------------------
-# Rows -- adding, removing and reordering a list's entries in the store
-# --------------------------------------------------------------------------------------
-#
-# All three are plain functions over a store, returning an error string or None, with thin
-# Operator wrappers below. Keeping the logic bpy-free is what lets the renumbering -- the part
-# most likely to be subtly wrong -- be tested without Blender.
-
-
 def _rewrite_rows(store, prefix: str, component, array_path: str, mapping) -> str | None:
     """Apply a row remapping to every stored key under ``array_path``.
 
-    Three phases, and none of them is optional:
-
-    * **plan** -- every surviving key's new name is computed and length-checked BEFORE anything
-      is deleted. A move that swaps row 9 with row 10 can LENGTHEN a key, and a refusal issued
-      after the delete would have destroyed the rows it declined to move.
-    * **delete the whole span, then write it back** -- removing row 1 of 4 renames row 2 onto
-      row 1 while row 1 still exists. Deleting first is what stops the rename from clobbering
-      the row it is moving onto, without inventing temporary names.
-    * **re-attach UI metadata** -- ``id_properties_ui`` belongs to the KEY, so a row that moves
-      loses its tooltip, its slider range and its subtype unless they are applied again.
+    Plan and length-check before deleting anything (swapping row 9 with 10 can lengthen a key,
+    and a refusal after the delete would have destroyed the rows it declined to move); delete
+    the whole span before writing back (renaming row 2 onto row 1 while row 1 exists clobbers
+    it); re-attach UI metadata, which belongs to the key and is lost on rename.
     """
     head = component_key_prefix(prefix, component.id)
     doomed: list[str] = []
@@ -438,8 +344,7 @@ def add_row(store, prefix: str, component, array_path: str) -> str | None:
         (config_value_key(prefix, component.id, field.path), authored.storage_value(field))
         for field in fresh
     ]
-    # The new row's own nested lists start empty and SAY so, so the panel draws their Add button
-    # rather than nothing at all.
+    # Nested lists get a count of 0 so the panel draws their Add button.
     writes += [
         (count_key(prefix, component.id, array.path), 0)
         for array in plan.arrays
@@ -465,17 +370,16 @@ def remove_row(store, prefix: str, component, array_path: str, index: int) -> st
     if not 0 <= index < count:
         return "That row is no longer there — reload the document."
 
-    # Written BEFORE the rewrite, not after: _rewrite_rows re-applies UI metadata from what the
-    # store then says exists, and a stale count would send it looking for a row just deleted.
-    # The count key is not under ``array_path + "/"``, so the rewrite never touches it itself.
+    # Before the rewrite: it re-applies UI metadata from the count, and a stale one would point
+    # at a row just deleted.
     store[count_key(prefix, component.id, array_path)] = count - 1
     return _rewrite_rows(
         store, prefix, component, array_path, authoring.removal_mapping(count, index))
 
 
 def move_row(store, prefix: str, component, array_path: str, index: int, offset: int) -> str | None:
-    """Swap a row with its neighbour. A move off either end is a no-op, not an error -- the
-    panel greys those buttons, and a race against a reload should not raise at the author."""
+    """Swap a row with its neighbour; a move off either end is a no-op, since a race against a
+    reload should not raise at the author."""
     counts = counts_for_store(store, prefix, component.id)
     count = counts.get(array_path, 0)
     target = index + offset
@@ -503,8 +407,7 @@ class PARADISE_OT_remove_config_document(Operator):
         if entry is None:
             return {"CANCELLED"}
 
-        # Drop the stored values too. Leaving them would resurrect stale edits under a future
-        # row, and they are only a cache of the file -- the file itself is untouched.
+        # Leaving the values would resurrect stale edits under a future row.
         _forget_values(scene, prefix_for(entry))
 
         settings.config_documents.remove(settings.active_config_document)
@@ -548,8 +451,7 @@ class PARADISE_OT_load_config_document(Operator):
         _store_stamp(scene, prefix, path)
 
         if unknown:
-            # Named rather than counted: the fix differs per id (rebuild the game, or delete a
-            # group the game removed), and the author needs to know which one it is.
+            # Named, not counted: the fix differs per id.
             self.report(
                 {"WARNING"},
                 "Loaded, but the authoring schema does not declare: "
@@ -582,9 +484,8 @@ class PARADISE_OT_save_config_document(Operator):
         prefix = prefix_for(entry)
         path = resolve_config_document_path(scene, entry)
         try:
-            # Re-read rather than saving against the copy loaded earlier: everything this editor
-            # does not understand -- prose keys, the game's own content sections -- has to come
-            # from the file as it stands NOW, or a hand edit made since the load is destroyed.
+            # Re-read, never save against the earlier copy: a hand edit since the load would be
+            # destroyed.
             document = _read_document(path)
         except (OSError, config_document.ConfigError) as failure:
             self.report({"ERROR"}, f"Could not re-read '{path}': {failure}")
@@ -613,15 +514,12 @@ def _config_enum_items(self, context):
     component = authored.component_by_id(schema, self.component)
     values: list[str] = []
     if component is not None:
-        # Counts matter here: a row enum's path (`Tables/0/Kind`) only exists in an outline that
-        # was expanded to rows, so a count-less flatten would show "(no values)" for every enum
-        # inside a list.
+        # A count-less flatten would show "(no values)" for every enum inside a list.
         counts = counts_for_store(context.scene, self.prefix, self.component)
         for field in authoring.flatten(component, counts)[0]:
             if field.path == self.path and field.values:
                 values = field.values
-    # Held in a module global for the same reason the entity picker's is: Blender reads the
-    # callback's strings lazily and frees anything Python is no longer holding.
+    # Module global: Blender reads enum strings lazily and frees anything Python drops.
     _enum_items_cache = [(v, v, "") for v in values] or [("NONE", "(no values)", "")]
     return _enum_items_cache
 
@@ -657,11 +555,7 @@ class PARADISE_OT_set_config_enum(Operator):
 
 
 class _RowOperator(Operator):
-    """Shared plumbing for the three row buttons: resolve the component, run, report.
-
-    ``path`` is the array's INSTANCE path (``Tables``, or ``Tables/0/Entries`` for a list nested
-    inside a row), which is the only address that distinguishes one row's entries from another's.
-    """
+    """Shared plumbing for the row buttons; ``path`` is the array's instance path."""
 
     bl_options = {"REGISTER", "UNDO"}
 
@@ -676,8 +570,7 @@ class _RowOperator(Operator):
     def _run(self, context, action) -> set[str]:
         component = self._component(context)
         if component is None:
-            # The game was rebuilt without this group while the panel was open. Refusing beats
-            # editing rows against a schema that no longer describes them.
+            # Rebuilt without this group while the panel was open.
             self.report({"WARNING"}, f"'{self.component}' is not in the current schema.")
             return {"CANCELLED"}
         failure = action(context.scene, self.prefix, component, self.path)

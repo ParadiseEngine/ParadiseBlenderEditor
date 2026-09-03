@@ -1,20 +1,10 @@
-"""Rebuild the game project when its C# sources change, while Blender is open.
+"""Rebuild the game when its C# changes, so the dumped schema stays fresh without a terminal.
 
-The authoring schema (``<data>/authoring-schema.json``) is dumped by BUILDING the game — a
-Roslyn generator runs, a build target writes the file. The Godot host gets that for free from
-its editor's Build button; Blender has no build button, so adding an ``[Authored]`` record used
-to mean alt-tabbing to a terminal, running ``dotnet build``, and coming back. This watcher
-closes that gap: a timer polls the project's source stamp, and when it changes (and settles —
-half-written saves must not trigger half-built schemas), it runs ``dotnet build`` detached and
-lets the Components panel's existing hot-reload pick up the fresh dump.
-
-Never blocks the main thread: the build runs as a background process with its output in a temp
-file, and the timer only ever polls ``returncode``. A failed build is reported once, with the
-tail of its output, rather than silently leaving the dropdown stale — the symptom this module
-exists to prevent.
-
-``bpy`` is imported inside the functions that need it so the pure helpers (the source stamp,
-the staleness test) stay importable under plain pytest.
+A timer polls the source stamp and, once it settles (a half-written save must not build a
+half-built schema), runs ``dotnet build`` detached and lets the panel's hot-reload pick up the
+dump. Never blocks the main thread. ``bpy`` is imported inside functions so the pure helpers
+stay importable under pytest. The build runs in :func:`.dotnet.subprocess_environment`
+``play/host.py`` applies, so it fails in a Dock-launched macOS Blender.
 """
 
 from __future__ import annotations
@@ -22,12 +12,12 @@ from __future__ import annotations
 import contextlib
 import os
 import re
-import shutil
 import subprocess
 import tempfile
 import time
 
 from .. import log
+from . import dotnet
 
 __all__ = [
     "dotnet_executable",
@@ -52,8 +42,7 @@ POLL_SECONDS = 1.0
 _SKIPPED_DIRS = frozenset({"obj", "bin", ".git", ".vs", ".idea"})
 
 
-#: How deep the ProjectReference walk goes. A guard against a cycle in a hand-edited csproj,
-#: not a real limit: a game's project graph is a handful of layers.
+#: A guard against a cycle in a hand-edited csproj, not a real limit.
 MAX_REFERENCE_DEPTH = 8
 
 _PROJECT_REFERENCE = re.compile(
@@ -61,22 +50,10 @@ _PROJECT_REFERENCE = re.compile(
 
 
 def watched_dirs(project: str, _depth: int = 0) -> list[str]:
-    """Every directory whose C# the watched project is BUILT from: its own, plus those of the
-    projects it references, recursively.
-
-    The reference walk is not a refinement — without it the watcher is wrong for any game split
-    across projects. The schema is dumped from the assembly that sees the whole game (a launcher
-    over Core/Game/Ui, with ParadiseAuthoringScanReferences merging what its references publish),
-    while the ``[Authored]`` records themselves live in the library underneath. Stamping only the
-    launcher's own folder would mean adding a component never changed the stamp, no rebuild ever
-    started, and the Components panel silently kept offering yesterday's list — the exact failure
-    the dump exists to prevent.
-
-    Paths are read straight out of the csproj text rather than through MSBuild: this runs on a
-    Blender timer and must not shell out. A ProjectReference is a literal relative path in
-    practice, so a regex sees all of them; one hidden behind an MSBuild property is missed, and
-    the cost of that is a manual rebuild rather than a wrong schema.
-    """
+    """The project's directory plus those of its ProjectReferences, recursively: the
+    ``[Authored]`` records live in libraries under the launcher that dumps them, so stamping the
+    launcher alone never sees a new component. Read from csproj text (a timer must not shell
+    out); a reference hidden behind an MSBuild property costs a manual rebuild, not a wrong schema."""
     directory = os.path.dirname(os.path.abspath(project))
     found = [directory]
     if _depth >= MAX_REFERENCE_DEPTH:
@@ -98,12 +75,8 @@ def watched_dirs(project: str, _depth: int = 0) -> list[str]:
 
 
 def source_stamp(project_dir: str | list[str]) -> tuple[int, int]:
-    """A cheap change detector over the project's sources: (max mtime_ns, file count) of every
-    ``.cs`` and ``.csproj`` under the directory (or each of the directories), build output
-    excluded. The count is in the stamp because deleting a file lowers no mtime.
-
-    Accepts a list so a caller can pass :func:`watched_dirs`; a bare string still works, and
-    every test and caller that watched one project keeps meaning what it did."""
+    """(max mtime_ns, file count) over ``.cs``/``.csproj``; the count is there because deleting
+    a file lowers no mtime."""
     roots = [project_dir] if isinstance(project_dir, str) else project_dir
     newest = 0
     count = 0
@@ -123,8 +96,8 @@ def source_stamp(project_dir: str | list[str]) -> tuple[int, int]:
 
 
 def is_schema_stale(project_dir: str | list[str], schema_path: str) -> bool:
-    """True when a source file is newer than the dumped schema — the state an author is in
-    after editing C# with Blender closed, which a change-only watcher would never repair."""
+    """A source newer than the dump: the state after editing with Blender closed, which a
+    change-only watcher would never repair."""
     try:
         schema_mtime = os.stat(schema_path).st_mtime_ns
     except OSError:
@@ -134,23 +107,8 @@ def is_schema_stale(project_dir: str | list[str], schema_path: str) -> bool:
 
 
 def dotnet_executable() -> str | None:
-    """Same resolution as the bridge: PATH first, then the places a GUI-launched Blender's
-    minimal PATH tends to miss."""
-    found = shutil.which("dotnet")
-    if found:
-        return found
-    candidates = [
-        "/usr/local/share/dotnet/dotnet",
-        "/opt/homebrew/bin/dotnet",
-        os.path.expanduser("~/.dotnet/dotnet"),
-        r"C:\Program Files\dotnet\dotnet.exe",
-    ]
-    return next((c for c in candidates if os.path.exists(c)), None)
+    return dotnet.executable()
 
-
-# --------------------------------------------------------------------------------------
-# The watcher
-# --------------------------------------------------------------------------------------
 
 _timer_registered = False
 _status = "off"
@@ -181,14 +139,11 @@ def unregister() -> None:
     if _timer_registered and bpy.app.timers.is_registered(_tick):
         bpy.app.timers.unregister(_tick)
     _timer_registered = False
-    # A build in flight is left to finish: it is a detached OS process writing to the game's
-    # own build output, and killing it halfway could leave a torn obj/ for the next build.
+    # Never kill a build in flight: a torn obj/ breaks the next build.
 
 
 def failure_summary(output: str, limit: int = 10) -> list[str]:
-    """The lines an author needs from a failed build's output: the compiler errors, deduped,
-    in order — or the tail when nothing matches (a crash, a missing SDK). Pure, so the parsing
-    that decides what a popup shows is pinned by unit tests rather than discovered live."""
+    """The compiler errors of a failed build, deduped, or the tail when nothing matches."""
     lines = [line.strip() for line in output.splitlines() if line.strip()]
     errors: list[str] = []
     for line in lines:
@@ -204,21 +159,17 @@ def last_failure() -> list[str]:
 
 
 def last_failure_log() -> str | None:
-    """Path of the full compiler output of the last failed build, kept on disk until the next
-    build starts or the failure clears."""
+    """Full compiler output of the last failed build, kept until the next build starts."""
     return _failure_log_path
 
 
 def status_line() -> str:
-    """One human-readable line for the UI — a GUI-launched Blender never shows stdout, so the
-    watcher's state has to be visible where the author is looking."""
+    """One line for the UI; a GUI-launched Blender never shows stdout."""
     return _status
 
 
 def _active_scene():
-    """The scene to watch. Timer callbacks run with a RESTRICTED context — ``bpy.context.scene``
-    is not guaranteed there — so fall back to the first open window's scene, which is where the
-    author is working."""
+    """The scene to watch; ``bpy.context.scene`` is not guaranteed in a timer's restricted context."""
     import bpy
 
     scene = getattr(bpy.context, "scene", None)
@@ -243,14 +194,14 @@ def resolved_project(scene) -> str | None:
 
 
 def start_build(project: str, reason: str) -> bool:
-    """Kick off ``dotnet build`` in the background. False when one is already running or the
-    dotnet CLI cannot be found (reported, not raised — this runs from a timer)."""
+    """Start ``dotnet build`` detached; False when one is running or dotnet is missing
+    (reported, not raised: this runs from a timer)."""
     global _build, _build_log_path, _build_started
 
     if _build is not None:
         return False
-    dotnet = dotnet_executable()
-    if dotnet is None:
+    executable = dotnet.executable()
+    if executable is None:
         log.warn(
             "Cannot rebuild the game project: no `dotnet` CLI found on PATH or in the usual "
             "install locations. Build manually and the schema will hot-reload.")
@@ -259,10 +210,11 @@ def start_build(project: str, reason: str) -> bool:
     _discard_failure_log()
     handle, _build_log_path = tempfile.mkstemp(prefix="paradise_schema_build_", suffix=".log")
     _build = subprocess.Popen(
-        [dotnet, "build", project],
+        [executable, "build", project],
         stdout=handle,
         stderr=subprocess.STDOUT,
         cwd=os.path.dirname(project),
+        env=dotnet.subprocess_environment(),
     )
     os.close(handle)
     _build_started = time.monotonic()
@@ -271,8 +223,7 @@ def start_build(project: str, reason: str) -> bool:
 
 
 def _finish_build() -> None:
-    """Report a completed build and redraw, so the Components panel re-reads the schema the
-    moment the dump lands rather than on the next mouse-over."""
+    """Report a completed build and redraw so the panel re-reads the dump now."""
     import bpy
 
     global _build, _build_log_path
@@ -283,8 +234,7 @@ def _finish_build() -> None:
     if failed:
         tail = _read_tail(_build_log_path, lines=40)
         _failure_lines = failure_summary(tail)
-        # The full output is KEPT: the summary is for the popup, but a template error or a
-        # NuGet failure needs the whole log, and stdout is invisible to a Dock-launched Blender.
+        # The full log is kept: a NuGet failure needs it, and stdout is invisible from the Dock.
         _failure_log_path = _build_log_path
         _status = f"build FAILED ({elapsed:.1f}s)"
         log.warn(
@@ -316,9 +266,8 @@ def _discard_failure_log() -> None:
 
 
 def _announce_failure() -> None:
-    """A popup the moment the build fails. Best-effort: timers run without a window in
-    headless sessions, and a failure must never take the watcher down with it — the panel
-    alert (drawn from :func:`last_failure`) is the persistent fallback either way."""
+    """Best-effort popup: a headless timer has no window, and a failure here must never take
+    the watcher down."""
     import bpy
 
     def draw(menu, _context):
@@ -342,9 +291,7 @@ def _read_tail(path: str | None, lines: int = 12) -> str:
 
 
 def _tick() -> float:
-    """The registered timer. A timer that raises is silently unregistered by Blender — the
-    watcher would die on its first hiccup and every later save would do nothing, which is the
-    failure the author cannot see. So the real work is guarded, reported, and the timer lives."""
+    """The timer. Blender silently unregisters a timer that raises, so the work is guarded."""
     global _status
     try:
         return _tick_guarded()
@@ -379,14 +326,11 @@ def _tick_guarded() -> float:
         return 2.0
     _status = f"watching {os.path.basename(project)}"
 
-    # The project AND everything it is built from — see watched_dirs.
     project_dir = watched_dirs(project)
     stamp = source_stamp(project_dir)
 
     if _last_stamp is None:
-        # First look at this project. Do not treat existing files as "a change" — but DO
-        # repair the case the watcher cannot otherwise see: sources edited while Blender was
-        # closed, leaving the dump stale.
+        # First look: existing files are not a change, but a dump older than the sources is.
         _last_stamp = stamp
         _built_stamp = stamp
         from ..contract import authoring

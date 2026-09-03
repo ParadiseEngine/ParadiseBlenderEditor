@@ -1,25 +1,7 @@
-"""Export output path resolution -- port of ``Paradise.Export.Paths.ExportPaths``.
-
-The layout under the project's ``data/`` directory is shared with the Godot addon, because the
-runtime resolves contract fields against it:
-
-    data/
-      scenes/<Scene>.json          level document
-      scenes/<Scene>.navmesh.bin   DotRecast MeshSet
-      materials/<name>.json        one document per material
-      Models/<...>.glb             source meshes (KTX2 textures inside)
-      primitives/<...>.glb         generated primitive meshes
-      sprites/<...>.ktx2           spritesheets
-      ProjectSettings.json
-
-The one rule that actually bites: a contract field is a path **relative to the data
-directory**, and the runtime resolves it as ``data/<field>``. An asset referenced from outside
-``data/`` is therefore unreachable at runtime no matter how valid the path looks in Blender --
-:meth:`ExportPaths.data_relative_field` returns ``None`` for those so the caller can warn
-instead of exporting something that will silently fail to load.
-
-Blender has no ``res://`` VFS, so where the Godot addon accepts ``res://`` paths this takes
-absolute or project-relative filesystem paths and ``//``-prefixed Blender paths.
+"""Export path resolution (port of ``Paradise.Export.Paths.ExportPaths``). A contract field is
+relative to ``data/`` and the runtime resolves it there, so an asset outside ``data/`` is
+unreachable however valid the path looks in Blender; :meth:`ExportPaths.data_relative_field`
+returns ``None`` for those so the caller can warn.
 """
 
 from __future__ import annotations
@@ -64,20 +46,13 @@ class ExportPaths:
         return os.path.join(self._data_dir, field.replace("/", os.sep))
 
     def data_relative_field(self, path: str) -> str | None:
-        """Map a filesystem or Blender (``//``) path to its data-relative contract field.
-
-        Returns ``None`` when the path escapes the data directory. That is not an edge case to
-        tidy away: the runtime only ever looks under ``data/``, so an out-of-tree reference is
-        an asset that will not load, and the caller is expected to warn the author.
-        """
+        """A path as its data-relative field, or ``None`` outside ``data/`` (module docstring)."""
         if not path or not path.strip():
             return None
 
         normalized = path.replace("\\", "/")
         if normalized.startswith("//"):
-            # Blender's project-relative prefix, resolved against the .blend file's directory.
-            # bpy.path.abspath() does this properly; the addon resolves it before calling here,
-            # so a surviving "//" means an unsaved .blend and the reference is unresolvable.
+            # A surviving "//" means an unsaved .blend: unresolvable.
             return None
 
         full = os.path.abspath(
@@ -94,12 +69,7 @@ class ExportPaths:
 
 
 def material_file_field(name_or_path: str) -> str:
-    """Map a material name or source path to its ``materials/<name>.json`` field.
-
-    This field is the stable id stored in entity material slots, so it must be derived the
-    same way in both hosts. Distinct materials whose names collide land on the same field --
-    the exporter detects that and warns rather than silently dropping one.
-    """
+    """``materials/<name>.json``: the stable id in material slots, derived the same way in both hosts."""
     normalized = name_or_path.replace("\\", "/").strip("/")
     if not normalized:
         return "materials/material.json"
@@ -112,8 +82,7 @@ def prefab_file_field(path_or_name: str) -> str:
     normalized = path_or_name.replace("\\", "/").strip("/")
     if not normalized:
         return "prefabs/prefab.json"
-    # Strip a redundant leading "prefabs/" so the field is not double-nested. Case-sensitive,
-    # matching the Godot host and a case-sensitive filesystem.
+    # Case-sensitive, matching the Godot host.
     if normalized.startswith("prefabs/"):
         normalized = normalized[len("prefabs/") :]
     return f"prefabs/{os.path.splitext(normalized)[0]}.json"

@@ -1,11 +1,6 @@
-"""Addon preferences: where data goes, and which external tools to drive.
-
-The Godot host splits these between committed project settings and machine-level editor
-settings. Blender's ``AddonPreferences`` are machine-level only, which is the right default
-for tool paths (they differ per machine) but wrong for the data directory (it is a property of
-the project). So the data directory is stored **per-scene** and the tool paths are stored in
-preferences -- see :class:`ParadiseScenePreferences`.
-"""
+"""Addon preferences. Tool paths are machine-level ``AddonPreferences``; anything that shapes
+exported data (data directory, navmesh and lighting parameters) is per-scene so it travels in
+the .blend."""
 
 from __future__ import annotations
 
@@ -33,24 +28,16 @@ PACKAGE = __package__
 
 
 def _update_navmesh_preview(_self, context) -> None:
-    # Deferred import: prefs is imported by nearly every module, and importing the preview
-    # module here at load time would create a cycle through export/.
-    #
-    # Defined ABOVE the class and referenced by name: `from __future__ import annotations`
-    # turns the property definitions into strings that Blender re-evaluates, and a lambda
-    # compiled from that string loses the module globals — it raises NameError at call time.
+    # Deferred import (cycle through export/). Defined ABOVE the class, not as a lambda in the
+    # property: `from __future__ import annotations` makes Blender re-evaluate the definition
+    # as a string, and a lambda compiled there loses the module globals (NameError).
     from .export.navmesh_preview import sync_preview_visibility
 
     sync_preview_visibility(context.scene)
 
 
 class ParadiseConfigDocument(PropertyGroup):
-    """One authored JSON document this project edits in the Config panel.
-
-    A project declares as many as it likes: a game's tunables, a level's settings, whatever else
-    it keeps as authored payloads. The addon attaches no meaning to any of them -- it reads the
-    ids each file declares and draws them from the authoring schema.
-    """
+    """One authored JSON document the Config panel edits."""
 
     label: StringProperty(  # type: ignore[valid-type]
         name="Label",
@@ -94,10 +81,8 @@ class ParadiseScenePreferences(PropertyGroup):
     )
 
     game_project: StringProperty(  # type: ignore[valid-type]
-        # The blend-relative option only exists from Blender 4.4; without the guard the class
-        # fails to register on the manifest's 4.2 floor. Older Blenders still RESOLVE a stored
-        # "//" path fine (bpy.path.abspath is plain string handling) — they just warn when a
-        # script assigns one.
+        # The blend-relative option exists from Blender 4.4; without the guard the class fails
+        # to register on the 4.2 floor. Older Blenders still resolve a stored "//" path.
         **({"options": {"PATH_SUPPORTS_BLEND_RELATIVE"}}
            if bpy.app.version >= (4, 4, 0) else {}),
         name="Game Project",
@@ -173,10 +158,7 @@ class ParadiseScenePreferences(PropertyGroup):
         update=_update_navmesh_preview,
     )
 
-    # -- lighting ---------------------------------------------------------------------------
-    #
-    # Scene-scoped for the same reason the navmesh parameters are: it shapes exported data
-    # (the contract's Lighting.ShadowMapSize), so it must travel inside the .blend.
+    # -- lighting (scene-scoped: shapes exported data) --------------------------------------
 
     shadow_map_size: EnumProperty(  # type: ignore[valid-type]
         name="Shadow Map",
@@ -207,12 +189,7 @@ class ParadiseScenePreferences(PropertyGroup):
         max=8.0,
     )
 
-    # -- navmesh bake parameters ------------------------------------------------------------
-    #
-    # Scene-scoped, not preferences: they shape EXPORTED DATA (the .navmesh.bin every checkout
-    # of this project loads), so they must travel inside the .blend like the data directory
-    # does. Defaults mirror the Godot host's NavMeshBake.cs — a scene authored with default
-    # settings bakes identically from either tool.
+    # -- navmesh bake parameters (scene-scoped; defaults mirror the Godot host's NavMeshBake.cs)
 
     navmesh_cell_size: FloatProperty(  # type: ignore[valid-type]
         name="Cell Size",
@@ -392,13 +369,8 @@ def get_preferences(context=None) -> ParadiseAddonPreferences:
 
 
 def resolve_blender_data_dir(scene: bpy.types.Scene) -> str:
-    """Absolute path of the scene's data directory.
-
-    Blender's ``//`` prefix is relative to the .blend file, so an unsaved file cannot resolve
-    it. Rather than silently writing into the current working directory -- which is wherever
-    Blender happened to be launched from -- this falls back to a temp directory and the
-    exporter reports where it went.
-    """
+    """Absolute data directory. An unsaved file cannot resolve ``//``, so this falls back to a
+    temp directory rather than silently writing into Blender's working directory."""
     raw = scene.paradise_project.data_dir or "//data"
     if raw.startswith("//") and not bpy.data.filepath:
         import tempfile
@@ -408,12 +380,7 @@ def resolve_blender_data_dir(scene: bpy.types.Scene) -> str:
 
 
 def resolve_config_document_path(scene: bpy.types.Scene, document) -> str:
-    """Absolute path of one config document, or "" when the row names no file yet.
-
-    The row stores a DATA-RELATIVE field, so this is the data directory plus that field -- which
-    means a .blend keeps working in a checkout that lives somewhere else, the same property every
-    other contract path has.
-    """
+    """Absolute path of one config document, or "" when the row names none."""
     field = document.file
     if not field or not field.strip():
         return ""

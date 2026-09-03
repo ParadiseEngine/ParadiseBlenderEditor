@@ -133,3 +133,21 @@ class TestAtomicWrite:
         with pytest.raises(TypeError):
             writer.write_json_document(target, {"bad": object()})
         assert os.listdir(tmp_path) == []
+
+
+def test_the_written_document_is_not_private(tmp_path):
+    # mkstemp creates the temp 0600; without a chmod every exported document came out private
+    # (the same defect the assets save had, #37), and a shared checkout could not read data/.
+    import stat
+
+    from paradise_blender.contract.writer import write_json_document
+
+    target = tmp_path / "scenes" / "level.json"
+    write_json_document(str(target), {"a": 1})
+    umask = os.umask(0)
+    os.umask(umask)
+    assert stat.S_IMODE(target.stat().st_mode) == (0o666 & ~umask)
+
+    target.chmod(0o640)
+    write_json_document(str(target), {"a": 2})
+    assert stat.S_IMODE(target.stat().st_mode) == 0o640

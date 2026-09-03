@@ -1,0 +1,69 @@
+schema_version = 1
+
+[[objects]]
+
+[[objects.components]]
+id = "0f1d4b3a-8c27-4a55-9b6e-2f7c1d40a913"
+type = "meta"
+Guid = "3f2a1b4c-5d6e-4f70-8192-a3b4c5d6e7f8"
+Name = "crate_01"
+
+[[objects.components]]
+id = "7e55c210-3d41-4b8a-8f26-9c0a5e71b4d2"
+type = "transform"
+Position = [0.1, 1.3, -2.0]
+Rotation = [0.0, 0.7071068, 0.0, 0.7071068]
+Scale = [0.7, 1.0, 1.0]
+
+[[objects.components]]
+id = "bdc4fc87-d7b4-41f1-bc90-fc827005adfc"
+type = "Paradise.Export.Data.MaterialsComponentData"
+Slots = [{ guid = "c45f3a94-24a8-58a3-910f-8538da3c8655", path = "materials/grass.toml" }, {}]
+
+[[objects.components]]
+id = "01b792a0-f12e-4fe9-9867-907ae988b301"
+type = "ShiningPie.Authoring.ObstacleTag"
+
+[[objects.components]]
+id = "edee8bd8-9321-47db-819d-9bdadf010be4"
+type = "Game.Colliders"
+Shapes = [{ shape = "box", size = [1.0, 2.0, 3.0], trigger = false }, { shape = "sphere", radius = 0.5 }]
+Layer = "default"
+
+[[objects]]
+
+[[objects.components]]
+id = "0f1d4b3a-8c27-4a55-9b6e-2f7c1d40a913"
+type = "meta"
+Guid = "9a8b7c6d-5e4f-4031-8213-4c5d6e7f8091"
+Name = ""
+Parent = "3f2a1b4c-5d6e-4f70-8192-a3b4c5d6e7f8"
+
+[[objects.components]]
+id = "7a1c5f2e-8b3d-4e6f-9a0b-1c2d3e4f5a6b"
+type = "Game.Health"
+Max = 100
+Regen = 0.25
+
+[[objects]]
+prefab = { guid = "4c296cda-6844-574c-8f56-8ab5e04bbd20", path = "prefabs/box.prefab" }
+
+[[objects.components]]
+id = "0f1d4b3a-8c27-4a55-9b6e-2f7c1d40a913"
+type = "meta"
+Guid = "c0ffee00-1111-4222-8333-444444444444"
+Name = "天堂 ✓ \"quoted\""
+Parent = "3f2a1b4c-5d6e-4f70-8192-a3b4c5d6e7f8"
+
+[[objects.components]]
+id = "7a1c5f2e-8b3d-4e6f-9a0b-1c2d3e4f5a6b"
+removed = true
+
+[[objects]]
+
+[[objects.components]]
+id = "0f1d4b3a-8c27-4a55-9b6e-2f7c1d40a913"
+type = "meta"
+Parent = "c0ffee00-1111-4222-8333-444444444444"
+Target = "aaaaaaaa-0000-4000-8000-000000000002"
+Dropped = true

@@ -1,0 +1,36 @@
+flag = true
+off = false
+empty_array = []
+nested_arrays = [[1, 2], [], [["x"]]]
+reference = { guid = "11111111-2222-4333-8444-555555555555", path = "Models/crate.glb" }
+null_reference = {}
+references = [{ guid = "11111111-2222-4333-8444-555555555555", path = "Models/crate.glb" }, {}, { guid = "11111111-2222-4333-8444-555555555555", path = "Models/crate.glb" }]
+records = [{ shape = "box", size = [1.0, 2.0, 3.0], trigger = false }, { shape = "sphere", radius = 0.5 }]
+mixed_rows = [{ shape = "box", size = [1.0, 2.0, 3.0], trigger = false }, {}]
+empty_table = {}
+empty_table_array = []
+
+[table]
+x = 1
+
+[table.inner]
+y = 2
+ref = { guid = "11111111-2222-4333-8444-555555555555", path = "Models/crate.glb" }
+
+[[elements]]
+name = "a"
+weight = 1.5
+
+[elements.nested]
+
+[elements.nested.deep]
+value = 1
+
+[[elements]]
+name = "b"
+
+[[elements.children]]
+id = 1
+
+[[elements.children]]
+id = 2

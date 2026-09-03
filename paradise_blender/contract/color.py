@@ -1,19 +1,7 @@
-"""Color conversion and the contract's 8-bit ``Color32`` encoding.
-
-Port of ``Paradise.Export.Data.Color32`` plus the sRGB transfer functions the Godot addon
-gets from ``Godot.Color``. Two rules from the engine's CONVENTIONS.md drive everything here:
-
-* **The contract is linear.** Authored colors are display-referred sRGB and must be
-  linearized on the way out (Godot calls ``Color.SrgbToLinear()``; we do it explicitly).
-* **The contract is 8-bit.** ``Color32`` packs each channel to a byte, so the JSON carries
-  ``n/255`` values -- ``{"r": 0.03137255, ...}`` is the byte 8. Precision is genuinely lost;
-  that is the contract, not an approximation on our side.
-
-Blender is the easier source here than Godot: node-tree colors are *already linear scene
-data* (Blender does its color management on display, not on the stored value). So
-:func:`srgb_to_linear` is only needed for values authored through an sRGB-interpreted widget
--- see the call sites in ``export/material.py`` for which is which. Getting this backwards
-double-darkens every albedo, so each caller states its reasoning.
+"""Colour conversion and the contract's 8-bit ``Color32`` (port of ``Paradise.Export.Data.Color32``).
+The contract is linear and 8-bit. Blender node colours are ALREADY linear, so
+:func:`srgb_to_linear` is only for values authored through an sRGB-interpreted widget; getting
+this backwards double-darkens every albedo.
 """
 
 from __future__ import annotations
@@ -40,13 +28,8 @@ def linear_to_srgb(value: float) -> float:
 
 
 def to_byte(value: float) -> int:
-    """Quantize a 0..1 float to a contract byte.
-
-    Mirrors ``Color32.ToByte``: NaN and -inf clamp to 0, +inf to 255, and rounding is
-    half-away-from-zero. Python's ``round`` is banker's rounding (round-half-to-even), which
-    would disagree on exact .5 cases -- ``0.5/255`` would land on a different byte -- so the
-    half-away rule is spelled out rather than delegated.
-    """
+    """``Color32.ToByte``: half-away-from-zero, spelled out because Python's ``round`` is
+    banker's rounding and would land ``0.5/255`` on a different byte."""
     if math.isnan(value) or value == float("-inf"):
         return 0
     if value == float("inf"):
@@ -56,12 +39,7 @@ def to_byte(value: float) -> int:
 
 
 class Color32:
-    """A contract color: four channels quantized to bytes.
-
-    Constructed from linear float channels via :meth:`from_rgba`; serialized by
-    :meth:`to_json` as ``{"r", "g", "b", "a"}`` with each channel back-expanded to
-    ``byte / 255`` -- exactly what ``Color32Converter`` writes.
-    """
+    """A contract colour: four channels quantized to bytes, serialized as ``"#RRGGBBAA"``."""
 
     __slots__ = ("_bytes",)
 
@@ -74,8 +52,7 @@ class Color32:
 
     @classmethod
     def from_srgb(cls, red: float, green: float, blue: float, alpha: float = 1.0) -> Color32:
-        """Linearize sRGB-authored channels, then pack. Alpha is never a color channel, so it
-        does not get the transfer function (matching Godot's ``SrgbToLinear``)."""
+        """Linearize sRGB-authored channels, then pack; alpha gets no transfer function."""
         return cls.from_rgba(srgb_to_linear(red), srgb_to_linear(green), srgb_to_linear(blue), alpha)
 
     @property
@@ -94,8 +71,11 @@ class Color32:
     def a(self) -> float:
         return f32(self._bytes[3] / 255.0)
 
-    def to_json(self) -> dict[str, float]:
-        return {"r": self.r, "g": self.g, "b": self.b, "a": self.a}
+    def to_json(self) -> str:
+        """``"#RRGGBBAA"``, always nine characters. A string rather than an ``{r,g,b,a}``
+        object because an object would need a second reserved inline-table shape in the
+        canonical TOML writer; a scalar needs none. Mirrors ``Color32Converter``."""
+        return "#{:02X}{:02X}{:02X}{:02X}".format(*self._bytes)
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, Color32) and other._bytes == self._bytes

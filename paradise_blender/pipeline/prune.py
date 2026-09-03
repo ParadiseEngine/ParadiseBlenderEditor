@@ -1,33 +1,17 @@
-"""Delete exported artifacts that nothing references any more.
+"""Delete exported artifacts that no scene document references any more.
 
-An export writes what the scene needs; nothing ever removed what it stopped needing. Rename a
-mesh datablock and its old ``Models/<old>.glb`` and every ``<old>.<image>.ktx2`` sidecar stay
-forever -- in ShiningPie's case inside a committed, LFS-tracked ``data/``, where they are dead
-weight in every clone and a red herring in every "which file does the game actually load?"
-question. The measured backlog there was small (3 files) precisely because the directory is
-young; the point is that it only ever grows.
+Reachability, not bookkeeping: a record of what the last export wrote is wrong the first time
+a second .blend exports into the same ``data/`` or someone clones without the record. Three
+rules keep it safe, and each is load-bearing: only owned directories and extensions
+(:data:`OWNED`) are candidates, so Wwise banks and the game's config are never touched; EVERY
+scene document is a root, so two .blends sharing a ``data/`` cannot delete each other's meshes;
+reachability is computed from string VALUES rather than known keys, because a key whitelist
+goes stale the day a component gains an asset field and the cost of stale is deleting a live
+asset. Ambiguity keeps the file. Off by default; the only destructive step in an export.
 
-**The rule is reachability, not bookkeeping.** The scene documents under ``data/scenes`` are
-roots, and an artifact is live if some root can reach it. Bookkeeping -- remembering what the
-last export wrote -- would be wrong the first time a second .blend exported into the same
-``data/``, or the first time someone cloned the repo without the record.
-
-Three properties make this safe enough to run on every export, and all three are load-bearing:
-
-* **Only inside owned directories, only owned extensions** (:data:`OWNED`). Wwise's banks under
-  ``data/audio``, the game's own ``data/shiningpie/config.json``, an author's stray note in
-  ``Models/`` -- none are ours, so none are candidates. The exporter deletes only the kinds of
-  file it writes, in the places it writes them.
-* **Every scene document is a root, not just the one being exported.** A ``data/`` shared by two
-  .blends must not have one export delete the other's meshes.
-* **Reachability is computed from string VALUES, not from known keys.** Any string in any root
-  that resolves to a file under ``data/`` marks it live. A key whitelist would go stale the day a
-  component gains a new asset field, and the failure mode of going stale here is deleting a live
-  asset -- so the fuzzy rule is the correct one. It errs toward keeping.
-
-Pruning is cheap to get wrong in one direction and expensive in the other, so everything
-ambiguous keeps the file. It is also cheap to undo: ``data/`` is committed, and a deleted KTX2
-comes back from :mod:`.cache` on the next export without re-encoding.
+The one artifact no document names is the navmesh: since v5 the bake writes
+``scenes/<scene>.navmesh.bin`` beside ``<scene>.json`` and the document says nothing about it,
+so every root marks its own bake live by that naming rule (:func:`_collect_navmeshes`).
 """
 
 from __future__ import annotations
@@ -43,19 +27,10 @@ from .ktx import SOURCE_EXTENSIONS
 
 __all__ = ["OWNED", "prune_orphans"]
 
-#: Directories this exporter owns, mapped to the file extensions it writes there. Anything else
-#: under ``data/`` belongs to another tool and is never a deletion candidate.
-#:
-#: ``scenes`` lists ``.bin`` only: the navmesh binaries are ours, but the scene documents beside
-#: them are the ROOTS of the whole sweep and are never deleted -- deleting a root would make
-#: everything it referenced garbage on the next pass, which is how a cleanup turns into a wipe.
-#:
-#: ``primitives/`` is deliberately ABSENT even though it appears in the shared layout
-#: (:mod:`..paths`). That layout is the contract's, not this addon's, and generated primitive
-#: meshes come from the Godot host -- nothing here writes one. Owning a directory we cannot
-#: regenerate breaks the rule this whole module rests on: delete only the kinds of file the
-#: exporter itself writes, in the places it writes them. An unreferenced primitive is somebody
-#: else's garbage to collect.
+#: Directories this exporter writes, and the extensions it writes there. ``scenes`` lists
+#: ``.bin`` only: the documents are the ROOTS and deleting one turns the next pass into a wipe.
+#: ``primitives/`` is absent on purpose: the Godot host generates those, and owning what you
+#: cannot regenerate is how a cleanup loses an asset.
 OWNED: dict[str, tuple[str, ...]] = {
     "Models": (".glb", ".ktx2"),
     "materials": (".json",),
@@ -65,14 +40,9 @@ OWNED: dict[str, tuple[str, ...]] = {
 
 
 def prune_orphans(paths: ExportPaths, dry_run: bool = False) -> list[str]:
-    """Remove unreferenced artifacts under ``data/``. Returns the data-relative paths removed.
-
-    Returns an empty list, having warned, whenever the sweep cannot be trusted: an unreadable
-    scene document, or roots that collectively declare no entities at all. The second case is not
-    hypothetical caution -- an export that found nothing (wrong .blend open, a scene whose objects
-    were never marked as entities) writes a valid, empty document, and a reachability sweep
-    against it would find the entire directory unreachable.
-    """
+    """Remove unreferenced artifacts; returns the data-relative paths removed. Refuses (empty
+    list, warned) on an unreadable root or when no root declares an entity: an export that found
+    nothing writes a valid empty document, against which the whole directory is unreachable."""
     scene_documents = _scene_documents(paths)
     if scene_documents is None:
         return []
@@ -84,11 +54,8 @@ def prune_orphans(paths: ExportPaths, dry_run: bool = False) -> list[str]:
         )
         return []
 
-    # Normalized field -> the field as actually spelled on disk. Two forms because they answer
-    # two different questions: comparison must be case-insensitive where the filesystem is (or a
-    # reference to `models/x.glb` orphans `Models/x.glb`), while OPENING a file must use the real
-    # spelling (or the same folding breaks every read on a case-sensitive filesystem, and a GLB
-    # that cannot be read is a GLB whose textures look unreferenced).
+    # Normalized -> on-disk spelling: comparison must fold case where the filesystem does, but
+    # opening must use the real spelling or every read fails on a case-sensitive one.
     live: dict[str, str] = {}
 
     seeds = list(scene_documents)
@@ -99,6 +66,7 @@ def prune_orphans(paths: ExportPaths, dry_run: bool = False) -> list[str]:
 
     owned = _owned_files(paths)
     _walk_documents(paths, seeds, live)
+    _collect_navmeshes(paths, scene_documents, live)
     _collect_sidecars(paths, live)
     _collect_transcode_targets(paths, owned, live)
 
@@ -118,11 +86,8 @@ def prune_orphans(paths: ExportPaths, dry_run: bool = False) -> list[str]:
 
 
 def _scene_documents(paths: ExportPaths) -> list[tuple[str, dict]] | None:
-    """Every scene document, or ``None`` if any of them could not be read.
-
-    All-or-nothing on purpose: a sweep run against a partial view of the roots would delete the
-    assets belonging to the document it failed to parse.
-    """
+    """Every scene document, or ``None`` if any failed: a partial view would delete the
+    unreadable document's assets."""
     if not os.path.isdir(paths.scenes_dir):
         return []
 
@@ -156,18 +121,8 @@ def _walk_documents(
     seeds: list[tuple[str, dict]],
     live: dict[str, str],
 ) -> None:
-    """Mark everything reachable from the root documents, following documents transitively.
-
-    Transitively, because references chain: a scene names a material document, and that document
-    names the texture it samples. Marking only what the scenes name directly would have deleted
-    those textures -- caught by a test, not by review, which is the argument for the fixpoint over
-    a hand-enumerated two-level walk.
-
-    Every artifact joins the frontier by PATH. Prefab templates used to be the exception, matched
-    by identity because a scene addressed one by asset path and guid while the document was named
-    after the collection — and both the templates and the fields that referenced them went with
-    the entity record in schema v5.
-    """
+    """Mark everything reachable from the roots, following documents transitively (scene ->
+    material -> texture); a two-level walk deleted the textures, caught by a test."""
     queue = list(seeds)
     walked: set[str] = set()
 
@@ -197,13 +152,8 @@ def _walk_documents(
 def _collect(
     node: object, directory: str, paths: ExportPaths, live: dict[str, str]
 ) -> None:
-    """Walk a document, marking every string that names a real file under ``data/``.
-
-    Strings are resolved both as data-relative fields (how the contract addresses assets) and as
-    siblings of the document holding them (how ``NavMeshFile`` is defined). Marking on existence
-    rather than on syntax means a coincidental match keeps a file alive, which is the harmless
-    direction.
-    """
+    """Mark every string that names a real file, data-relative or sibling; a coincidental match
+    keeps a file, the harmless direction."""
     if isinstance(node, dict):
         for value in node.values():
             _collect(value, directory, paths, live)
@@ -230,13 +180,21 @@ def _as_existing_field(reference: str, paths: ExportPaths) -> str | None:
     return field if os.path.isfile(paths.output_path_for_field(field)) else None
 
 
-def _collect_sidecars(paths: ExportPaths, live: dict[str, str]) -> None:
-    """Mark the KTX2 sidecars that live GLBs point at.
+def _collect_navmeshes(
+    paths: ExportPaths, scene_documents: list[tuple[str, dict]], live: dict[str, str]
+) -> None:
+    """Keep each scene's bake, named by the rule ``export/navmesh.py`` writes it under: the
+    document carries no reference to it, so by strings alone it is an orphan the moment it is
+    baked."""
+    for path, _document in scene_documents:
+        stem = os.path.splitext(os.path.basename(path))[0]
+        navmesh = _as_existing_field(paths.nav_mesh_output_path(stem), paths)
+        if navmesh is not None:
+            live[_normalized(navmesh)] = navmesh
 
-    The only reference that is not in a JSON document: a mesh's textures are named by image URIs
-    inside the GLB itself. Reading them is also what makes a sidecar orphaned by an edit -- a
-    material that lost its texture map -- collectable at all.
-    """
+
+def _collect_sidecars(paths: ExportPaths, live: dict[str, str]) -> None:
+    """Mark the KTX2 sidecars live GLBs point at, the one reference not in a JSON document."""
     for field in [f for f in list(live.values()) if f.lower().endswith(".glb")]:
         glb_path = paths.output_path_for_field(field)
         for uri in external_image_uris(glb_path):
@@ -248,28 +206,14 @@ def _collect_sidecars(paths: ExportPaths, live: dict[str, str]) -> None:
 def _collect_transcode_targets(
     paths: ExportPaths, owned: list[str], live: dict[str, str]
 ) -> None:
-    """Keep every ``.ktx2`` that has a source image beside it.
-
-    :func:`..pipeline.ktx.convert_data_directory` transcodes ``sprites/fire.png`` into
-    ``sprites/fire.ktx2`` in place, and the ``.png`` is not a file this exporter owns. Deleting
-    the ``.ktx2`` while its source stays therefore does not clean anything up -- it half-deletes
-    a pair, and the next Convert Textures puts it straight back. The unreferenced thing there is
-    the source image, which belongs to the author.
-
-    It also removes a trap in the authoring order: drop in a spritesheet, transcode it, then wire
-    it to an entity. Between those last two steps the sidecar is genuinely unreferenced, and
-    sweeping it would delete the file the author was about to use.
-
-    Mesh sidecars are unaffected -- ``Models/Prop.Colormap.ktx2`` is extracted from inside a GLB
-    and never has a sibling source -- so the case this module was written for still collects.
-    """
+    """Keep every ``.ktx2`` with a source image beside it: ``convert_data_directory`` transcodes
+    in place and the source is the author's, so deleting one half of the pair cleans nothing and
+    would eat a spritesheet in the window between transcoding it and wiring it to an entity."""
     candidates = [f for f in owned if f.lower().endswith(".ktx2")]
     if not candidates:
         return
 
-    # Matched against a directory listing rather than by probing `stem + ".png"`, so that a
-    # source spelled `Fire.PNG` still shields `Fire.ktx2`. Probing would miss it on a
-    # case-sensitive filesystem and delete the sidecar -- the wrong direction to be wrong in.
+    # Listing, not probing `stem + ".png"`: `Fire.PNG` must still shield `Fire.ktx2`.
     sources: set[str] = set()
     for directory in {os.path.dirname(field) for field in candidates}:
         absolute = os.path.join(paths.data_dir, directory) if directory else paths.data_dir
@@ -301,6 +245,5 @@ def _owned_files(paths: ExportPaths) -> list[str]:
 
 
 def _normalized(field: str) -> str:
-    """Case-folded on case-insensitive filesystems, so a reference spelled ``models/x.glb`` and a
-    file at ``Models/x.glb`` are one entry rather than an orphan plus a dangling link."""
+    """Case-folded where the filesystem is, or ``models/x.glb`` orphans ``Models/x.glb``."""
     return os.path.normcase(field.replace("\\", "/"))

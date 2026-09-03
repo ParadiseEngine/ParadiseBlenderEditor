@@ -206,6 +206,12 @@ def main() -> int:
     ui = scene.id_properties_ui(key(prefix, PLAYER_ID, "MaxSpeed"))
     check(ui.as_dict().get("description") == "Top walking speed.", "schema doc reaches the tooltip")
     check(ui.as_dict().get("max") == 50, "schema range reaches the slider")
+    subtype = ui.as_dict().get("subtype")
+    check(
+        subtype not in (None, "", "NONE", "none"),
+        "meters become a distance spinner",
+        repr(subtype),
+    )
 
     # ---- edit and save --------------------------------------------------------------------
     scene[key(prefix, PLAYER_ID, "MaxSpeed")] = 9.25

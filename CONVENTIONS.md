@@ -86,22 +86,19 @@ difference).
 Note the contract is formally **value-based, not byte-based** — `5` and `5.0` are the same
 value — so `contract-check` compares semantically and treats byte parity as a bonus.
 
-## 4. Entity identity — Blender duplicates carry the GUID
+## 4. Entity identity — derived from the name, never stored
 
-`object.paradise.entity_guid` must be stable per placement and unique per scene. It is HOST
-bookkeeping only: schema v5 dropped `EntityGuid` from the document, so nothing exports it.
+An object's identity on the wire (`meta.Guid`, and every `HostId` / `HostEntity` / `HostParent`
+reference that must equal it) is `export/placement.py:identity(name)`: `uuid5` over a fixed
+namespace and the object's name. There is ONE function, and every bake calls it; a second
+minting anywhere is a reference no object answers to (#27).
 
-Godot stores it in node metadata and sweeps for collisions on editor save. Blender makes the
-uniqueness half harder: duplicating an object (`Shift+D`, `Alt+D`, copy/paste) deep-copies its
-property groups, GUID included, so a duplicate arrives **already colliding**, silently, and
-there is no per-object "was duplicated" callback to hook.
-
-So `authoring/guid.py` mints lazily and sweeps on `save_pre`, and the exporter sweeps again
-before walking the scene (so an unsaved .blend still exports unique identities). Collision
-resolution keeps the first object in a **stable name ordering** and re-mints the rest —
-without a deterministic order, which duplicate keeps the original GUID would vary between runs.
-
----
+Derived rather than stored because a stored GUID makes exporting MUTATE the `.blend` — and those
+files are Git LFS-locked in the game repos, so a read-only checkout could not export and every
+export would dirty an unmergeable binary. The cost is stated plainly: **renaming an object
+re-mints its identity**, the same exposure v5 had, where the name was the handle. Blender
+guarantees names are unique within a file, so the derivation is injective per scene, and
+duplicates (`Shift+D` gives `Cube.001`) get their own identity for free.
 
 ## Deliberate deviations from the Godot host
 
@@ -147,6 +144,13 @@ correct conversion without also fixing an exposure model, so `WATTS_PER_INTENSIT
 maps Blender's default lamp to the contract's default light — defaults match, and scaling from
 there is predictable.
 
+**Sun intensity is divided by π**, and only the sun's. Blender's sun strength is irradiance in
+W/m², rendered as `albedo·(S/π)·NdotL`; the contract multiplier is Godot energy, which Godot
+premultiplies by π so a diffuse surface renders `albedo·E·NdotL`. Exporting `S` verbatim
+therefore makes every Blender-authored sun π× brighter in the engine than in the viewport
+(it presented as a whole-scene blowout through the glow pass). `E = S/π` in `export/light.py`
+is the exact conversion; point/spot lights use the 100 W calibration above instead.
+
 **Area lights.** Neither the contract nor Godot has an area light type. They export as point
 lights with their dimensions recorded in `AreaSize`, and the exporter warns. Dropping them
 would make a scene go dark with no explanation.
@@ -181,12 +185,14 @@ bright, which is why `tests/unit/test_sky.py` pins it.
 Some `[Authored]` fields are not typed in: they point at one of Blender's own objects, and the
 exporter bakes what that object IS into the field's own numbers. The engine calls this
 `[AuthoredByHost(kind)]`, and the kinds are a closed set (`Paradise.Authoring`'s
-`AuthoredBySources`): shape, mesh, sprite, light, asset, **transform**.
+`AuthoredBySources`): shape, mesh, sprite, light, camera, asset, entity, parent, id, name,
+local TRS, **transform**.
 
-**This host implements exactly one of them: `transform`.** The others are still reported in the
-Components panel as *"baked from …; not authored in Blender yet"* — colliders, meshes and lights
-reach the export through their own dedicated Blender-native paths instead, not through this
-mechanism.
+This host implements all of them except `node` (not an engine kind). Record kinds (transform,
+shape, light, camera) are an object slot; leaf kinds (mesh, entity, sprite, asset) write a
+scalar; self kinds (id, name, parent, local TRS) have no picker — they are read off the entity
+being exported. Engine components this host already writes by other paths (renderable, light,
+meta, transform, materials) stay off the Add menu.
 
 A `transform` reference is an **object slot**: you pick an object, and you place it with Blender's
 own move/rotate gizmo. That is the entire point — a destination you can see is a destination you

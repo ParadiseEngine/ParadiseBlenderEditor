@@ -1,29 +1,11 @@
-"""Viewport previews for authored model paths.
+"""Viewport previews for authored model paths, as a CHILD object of the entity.
 
-An entity whose ``model_path`` points at an existing GLB exports as a pure reference: the
-exporter never reads the file, so in Blender the entity renders as an EMPTY and the author is
-placing a box they cannot see. :class:`PARADISE_OT_load_model_preview` fills that gap by
-importing the referenced glTF and attaching its geometry as a CHILD object of the entity.
-
-The child-object shape is the load-bearing decision. Every consumer of scene data --
-``export/mesh.py``, ``export/navmesh.py``, ``live/sync.py``, the GUID handler -- walks ENTITY
-objects, and a preview child is not one, so a level exports identically whether or not
-previews are loaded. (Attaching the mesh to the entity itself would also have worked --
-``resolve_mesh_field`` lets an authored path win over geometry -- but the imported materials
-would land in ``obj.material_slots``, and those slots are exported as the contract's
-``Materials`` list: shipped data would change because someone wanted to look at it.)
-
-Three simplifications, all deliberate:
-
-* **Geometry only.** Authored GLBs under ``data/`` carry KTX2 textures -- the engine's reader
-  rejects PNG/JPEG, so anything that ships has them -- and Blender's importer cannot read
-  KTX2. Rather than pretend otherwise, the preview strips materials: a grey silhouette that
-  is honestly the right shape beats one that claims to be the asset.
-* **Lossy transforms.** Detaching imported objects from their parents goes through a
-  ``matrix_world`` round trip, lossy at ~1e-6 -- exactly what ``export/mesh.py`` goes to
-  lengths to avoid. This mesh is never exported, so nothing keys on its content.
-* **Manual refresh.** Loading again rebuilds a preview whose file changed on disk (mtime
-  recorded at import is compared), but nothing watches files live.
+A child, not the entity's own mesh: every exporter walks entity objects, so a level exports
+identically with or without previews, and imported materials never reach ``material_slots``,
+which the contract exports as ``Materials``. Materials are stripped because shipped GLBs carry
+KTX2 that Blender cannot read; a grey silhouette beats a mesh that claims to be the asset. The
+``matrix_world`` round trip here is lossy at ~1e-6, acceptable only because a preview is never
+exported.
 """
 
 from __future__ import annotations
@@ -40,18 +22,13 @@ from .entity import entity_objects, is_entity
 
 __all__ = ["CHILD_KEY", "classes", "has_preview", "scene_has_previews", "scene_preview_entities"]
 
-#: Absolute source path, stored as an ID property on a preview mesh datablock. Presence of the
-#: key IS the marker that separates preview meshes from authored geometry -- nothing else
-#: distinguishes them, and everything that must ignore previews checks it.
+#: Presence of this key is the only thing that separates a preview mesh from authored geometry.
 SOURCE_KEY = "paradise_preview_source"
 
-#: The source file's mtime at import time, compared on reload to decide staleness.
 MTIME_KEY = "paradise_preview_mtime"
 
-#: Marker on the child OBJECT a preview is attached through.
 CHILD_KEY = "paradise_preview_child"
 
-#: Datablock-name prefix, so previews are recognisable in the outliner's data view.
 PREVIEW_PREFIX = "ParadisePreview/"
 
 
@@ -61,12 +38,7 @@ def has_preview(entity: bpy.types.Object) -> bool:
 
 
 def scene_has_previews(context) -> bool:
-    """Whether any preview child is linked into the current scene.
-
-    Scene-scoped rather than entity-scoped on purpose: deleting an ENTITY in Blender leaves
-    its preview child behind as an ordinary root object, and the panel's Unload must still
-    see it.
-    """
+    """Scene-scoped: deleting an entity leaves its preview child behind as a root object."""
     return any(obj.get(CHILD_KEY) for obj in context.scene.objects)
 
 
@@ -78,11 +50,6 @@ def _purge_orphan_preview_meshes() -> int:
     return len(orphans)
 
 
-# --------------------------------------------------------------------------------------
-# Building the preview mesh
-# --------------------------------------------------------------------------------------
-
-
 def _find_mesh(absolute: str) -> bpy.types.Mesh | None:
     """The preview mesh already built for this path, if any."""
     for mesh in bpy.data.meshes:
@@ -92,12 +59,7 @@ def _find_mesh(absolute: str) -> bpy.types.Mesh | None:
 
 
 def _preview_mesh(absolute: str) -> bpy.types.Mesh | None:
-    """A preview mesh for ``absolute``, reusing or refreshing what already exists.
-
-    Multiple entities referencing the same GLB share one datablock -- the same deduplication
-    the mesh exporter applies to authored geometry. A file that changed since import is
-    rebuilt and swapped into every child still holding the stale copy.
-    """
+    """A preview mesh for ``absolute``, shared across entities and rebuilt when the file changed."""
     existing = _find_mesh(absolute)
     if existing is not None and float(existing.get(MTIME_KEY, 0.0)) >= os.path.getmtime(absolute):
         return existing
@@ -115,13 +77,8 @@ def _preview_mesh(absolute: str) -> bpy.types.Mesh | None:
 
 
 def _build_mesh(absolute: str) -> bpy.types.Mesh | None:
-    """Import one glTF file and collapse it to a single transform-free mesh datablock.
-
-    The result's vertices are in the imported scene's world space, which is entity-local
-    space: the runtime renders a GLB's contents at the entity's ``WorldMatrix`` unchanged,
-    and Blender's importer applies the same Y-up basis change its exporter does. A child at
-    identity local transform therefore displays exactly where the runtime would.
-    """
+    """Import a glTF and collapse it to one transform-free mesh. Vertices end up in entity-local
+    space, so a child at identity displays exactly where the runtime would."""
     existing_objects = {o.name for o in bpy.data.objects}
     existing_meshes = {m.name for m in bpy.data.meshes}
     existing_materials = {m.name for m in bpy.data.materials}
@@ -142,16 +99,12 @@ def _build_mesh(absolute: str) -> bpy.types.Mesh | None:
         bpy.ops.import_scene.gltf(
             filepath=absolute,
             import_pack_images=False,  # KTX2 cannot be packed; copy nothing it cannot read
-            # NOTE: 5.2's importer has no "skip animations" switch, so a file with clips
-            # imports them as actions on armature objects. Those objects are deleted below
-            # and their 0-user actions purged in the finally -- a preview is a statue.
+            # 5.2's importer has no "skip animations" switch; actions are purged in the finally.
         )
-        # Iterate the datablocks themselves: iterating a bpy_prop_collection yields
-        # OBJECTS, while .keys() yields names -- the distinction the lint rule cannot see.
+        # A bpy_prop_collection iterates objects while .keys() yields names; lint cannot tell.
         imported_names = [o.name for o in bpy.data.objects if o.name not in existing_objects]
-        # Datablock names the import created, as the COMPLEMENT of the before-sets: the
-        # importer suffixes on collision (a leftover 0-user "Cube" makes the new one
-        # "Cube.001"), so a name captured naively could belong to the author's own data.
+        # Complement of the before-sets: the importer suffixes on collision, so a captured
+        # name could belong to the author's own data.
         imported_meshes = {m.name for m in bpy.data.meshes} - existing_meshes
         imported_materials = {m.name for m in bpy.data.materials} - existing_materials
         imported_images = {i.name for i in bpy.data.images} - existing_images
@@ -174,18 +127,15 @@ def _build_mesh(absolute: str) -> bpy.types.Mesh | None:
         view_layer.objects.active = meshes[0]
 
         for obj in meshes:
-            # Morph targets arrive as shape keys: they block transform_apply and mean
-            # nothing to a static preview.
+            # Shape keys block transform_apply.
             if obj.data.shape_keys is not None:
                 obj.shape_key_clear()
-            # A multi-user mesh (the importer deduplicates instanced nodes) cannot be
-            # transformed in place; give this object its own copy.
+            # A multi-user mesh cannot be transformed in place.
             if obj.data.users > 1:
                 obj.data = obj.data.copy()
             if obj.parent is not None:
-                # Detach from the imported hierarchy KEEPING world placement, so the bake
-                # below writes each part where the file put it. The matrix_world round trip
-                # is lossy at ~1e-6 -- acceptable only because this mesh is never exported.
+                # matrix_world assignment is lossy at ~1e-6: acceptable only because a
+                # preview is never exported (export/mesh.py must never do this).
                 world = obj.matrix_world.copy()
                 obj.parent = None
                 obj.matrix_world = world
@@ -195,8 +145,7 @@ def _build_mesh(absolute: str) -> bpy.types.Mesh | None:
             bpy.ops.object.join()
         mesh = view_layer.objects.active.data
 
-        # Materials are stripped on purpose: an object's slots become the contract's
-        # Materials list, and the imported ones reference KTX2 images Blender cannot read.
+        # Stripped: slots become the contract's Materials list (module docstring).
         mesh.materials.clear()
 
         mesh[SOURCE_KEY] = absolute
@@ -214,10 +163,8 @@ def _build_mesh(absolute: str) -> bpy.types.Mesh | None:
             orphan = bpy.data.objects.get(name)
             if orphan is not None:
                 bpy.data.objects.remove(orphan, do_unlink=True)
-        # Drop what the import created and nothing else -- a blanket purge of zero-user
-        # datablocks would eat the author's own unpacked-but-unused assets. The kept mesh
-        # carries SOURCE_KEY and is exempt even though the child attaching to it is the
-        # caller's next step, not this function's.
+        # Only what the import created: a blanket zero-user purge would eat the author's own
+        # unused assets.
         for collection, added in (
             (bpy.data.meshes, imported_meshes),
             (bpy.data.materials, imported_materials),
@@ -235,11 +182,7 @@ def _build_mesh(absolute: str) -> bpy.types.Mesh | None:
 
 
 def _attach_child(entity: bpy.types.Object, mesh: bpy.types.Mesh) -> None:
-    """Point the entity's preview child at ``mesh``, creating it on first load.
-
-    Refresh reuses the existing child and only swaps the datablock -- recreating the object
-    every load would churn identity (and any viewport state riding on it) for nothing.
-    """
+    """Point the entity's preview child at ``mesh``, creating it on first load."""
     existing = next((c for c in entity.children if c.get(CHILD_KEY)), None)
     if existing is not None:
         existing.data = mesh
@@ -255,19 +198,10 @@ def _attach_child(entity: bpy.types.Object, mesh: bpy.types.Mesh) -> None:
     child.hide_render = True
 
 
-# --------------------------------------------------------------------------------------
-# Operators
-# --------------------------------------------------------------------------------------
-
-
 def _resolve_source(
     entity: bpy.types.Object, warned: set[str] | None = None
 ) -> str | None:
-    """Absolute path of the entity's authored model, or ``None`` with a warning logged.
-
-    ``warned`` suppresses repeats when a whole scene shares one broken reference -- a
-    scene-wide load of twenty entities pointing at one missing file should say so once.
-    """
+    """Absolute path of the entity's authored model, or ``None`` with one warning per path."""
     seen = warned if warned is not None else set()
     authored = entity.paradise.model_path.strip()
     if not authored.lower().endswith((".glb", ".gltf")):
@@ -317,15 +251,8 @@ def _load_preview(entity: bpy.types.Object, warned: set[str]) -> bool:
 
 
 def _load_preview_guarded(entity: bpy.types.Object, warned: set[str]) -> bool:
-    """`:func:_load_preview` with one asset's UNEXPECTED failure contained.
-
-    The known failure modes -- missing file, non-glTF, an empty file, a Blender op refusing
-    -- are already handled gracefully inside. This guards the unknown ones: a malformed GLB
-    that makes the importer raise something other than RuntimeError. Scene-wide load runs
-    over every referenced entity, and without this guard one bad asset aborts the whole
-    batch and silently skips every entity after it. The builder's ``finally`` has already
-    cleaned up whatever the import left behind by the time this catches.
-    """
+    """:func:`_load_preview` with unexpected failures contained, so one malformed GLB does not
+    abort a scene-wide load and silently skip every entity after it."""
     try:
         return _load_preview(entity, warned)
     except Exception as error:
@@ -385,8 +312,6 @@ class PARADISE_OT_load_model_previews_scene(Operator):
 
         if not loaded:
             return {"CANCELLED"}
-        # Clicking again IS the refresh: an unchanged file reuses its datablock (mtime check
-        # in _preview_mesh), a changed one is rebuilt and swapped into its children.
         log.info(
             f"Previews loaded for {loaded}/{len(targets)} referenced model entit(ies); "
             "geometry only -- Blender cannot read the KTX2 textures the runtime requires.",
@@ -437,10 +362,8 @@ class PARADISE_OT_clear_model_previews_scene(Operator):
         return scene_has_previews(context)
 
     def execute(self, context):
-        # Every object marked as a preview child, not just the ones still parented to a live
-        # entity: deleting an entity orphans its preview as a root object, and this sweep is
-        # the only thing that still recognises it. Snapshot first: removing while iterating
-        # a bpy_prop_collection is undefined.
+        # Every marked child, including ones orphaned by a deleted entity. Snapshot first:
+        # removing while iterating a bpy_prop_collection is undefined.
         targets = [o for o in context.scene.objects if o.get(CHILD_KEY)]
         for obj in targets:
             bpy.data.objects.remove(obj, do_unlink=True)

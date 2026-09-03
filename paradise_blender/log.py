@@ -1,13 +1,5 @@
-"""Logging with message parity against the Godot addon.
-
-Every diagnostic the Godot host emits is prefixed ``[Paradise.Export]``. Keeping the same
-prefix here means a developer grepping build output, or comparing a Blender export against a
-Godot export of the same scene, sees one consistent channel rather than two dialects.
-
-Blender has no ``GD.PushWarning`` equivalent that works outside an operator, so these fall
-back to ``print`` when no operator is available to ``report()`` through. Warnings additionally
-go through ``warnings``-free plain output because Blender's console is where authors actually
-look.
+"""Logging with the Godot host's ``[Paradise.Export]`` prefix, so both exporters share one
+grep-able channel; falls back to ``print`` when no operator can ``report()``.
 """
 
 from __future__ import annotations
@@ -25,12 +17,7 @@ def info(message: str, operator=None) -> None:  # bpy.types.Operator | None
 
 
 def warn(message: str, operator=None) -> None:
-    """A recoverable problem the author should fix. Mirrors ``GD.PushWarning``.
-
-    Used for lossy or unreachable data -- an asset outside ``data/``, a multi-layer collider,
-    a material name collision. The export continues; the affected data does not reach the
-    runtime intact.
-    """
+    """A recoverable problem the author should fix; the export continues. Mirrors ``GD.PushWarning``."""
     print(f"{PREFIX} WARNING: {message}")
     if operator is not None:
         operator.report({"WARNING"}, message)

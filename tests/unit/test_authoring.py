@@ -117,6 +117,7 @@ def leafy() -> authoring.AuthoredComponentSchema:
                     "fields": [
                         {"name": "Mesh", "type": "string", "authoredBy": "mesh"},
                         {"name": "Target", "type": "string", "authoredBy": "entity"},
+                        {"name": "Sprite", "type": "string", "authoredBy": "sprite"},
                         {
                             "name": "Sheet",
                             "type": "string",
@@ -336,17 +337,17 @@ class TestComponentsInTheDocument:
         data_dir = _data_dir_with_engine_schema(tmp_path)
         components = schema.EntityComponentsData(data_dir=data_dir)
         components.add_engine(
-            component_ids.RENDERABLE, schema.RenderableComponentData(mesh="Models/x.glb"))
+            component_ids.MATERIALS, schema.MaterialsComponentData(slots=["materials/x.json"]))
         entry = components.to_json()[0]
-        assert entry["Id"] == component_ids.RENDERABLE
-        assert entry["Type"] == "Paradise.Export.Data.RenderableComponentData"
-        assert entry["Data"]["Mesh"] == "Models/x.glb"
+        assert entry["Id"] == component_ids.MATERIALS
+        assert entry["Type"] == "Paradise.Export.Data.MaterialsComponentData"
+        assert entry["Data"]["Slots"] == ["materials/x.json"]
 
     def test_find_returns_the_entry_for_an_id(self, tmp_path):
         data_dir = _data_dir_with_engine_schema(tmp_path)
         components = schema.EntityComponentsData(data_dir=data_dir)
-        components.add_engine(component_ids.RENDERABLE, schema.RenderableComponentData())
-        assert components.find(component_ids.RENDERABLE) is not None
+        components.add_engine(component_ids.MATERIALS, schema.MaterialsComponentData())
+        assert components.find(component_ids.MATERIALS) is not None
         assert components.find(component_ids.AGENT) is None
 
     def test_an_engine_component_without_a_schema_refuses_rather_than_omitting_the_type(
@@ -357,12 +358,12 @@ class TestComponentsInTheDocument:
         committed. An export is reproducible or it is not."""
         components = schema.EntityComponentsData(data_dir=str(tmp_path))
         with pytest.raises(KeyError, match="authoring schema"):
-            components.add_engine(component_ids.RENDERABLE, schema.RenderableComponentData())
+            components.add_engine(component_ids.MATERIALS, schema.MaterialsComponentData())
 
     def test_engine_components_need_a_data_dir_at_all(self):
         components = schema.EntityComponentsData()
         with pytest.raises(ValueError, match="data_dir"):
-            components.add_engine(component_ids.RENDERABLE, schema.RenderableComponentData())
+            components.add_engine(component_ids.MATERIALS, schema.MaterialsComponentData())
 
 
 
@@ -375,9 +376,9 @@ def _data_dir_with_engine_schema(tmp_path) -> str:
         "version": 3,
         "components": [
             {
-                "id": component_ids.RENDERABLE,
-                "type": "Paradise.Export.Data.RenderableComponentData",
-                "displayName": "Renderable",
+                "id": component_ids.MATERIALS,
+                "type": "Paradise.Export.Data.MaterialsComponentData",
+                "displayName": "Materials",
                 "fields": [],
             },
         ],
@@ -690,8 +691,50 @@ def camera_trigger() -> authoring.AuthoredComponentSchema:
     return authoring.read(TRIGGER_LIKE).components[0]
 
 
+def hosted() -> authoring.AuthoredComponentSchema:
+    """Every remaining host kind: self, light, camera, as a game component would declare them."""
+    document = json.dumps(
+        {
+            "version": 3,
+            "components": [
+                {
+                    "id": "b0000000-0000-4000-8000-00000000000b",
+                    "type": "Game.Hosted",
+                    "displayName": "Hosted",
+                    "fields": [
+                        {"name": "Ident", "type": "string", "authoredBy": "id"},
+                        {"name": "Label", "type": "string", "authoredBy": "name"},
+                        {"name": "Parent", "type": "string", "authoredBy": "parent"},
+                        {"name": "At", "type": "vector3", "authoredBy": "local-position"},
+                        {
+                            "name": "Lamp",
+                            "type": "object",
+                            "authoredBy": "light",
+                            "fields": [
+                                {"name": "Type", "type": "enum", "values": ["Directional", "Point", "Spot"]},
+                                {"name": "Intensity", "type": "float", "default": 1},
+                                {"name": "Color", "type": "color"},
+                            ],
+                        },
+                        {
+                            "name": "Eye",
+                            "type": "object",
+                            "authoredBy": "camera",
+                            "fields": [
+                                {"name": "Fov", "type": "float", "default": 50},
+                                {"name": "Near", "type": "float", "default": 0.1},
+                            ],
+                        },
+                    ],
+                }
+            ],
+        }
+    )
+    return authoring.read(document).components[0]
+
+
 class TestTransformReferences:
-    """The one ``authoredBy`` kind this host authors rather than merely reports."""
+    """Host-object references this host authors rather than merely reports."""
 
     def test_a_pose_reference_is_a_host_ref_not_a_set_of_leaves(self):
         # Same rule every host reference follows: the leaves are what the EXPORTER writes, so
@@ -723,7 +766,7 @@ class TestTransformReferences:
     def test_a_list_of_references_stays_unauthorable_whatever_its_kind(self):
         # `Extras` is an authoredBy:"node" ARRAY, and BOTH halves of that matter. "node" is a kind
         # this host does not implement at all — but the reason this is unauthorable is that it is a
-        # LIST, which is the is_list short-circuit and holds for every kind including the three
+        # LIST, which is the is_list short-circuit and holds for every kind including those
         # this host now bakes. Said explicitly because the test previously claimed Extras was a
         # mesh reference: it is not, and mesh is a kind this host DOES bake, so the old wording
         # would have kept passing if the leaf kinds regressed.
@@ -733,16 +776,50 @@ class TestTransformReferences:
         assert hosts["Extras"].is_list
         assert not hosts["Extras"].is_authorable
 
-    def test_the_three_leaf_kinds_are_authorable_and_carry_their_type(self):
-        # mesh / entity / asset differ from a pose or a shape in SHAPE, not in picker: the
-        # reference IS the value, so there are no leaves to fill and the bake writes at the
+    def test_the_leaf_kinds_are_authorable_and_carry_their_type(self):
+        # mesh / entity / sprite / asset differ from a pose or a shape in SHAPE, not in picker:
+        # the reference IS the value, so there are no leaves to fill and the bake writes at the
         # reference's own path. `leaf_type` is what tells the two families apart.
         hosts = {h.path: h for h in authoring.flatten(leafy())[1]}
 
-        for path in ("Mesh", "Target", "Sheet"):
+        for path in ("Mesh", "Target", "Sprite", "Sheet"):
             assert hosts[path].is_authorable, path
             assert hosts[path].leaf_type == "string", path
             assert hosts[path].bakes == (), path
+            assert hosts[path].stores_slot, path
+
+    def test_self_kinds_are_authorable_and_store_no_slot(self):
+        hosts = {h.path: h for h in authoring.flatten(hosted())[1]}
+
+        for path, kind in (
+            ("Ident", authoring.HOST_ID),
+            ("Label", authoring.HOST_NAME),
+            ("Parent", authoring.HOST_PARENT),
+            ("At", authoring.HOST_LOCAL_POSITION),
+        ):
+            assert hosts[path].kind == kind
+            assert hosts[path].is_authorable
+            assert not hosts[path].stores_slot
+
+    def test_a_light_reference_is_authorable_and_names_what_it_bakes(self):
+        hosts = {h.path: h for h in authoring.flatten(hosted())[1]}
+
+        assert hosts["Lamp"].is_authorable
+        assert hosts["Lamp"].stores_slot
+        assert hosts["Lamp"].bakes == ("Type", "Intensity", "Color")
+
+    def test_a_camera_reference_is_authorable_and_names_what_it_bakes(self):
+        hosts = {h.path: h for h in authoring.flatten(hosted())[1]}
+
+        assert hosts["Eye"].is_authorable
+        assert hosts["Eye"].bakes == ("Fov", "Near")
+
+    def test_an_unassigned_light_or_camera_still_carries_declared_leaves(self):
+        payload = authoring.build_payload(hosted(), {})
+
+        assert payload["Lamp"]["Intensity"] == 1
+        assert payload["Eye"]["Fov"] == 50
+        assert payload["Ident"] is None
 
     def test_an_asset_reference_carries_the_extensions_it_accepts(self):
         # The picker is a file browser, and what it filters on comes off the field rather than
@@ -954,3 +1031,37 @@ class TestEngineIdDrift:
         schema_load_error; repeating it per constant would bury it."""
         authoring._cache.clear()
         assert component_ids.check_engine_ids(str(tmp_path)) == []
+
+
+class TestWidgetUnits:
+    """Each editor maps schema units to its own widget. Blender's mapping lives here."""
+
+    def test_caption_shows_kg_and_leaves_widget_units_off_the_label(self):
+        assert authoring.field_caption("Mass", "kilograms") == "Mass (kg)"
+        assert authoring.field_caption("Near", "meters") == "Near"
+        assert authoring.field_caption("Friction", "unit01") == "Friction"
+        assert authoring.field_caption("Speed", "m/s") == "Speed (m/s)"
+
+    def test_unit01_is_a_factor_and_a_range_is_a_slider(self):
+        friction = authoring.FlatField(path="Friction", type="float", unit="unit01")
+        mass = authoring.FlatField(
+            path="Mass", type="float", unit="kilograms", minimum=0.001, maximum=10000)
+        lives = authoring.FlatField(path="Lives", type="int")
+
+        assert authoring.has_slider(friction)
+        assert authoring.has_slider(mass)
+        assert not authoring.has_slider(lives)
+
+        friction_opts = authoring.numeric_widget_options(friction)
+        assert friction_opts["subtype"] == "FACTOR"
+        assert friction_opts["min"] == 0.0
+        assert friction_opts["max"] == 1.0
+
+        mass_opts = authoring.numeric_widget_options(mass)
+        assert mass_opts["min"] == 0.001
+        assert mass_opts["max"] == 10000
+        assert "subtype" not in mass_opts
+
+        assert authoring.id_subtype("meters") == "DISTANCE"
+        assert authoring.id_subtype("radians") == "ANGLE"
+        assert authoring.id_subtype("kilograms") is None

@@ -1,29 +1,11 @@
-"""Paradise Engine Tools -- author, play, and live-preview Paradise scenes from Blender.
+"""Paradise Engine Tools: author, play and live-preview scenes from Blender (the .blend is truth;
+see #35 for this addon's status beside ``paradise_assets``).
 
-Companion to ``ParadiseGodotEditor``: both write the same engine-neutral scene contract
-(``Paradise.Export``'s ``LevelData``), so a project can be authored in either tool and run by
-the same runtime.
-
-**This module imports no Blender API at module scope.** Everything that needs ``bpy`` is
-imported inside :func:`register`. That is what lets ``paradise_blender.contract`` -- the pure
-contract implementation -- be imported and unit-tested with plain ``pytest``, outside Blender.
-Since Python executes a package's ``__init__`` before any submodule, a single top-level
-``import bpy`` here would make the whole subpackage untestable without Blender, and the
-contract tests are the main defence against silently drifting from the C# implementation.
-
-Registration order is not arbitrary, and :func:`register` is written to make that hard to
-break:
-
-1. **Property-group classes before the pointers that reference them.** Blender resolves
-   ``PointerProperty(type=X)`` at assignment time, so ``X`` must already be registered.
-2. **Nested groups before their containers** -- ``HostReference`` before the entity group
-   that holds a ``CollectionProperty`` of it.
-3. **Handlers last, and removed first on unregister.** A handler that survives unregistration
-   holds a reference to a class Blender has already torn down, and the resulting crash points
-   at the wrong place entirely.
-
-Unregistration runs in exact reverse, including stopping any live-preview session -- a live
-socket, its two worker threads, and its timer would otherwise outlive the addon.
+No ``bpy`` import at module scope: Python runs a package's ``__init__`` before any submodule,
+so one here would make ``paradise_blender.contract`` untestable under pytest, the main defence
+against drifting from the C# contract. Registration order: property groups before the pointers
+that reference them (Blender resolves ``PointerProperty(type=X)`` at assignment), nested groups
+before their containers, handlers last and removed first.
 """
 
 from __future__ import annotations
@@ -32,23 +14,18 @@ from . import log
 
 __all__ = ["register", "unregister"]
 
-# Populated by register() so unregister() tears down exactly what was set up, even if an
-# import list changes between the two calls (an addon reload during development).
+# Populated by register() so unregister() tears down exactly what was set up across a reload.
 _registered_classes: list = []
 _registered_pointer_modules: list = []
 _registered_handler_modules: list = []
 
 
 def _collect():
-    """Import the Blender-dependent modules and return what needs registering.
-
-    Deferred to call time -- see the module docstring for why this is not at module scope.
-    """
+    """Import the Blender-dependent modules at call time (module docstring)."""
     from . import prefs
     from .authoring import authored_components, config_store, material_props, world_props
     from .authoring import collider as authoring_collider
     from .authoring import entity as authoring_entity
-    from .authoring import guid as authoring_guid
     from .authoring import model_preview as authoring_model_preview
     from .authoring import ops as authoring_ops
     from .export import ops as export_ops
@@ -58,13 +35,11 @@ def _collect():
     from .ui import panels
 
     classes = [
-        # Property groups first: the pointer assignments below reference them by type.
         *authoring_entity.classes,
         *authoring_collider.classes,
         *material_props.classes,
         *world_props.classes,
         *prefs.classes,
-        # Then operators, then the panels that invoke them.
         *authoring_ops.classes,
         *authoring_model_preview.classes,
         *authored_components.classes,
@@ -83,7 +58,7 @@ def _collect():
         prefs,
     ]
 
-    handler_modules = [authoring_guid, export_ops, schema_build]
+    handler_modules = [export_ops, schema_build]
 
     return classes, pointer_modules, handler_modules
 
@@ -113,8 +88,7 @@ def register() -> None:
 def unregister() -> None:
     import bpy
 
-    # A running preview owns a socket, two threads, and a timer. Stopping it first means none
-    # of them can call into classes that are about to be unregistered.
+    # Stop the preview first so its threads cannot call into unregistered classes.
     try:
         from .live import session as live_session
 

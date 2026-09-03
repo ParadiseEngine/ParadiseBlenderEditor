@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 
-from paradise_blender.contract import component_ids, matrix, schema, writer
+from paradise_blender.contract import component_ids, schema, well_known, writer
 
 
 class TestLevelData:
@@ -20,7 +20,7 @@ class TestLevelData:
         ]
 
     def test_schema_version_defaults_to_the_pinned_version(self):
-        assert schema.LevelData().schema_version == schema.SCHEMA_VERSION == 5
+        assert schema.LevelData().schema_version == schema.SCHEMA_VERSION == 6
 
     def test_an_object_is_a_bare_component_array(self):
         """The whole of schema v5, in one assertion. An object has no keys of its own, so there is
@@ -29,24 +29,10 @@ class TestLevelData:
         assert document.to_json()["Entities"] == [[]]
 
 
-class TestRenderableComponentData:
-    def test_key_order(self):
-        """Same guard the entity has, for the record the slots moved to in contract v4.
-
-        System.Text.Json writes properties in declaration order, so this list IS the wire shape --
-        and a Blender export has to stay diffable against a Godot one written by the C# record.
-        """
-        assert list(schema.RenderableComponentData().to_json()) == [
-            "Mesh",
-            "MeshNode",
-        ]
-
+class TestMaterialsComponentData:
     def test_slots_are_written_even_when_empty(self):
         """Empty, not absent. The engine's reader distinguishes "no overrides" from "key missing"
-        only if the key is always written.
-
-        On MaterialsComponentData since v5 -- the slots left the renderable, because they are not
-        geometry."""
+        only if the key is always written."""
         assert schema.MaterialsComponentData().to_json()["Slots"] == []
 
     def test_a_null_slot_survives(self):
@@ -58,28 +44,16 @@ class TestRenderableComponentData:
         assert materials.to_json()["Slots"] == ["materials/a.json", None, "materials/c.json"]
 
 
-class TestPlacementComponents:
-    """The two components every host writes for every object it emits.
-
-    They are what the entity record used to state as fields — a name and a world matrix — and the
-    reason they are components is that the record is gone. Their key order is pinned for the same
-    reason every other component's is: System.Text.Json writes properties in declaration order, so
-    this list IS the wire shape, and a Blender export has to stay diffable against a Godot one.
-    """
-
-    def test_name_key_order(self):
-        assert list(schema.NameComponentData().to_json()) == ["Value"]
-
-    def test_transform_key_order(self):
-        assert list(schema.TransformComponentData().to_json()) == ["World"]
-
-    def test_transform_writes_sixteen_floats_column_major(self):
-        """Translation at 12/13/14, which is what "column-major, column-vector" means on the wire.
-        An object written with the translation at 3/7/11 loads at the origin, silently."""
-        world = matrix.trs((1.0, 2.0, 3.0), (0.0, 0.0, 0.0, 1.0), (1.0, 1.0, 1.0))
-        flat = schema.TransformComponentData(world=world).to_json()["World"]
-        assert len(flat) == 16
-        assert flat[12:15] == [1.0, 2.0, 3.0]
+class TestRetiredRecords:
+    def test_the_v5_records_the_engine_dropped_are_gone(self):
+        """v6 declares no authored components; a record here that no game can receive is a trap
+        (#25). Placement is the format's own meta / transform payloads, in well_known."""
+        for name in ("NameComponentData", "TransformComponentData", "RenderableComponentData",
+                     "AgentComponentData", "EntityInteractableComponentData",
+                     "SpriteAnimationComponentData", "SSceneLightData"):
+            assert not hasattr(schema, name), name
+        for name in ("NAME", "TRANSFORM", "INTERACTABLE"):
+            assert not hasattr(component_ids, name), name
 
 
 class TestEnumsSerializeByName:
@@ -103,21 +77,6 @@ class TestEnumsSerializeByName:
 
 
 class TestNormalization:
-    def test_sprite_frame_count_zero_means_the_full_grid(self):
-        sprite = schema.SpriteAnimationComponentData(columns=4, rows=2, frame_count=0)
-        sprite.validate_and_normalize()
-        assert sprite.frame_count == 8
-
-    def test_sprite_frame_count_is_clamped_to_the_grid(self):
-        sprite = schema.SpriteAnimationComponentData(columns=2, rows=2, frame_count=99)
-        sprite.validate_and_normalize()
-        assert sprite.frame_count == 4
-
-    def test_sprite_rejects_non_positive_fps(self):
-        sprite = schema.SpriteAnimationComponentData(fps=0.0)
-        sprite.validate_and_normalize()
-        assert sprite.fps == 10.0
-
     def test_particles_are_capped_at_the_runtime_buffer_size(self):
         """64 is the runtime's per-emitter snapshot buffer, not a style choice -- exceeding
         it would overrun the layout."""
@@ -200,9 +159,10 @@ class TestEnvironment:
 def test_full_document_is_valid_json():
     ground = schema.EntityComponentsData()
     ground.add(schema.AuthoredComponentData(
-        id=component_ids.NAME,
-        type="Paradise.Export.Data.NameComponentData",
-        data=schema.NameComponentData(value="Ground").to_json()))
+        id=well_known.META_ID,
+        type=well_known.META_TYPE,
+        data=well_known.meta_payload(
+            guid="6f0f2a1c-8b3d-4e57-9a24-0d5c7e1b3f88", name="Ground", parent=None)))
 
     sun = schema.EntityComponentsData()
     sun.add(schema.AuthoredComponentData(
@@ -213,5 +173,5 @@ def test_full_document_is_valid_json():
     document = schema.LevelData(entities=[ground, sun])
     parsed = json.loads(writer.dumps(document.to_json()))
 
-    assert parsed["Entities"][0][0]["Data"]["Value"] == "Ground"
+    assert parsed["Entities"][0][0]["Data"]["Name"] == "Ground"
     assert parsed["Entities"][1][0]["Data"]["Type"] == "Directional"

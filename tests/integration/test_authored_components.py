@@ -31,7 +31,8 @@ import bpy  # noqa: E402
 import paradise_blender  # noqa: E402
 from paradise_blender.authoring import authored_components as authored  # noqa: E402
 from paradise_blender.contract import authoring as contract_authoring  # noqa: E402
-from paradise_blender.contract import component_ids  # noqa: E402
+from paradise_blender.contract import component_ids, well_known  # noqa: E402
+from paradise_blender.export.placement import identity  # noqa: E402
 from paradise_blender.export.scene import export_scene  # noqa: E402
 
 
@@ -75,7 +76,12 @@ VOLUME_ID = "3f7f5b6c-0346-4de7-9bf6-0dd4e25ac74c"
 #: record declares under it, these three write at the reference's own path.
 LEAFY_ID = "07f29866-de34-49ef-a2a9-4e71b1d4e250"
 
+#: Self / light / camera field-level host kinds, plus a type-level camera component.
+HOSTED_ID = "a1b2c3d4-e5f6-4789-8abc-def012345678"
+BY_CAMERA_ID = "b2c3d4e5-f6a7-4890-9bcd-ef0123456789"
+
 GAME_IDS = {CREATURE_ID, MARKER_ID, DOORWAY_ID, BODY_ID, VOLUME_ID, LEAFY_ID}
+ALL_GAME_IDS = GAME_IDS | {HOSTED_ID, BY_CAMERA_ID}
 
 # A LAUNCHER's dump, which is the only kind of authoring schema this host reads now: the game's
 # own components AND the engine's, in one document. It used to be a game-only fixture, with the
@@ -86,21 +92,8 @@ GAME_IDS = {CREATURE_ID, MARKER_ID, DOORWAY_ID, BODY_ID, VOLUME_ID, LEAFY_ID}
 SCHEMA = {
     "version": 3,
     "components": [
-        # The three every export writes for every object it emits. They are host-derived rather
-        # than authored in the panel, but they still have to be NAMEABLE: the exporter reads each
-        # engine component's CLR type name out of this document.
-        {
-            "id": component_ids.NAME,
-            "type": "Paradise.Export.Data.NameComponentData",
-            "displayName": "Name",
-            "fields": [{"name": "Value", "type": "string", "default": ""}],
-        },
-        {
-            "id": component_ids.TRANSFORM,
-            "type": "Paradise.Export.Data.TransformComponentData",
-            "displayName": "Transform",
-            "fields": [{"name": "World", "type": "matrix4x4"}],
-        },
+        # Host-derived rather than authored in the panel, but it still has to be NAMEABLE: the
+        # exporter reads each engine component's CLR type name out of this document.
         {
             "id": component_ids.ENVIRONMENT,
             "type": "Paradise.Export.Data.EnvironmentData",
@@ -114,6 +107,43 @@ SCHEMA = {
             "fields": [
                 {"name": "Mesh", "type": "string", "authoredBy": "mesh"},
                 {"name": "Target", "type": "string", "authoredBy": "entity"},
+            ],
+        },
+        {
+            "id": HOSTED_ID,
+            "type": "Game.Hosted",
+            "displayName": "Hosted",
+            "fields": [
+                {"name": "Ident", "type": "string", "authoredBy": "id"},
+                {"name": "Label", "type": "string", "authoredBy": "name"},
+                {
+                    "name": "Lamp",
+                    "type": "object",
+                    "authoredBy": "light",
+                    "fields": [
+                        {"name": "Type", "type": "enum", "values": ["Directional", "Point", "Spot"]},
+                        {"name": "Intensity", "type": "float", "default": 1},
+                    ],
+                },
+                {
+                    "name": "Eye",
+                    "type": "object",
+                    "authoredBy": "camera",
+                    "fields": [
+                        {"name": "Fov", "type": "float", "default": 50},
+                        {"name": "Projection", "type": "enum", "values": ["Perspective", "Orthographic"]},
+                    ],
+                },
+            ],
+        },
+        {
+            "id": BY_CAMERA_ID,
+            "type": "Game.ByCamera",
+            "displayName": "By camera",
+            "authoredBy": "camera",
+            "fields": [
+                {"name": "Fov", "type": "float", "default": 50},
+                {"name": "Near", "type": "float", "default": 0.1},
             ],
         },
         {
@@ -315,6 +345,11 @@ def build_scene() -> None:
     # construction and a per-component conversion does not — the trap CONVENTIONS.md opens with.
     target.scale = (2.0, 3.0, 4.0)
 
+    bpy.ops.object.camera_add(location=(0, -8, 2))
+    camera = bpy.context.active_object
+    camera.name = "ShotCamera"
+    camera.data.angle = math.radians(40.0)
+
 
 def exported_entities() -> dict[str, list]:
     """The exported objects by name, and an object IS its component list since schema v5.
@@ -327,9 +362,9 @@ def exported_entities() -> dict[str, list]:
 
     objects = {}
     for entity in document["Entities"]:
-        payload = payload_for(entity, component_ids.NAME)
-        if payload is not None:
-            objects[payload["Value"]] = entity
+        payload = payload_for(entity, well_known.META_ID)
+        if payload is not None and payload.get(well_known.NAME):
+            objects[payload[well_known.NAME]] = entity
     return objects
 
 
@@ -341,8 +376,8 @@ def main() -> int:
     creature_obj = bpy.data.objects["Creature"]
     document = authored.schema_for_data_dir(DATA_DIR)
     check(authored.schema_load_error(DATA_DIR) is None, "the schema file loads")
-    game_ids = {c.id for c in document.components if c.id in GAME_IDS}
-    check(game_ids == GAME_IDS, "every game component is read")
+    game_ids = {c.id for c in document.components if c.id in ALL_GAME_IDS}
+    check(game_ids == ALL_GAME_IDS, "every game component is read")
     check(
         authored.component_by_id(document, component_ids.RIGIDBODY) is not None,
         "the launcher's dump carries the engine's components beside the game's",
@@ -350,8 +385,9 @@ def main() -> int:
     check(
         not authored.is_authorable(authored.component_by_id(document, component_ids.RENDERABLE))
         and not authored.is_authorable(authored.component_by_id(document, component_ids.LIGHT))
-        and authored.is_authorable(authored.component_by_id(document, component_ids.AGENT)),
-        "host-owned and host-baked engine components are not offered; plain ones are",
+        and authored.is_authorable(authored.component_by_id(document, component_ids.AGENT))
+        and authored.is_authorable(authored.component_by_id(document, BY_CAMERA_ID)),
+        "host-owned engine components are not offered; game host-kind components are",
     )
 
     # -- storage ------------------------------------------------------------------------
@@ -713,10 +749,11 @@ def main() -> int:
         "a mesh reference bakes the data-relative GLB the referenced object exported to",
         f"payload={baked}",
     )
+    creature_meta = payload_for(exported_entities()["Creature"], well_known.META_ID)
     check(
-        baked is not None and baked["Target"] == "Creature",
-        "an entity reference bakes the target's NAME, which is what every object carries",
-        f"payload={baked}",
+        baked is not None and baked["Target"] == identity("Creature") == creature_meta["Guid"],
+        "an entity reference bakes the target's meta.Guid -- the one identity function (#27)",
+        f"payload={baked} meta={creature_meta}",
     )
 
     leafy[authored.value_key(LEAFY_ID, "Target")] = "NoSuchObject"
@@ -726,6 +763,45 @@ def main() -> int:
         dangling_target is not None and dangling_target["Target"] is None,
         "a dangling entity reference exports empty rather than the name nobody could resolve",
         f"payload={dangling_target}",
+    )
+
+    # -- self / light / camera -----------------------------------------------------------
+    hosted = authored.component_by_id(document, HOSTED_ID)
+    authored.enable_component(creature_obj, hosted)
+    check(
+        authored.value_key(HOSTED_ID, "Ident") not in creature_obj.keys(),  # noqa: SIM118
+        "a self kind stores no picker key",
+    )
+    creature_obj[authored.value_key(HOSTED_ID, "Lamp")] = "OwnedSun"
+    creature_obj[authored.value_key(HOSTED_ID, "Eye")] = "ShotCamera"
+    authored.enable_component(creature_obj, authored.component_by_id(document, BY_CAMERA_ID))
+    creature_obj[authored.value_key(BY_CAMERA_ID, contract_authoring.HOST_SOURCE_PATH)] = "ShotCamera"
+    export_scene(bpy.context.scene)
+    hosted_payload = payload_for(exported_entities()["Creature"], HOSTED_ID)
+    creature_meta = payload_for(exported_entities()["Creature"], well_known.META_ID)
+    check(
+        hosted_payload is not None
+        and hosted_payload["Ident"] == creature_meta["Guid"]
+        and hosted_payload["Label"] == "Creature",
+        "self kinds bake this object's meta.Guid and name",
+        f"payload={hosted_payload}",
+    )
+    check(
+        hosted_payload is not None and hosted_payload["Lamp"]["Type"] == "Directional",
+        "a light reference bakes the lamp it points at",
+        f"payload={hosted_payload}",
+    )
+    check(
+        hosted_payload is not None and abs(hosted_payload["Eye"]["Fov"] - 40.0) < 0.01
+        and hosted_payload["Eye"]["Projection"] == "Perspective",
+        "a camera reference bakes the lens it points at",
+        f"payload={hosted_payload}",
+    )
+    by_camera = payload_for(exported_entities()["Creature"], BY_CAMERA_ID)
+    check(
+        by_camera is not None and abs(by_camera["Fov"] - 40.0) < 0.01,
+        "a type-level camera merges the baked lens onto the payload",
+        f"payload={by_camera}",
     )
 
     # Back to the actor: an operator polls the ACTIVE object, and the scalar-shape block above
@@ -858,6 +934,8 @@ def main() -> int:
     # -- removal cleans up --------------------------------------------------------------
     authored.disable_component(creature_obj, CREATURE_ID)
     authored.disable_component(creature_obj, MARKER_ID)
+    authored.disable_component(creature_obj, HOSTED_ID)
+    authored.disable_component(creature_obj, BY_CAMERA_ID)
     leftovers = [
         key
         for key in creature_obj.keys()  # noqa: SIM118 -- bpy Object is not a dict

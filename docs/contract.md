@@ -30,7 +30,7 @@ Godot export of the same scene):
 
 ```jsonc
 {
-  "SchemaVersion": 5,
+  "SchemaVersion": 6,
   "Entities": [
     [ { "Id": "<component guid>", "Type": "<CLR name>", "Data": { /* … */ } }, /* … */ ],
     /* one array per object */
@@ -44,8 +44,8 @@ either a component now or gone:
 
 | was | is |
 |---|---|
-| `Id` | `NameComponentData` — for diagnostics only; not an identity |
-| `WorldMatrix` | `TransformComponentData` — one placement, stated once |
+| `Id` | the format's `meta` payload (`Guid`, `Name`, `Parent`) — since v6 an identity again, and the hierarchy with it |
+| `WorldMatrix` | the format's `transform` payload — LOCAL position, rotation, scale; composition is the loader's |
 | `IsActive: false` | the object is not written at all |
 | `Camera` (document) | gone — it was the editor's viewport, and it framed any scene authoring no rig |
 | `Lighting.States[n].Environment` | `EnvironmentData`, on an object of its own (the shadow settings moved with it) |
@@ -61,8 +61,9 @@ Encoding rules, all enforced by `contract/writer.py`:
 - **Matrices are 16 floats, column-major, column-vector layout** — translation lands at flat
   indices **12/13/14**. (A uniformly scaled entity at the origin reads
   `[s,0,0,0, 0,s,0,0, 0,0,s,0, 0,0,0,1]`.)
-- **`Color32` is `{"r","g","b","a"}`** with channels quantized to bytes, so values are `n/255`.
-  Precision loss is the contract, not an approximation on our side.
+- **`Color32` is written as `"#RRGGBBAA"`**, channels quantized to bytes, so values are `n/255`.
+  Precision loss is the contract, not an approximation on our side. (The C# converter also
+  accepts the older `{"r","g","b","a"}` object form on read; the writer emits the string.)
 - **Enums serialize by name** (`"Box"`, `"Dynamic"`, `"Sprite"`).
 - **Floats are float32**, printed with shortest-round-trip precision for 32 bits.
 - **Writes are atomic** (temp file + rename), so a reader never sees a half-written document.

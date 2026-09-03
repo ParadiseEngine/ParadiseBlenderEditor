@@ -79,10 +79,9 @@ def write_authoring_schema() -> None:
     the scene) whose CLR type names are read out of it. That is the correct behaviour and exactly
     what a real project sets up by building its launcher; this test has to set it up too.
     """
-    bridge = os.path.join(REPO, "tools", "ParadiseBlenderBridge", "ParadiseBlenderBridge.csproj")
-    printed = subprocess.run(
-        ["dotnet", "run", "--project", bridge, "--", "engine-schema"],
-        capture_output=True, text=True, check=True, cwd=REPO).stdout
+    fixture = os.path.join(REPO, "tests", "fixtures", "engine-authoring-schema.json")
+    with open(fixture, encoding="utf-8") as handle:
+        printed = handle.read()
     os.makedirs(DATA_DIR, exist_ok=True)
     with open(os.path.join(DATA_DIR, "authoring-schema.json"), "w", encoding="utf-8") as file:
         file.write(printed)

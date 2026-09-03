@@ -1,31 +1,9 @@
-"""Externalize a GLB's embedded images as KTX2 sidecars.
-
-**This is the missing half of the engine's texture contract.** The engine's glTF reader rejects
-PNG/JPEG and reads textured meshes through an ``externalImageResolver`` that maps image URIs to
-sidecar ``.ktx2`` files next to the GLB — the runtime hosts already pass that resolver. But
-Blender's exporter can only EMBED images into a GLB; nothing produced the sidecar layout, so a
-textured mesh either shipped megabytes of PNG the runtime cannot load, or shipped stripped.
-
-:func:`externalize` closes the gap, run on each mesh GLB right after export:
-
-1. every embedded PNG/JPEG image is transcoded to ``<glb stem>.<image name>.ktx2`` beside the
-   GLB (through :mod:`.ktx`, which picks sRGB vs linear from the image NAME — names like
-   ``T_Superhero_Male_Normal`` come through the exporter intact, which is what keeps normal and
-   roughness maps out of sRGB);
-2. the image entry is rewritten to an external ``uri`` pointing at the sidecar;
-3. the now-orphaned bufferViews are dropped and the BIN chunk compacted — the point of the
-   exercise is a small GLB, not a GLB that merely stopped referencing its dead bytes.
-
-Compaction is the delicate part: bufferViews are referenced BY INDEX from accessors, images,
-and sparse accessors, so removing entries renumbers everything after them. The rewrite walks
-the whole document for ``bufferView`` keys rather than enumerating the schema, so an extension
-that references a bufferView keeps working.
-
-**Transcoding is the single most expensive thing an export does** -- 36.5 s of a measured 40 s
-ShiningPie export, one 2048² UASTC encode costing ~2.7 s -- and most of it is redundant twice
-over: a dozen props share one atlas, and a re-export re-encodes images that did not change. Both
-disappear through :mod:`.cache`, keyed on the image bytes and the encode's command line, which
-turns a repeat encode into a file copy.
+"""Externalize a GLB's embedded images as ``<glb stem>.<image name>.ktx2`` sidecars, the layout
+the engine's ``externalImageResolver`` reads, since Blender can only embed. The image NAME
+survives so :mod:`.ktx` can pick sRGB vs linear from it. Orphaned bufferViews are dropped and
+the BIN compacted; references are renumbered by walking every ``bufferView`` key rather than
+the schema, so extensions keep working. Transcoding was 36.5 s of a 40 s ShiningPie export
+(~2.7 s per 2048² UASTC encode), hence :mod:`.cache`.
 """
 
 from __future__ import annotations
@@ -41,7 +19,6 @@ from .cache import ArtifactCache, digest
 
 __all__ = ["external_image_uris", "externalize"]
 
-#: Cache namespace for transcoded sidecars.
 CACHE_KIND = "ktx2"
 
 _GLB_MAGIC = 0x46546C67
@@ -56,17 +33,9 @@ def externalize(
     cache: ArtifactCache | None = None,
     force: bool = False,
 ) -> int:
-    """Rewrite ``glb_path`` in place. Returns the number of images externalized.
-
-    A GLB without embedded raster images is returned untouched (0). Failures transcode nothing
-    and leave the GLB as exported — the runtime then reports the PNG rejection loudly, which
-    beats a half-rewritten file.
-
-    ``cache`` reuses an earlier encode of the same image bytes under the same flags; ``force``
-    re-encodes and refreshes the cache rather than reading it. A cache hit skips the encode only
-    — the URI rewrite and buffer compaction still run, because the GLB has just been re-exported
-    with its images embedded again.
-    """
+    """Rewrite ``glb_path`` in place; returns images externalized. A failure leaves the GLB as
+    exported, so the runtime's PNG rejection is loud rather than a half-rewritten file. A cache
+    hit skips only the encode: the GLB was just re-exported with images embedded again."""
     parsed = _read_glb(glb_path)
     if parsed is None:
         log.warn(f"'{glb_path}' is not a GLB; textures left as exported.")
@@ -81,6 +50,7 @@ def externalize(
     externalized = 0
     reused = 0
     dead_views: set[int] = set()
+    taken: set[str] = set()
     for index, image in enumerate(images):
         view_index = image.get("bufferView")
         extension = _IMAGE_MIME.get(image.get("mimeType", ""))
@@ -91,15 +61,19 @@ def externalize(
         start = view.get("byteOffset", 0)
         raw = bytes(bin_chunk[start : start + view["byteLength"]])
 
-        # The sidecar keeps the IMAGE name: ktx.is_linear classifies by name tokens, and the
-        # runtime resolver only needs the URI to exist next to the GLB.
+        # The sidecar keeps the IMAGE name: ktx.is_linear classifies by name tokens. Two
+        # images whose names differ only in unsafe characters would share one sidecar, so the
+        # second gets the image index.
         name = image.get("name") or f"image{index}"
-        sidecar = f"{stem}.{_safe(name)}.ktx2"
+        safe = _safe(name)
+        if safe in taken:
+            safe = f"{safe}.{index}"
+        taken.add(safe)
+        sidecar = f"{stem}.{safe}.ktx2"
         sidecar_path = os.path.join(directory, sidecar)
 
-        # The source filename is what decides sRGB vs linear vs --normal-mode, so the key is
-        # built from the same name the transcode will see, via the encode's own argv.
-        source_name = f"{_safe(name)}{extension}"
+        # Keyed on the argv the transcode will see, which the filename decides.
+        source_name = f"{safe}{extension}"
         key = digest(raw, ktx.encode_signature(source_name, transcoder))
 
         if not force and cache is not None and cache.fetch(CACHE_KIND, key, sidecar_path):
@@ -131,13 +105,8 @@ def externalize(
 
 
 def external_image_uris(glb_path: str) -> list[str]:
-    """The external image URIs a GLB references, i.e. its KTX2 sidecars.
-
-    A GLB is the only place a live artifact is named outside the JSON contract, so this is what
-    lets :mod:`.prune` tell a sidecar still in use from one left behind by a material edit.
-    Unreadable or non-GLB files return nothing, and a caller deleting things must read that as
-    "no information", never as "references nothing".
-    """
+    """A GLB's external image URIs (its sidecars). An unreadable file returns nothing, which a
+    deleting caller must read as "no information", never "references nothing"."""
     parsed = _read_glb(glb_path)
     if parsed is None:
         return []
@@ -187,8 +156,7 @@ def _compact(document: dict, dead_views: set[int], bin_chunk: bytes, glb_path: s
         remap[index] = len(kept)
         start = view.get("byteOffset", 0)
         data = bin_chunk[start : start + view["byteLength"]]
-        # Preserve each view's 4-byte alignment: accessor component types require it, and the
-        # exporter aligned the originals.
+        # Accessor component types require 4-byte alignment.
         padding = (-cursor) % 4
         pieces.append(b"\x00" * padding)
         cursor += padding

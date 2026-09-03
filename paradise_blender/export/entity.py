@@ -1,24 +1,17 @@
-"""One Blender object -> its authored components.
+"""One Blender object -> its authored components, without its placement.
 
-Port of ``SceneDataExporter.ExportEntity`` / ``BuildComponents``, against schema v5 — where an
-object in the document IS a list of components and there is no entity record at all.
+Port of ``SceneDataExporter.ExportEntity`` / ``BuildComponents`` against schema v6: an object in
+the document IS a list of ``{Id, Type, Data}`` components and nothing else. Identity and placement
+are components too -- the format's own ``meta`` (guid, name, parent guid) and ``transform``
+(LOCAL position, rotation, scale) -- but they are NOT built here. A local transform names a
+parent, and the parent is the nearest ancestor that is itself exported, which cannot be known per
+object: an author may park things under an empty that authors nothing. :mod:`.placement`
+resolves that once over the whole exported set, after this module has decided which objects
+survive.
 
-What that removed, and it is most of what this module used to do: the object's id, stable id,
-display name, kind, spawn phase, active flag, prefab provenance (five fields), initial animation,
-parent link, three decomposed local transform fields and two matrices, and an override table. Two
-of those survive as ordinary components — the NAME, because a runtime refusal has to be able to
-say which object it is about, and the world TRANSFORM, because anything that exists is somewhere.
-The rest were written by this host and read by nobody.
-
-The deliberate consequence: an object that authors nothing is not exported. It used to be, as a
-positioned empty with an empty component list — a row in the document that meant "an author
-marked this and then said nothing about it", which no runtime can act on.
-
-One deviation from the Godot host is gone with the parent link. This module used to compute the
-local transform relative to the nearest ENTITY ancestor rather than the immediate parent, because
-Godot writes the node's own position while declaring the nearest entity ancestor as the parent,
-and the two disagree whenever a plain Node3D sits between them. There is no local transform and no
-parent now: an object's placement is stated in world space, once.
+An object that authors nothing is therefore not exported at all. A positioned empty with no
+components would be a row that says "an author marked this and then said nothing about it",
+which no runtime can act on.
 """
 
 from __future__ import annotations
@@ -32,35 +25,14 @@ from ..contract.schema import (
     ColliderComponentData,
     EntityComponentsData,
     MaterialsComponentData,
-    NameComponentData,
     PhysicsBodyType,
     RigidbodyComponentData,
-    TransformComponentData,
 )
 from ..paths import ExportPaths
 from .collider import build_colliders
 from .light import export_light
-from .transform import to_contract_matrix
 
-__all__ = ["export_entity", "placement_components"]
-
-
-def placement_components(obj: bpy.types.Object, components: EntityComponentsData) -> None:
-    """The two things this host says about every object it writes: what it is called, and where
-    it stands.
-
-    Separate and public because the scene walk uses it for objects that are not authored entities
-    at all — a lamp, the scene's environment — and those need naming and placing by exactly the
-    same rule. A second spelling of "write a Name and a Transform" is a second thing that can
-    disagree about the matrix convention.
-    """
-    components.add_engine(component_ids.NAME, NameComponentData(value=obj.name))
-    # The CONVERTED matrix, not one rebuilt from a decomposition. The entity record used to carry
-    # both a decomposed pose and a matrix, and kept them consistent by writing the matrix as
-    # trs(decompose(...)) -- lossy for a sheared transform, and the only reason to do it was that
-    # the two had to agree. With one value there is nothing to agree with, so it is exact.
-    components.add_engine(
-        component_ids.TRANSFORM, TransformComponentData(world=to_contract_matrix(obj.matrix_world)))
+__all__ = ["export_entity"]
 
 
 def export_entity(
@@ -71,19 +43,24 @@ def export_entity(
 ) -> EntityComponentsData | None:
     """This object's components, or None when it authors nothing worth a row in the document.
 
-    "Nothing" means nothing BEYOND the name and the transform this host writes unconditionally.
-    An empty an author marked as an entity and never gave a mesh, a collider or a component is
-    not a statement about the world; the runtime would build an entity with no shape for it and
-    then have nothing to do with it.
+    "Nothing" still means nothing BEYOND the identity and the placement this host writes for every
+    object it emits. An empty an author marked as an entity and never gave a mesh, a collider or a
+    component is not a statement about the world; the runtime would build an entity with no shape
+    for it and then have nothing to do with it.
+
+    **The placement is no longer added here**, so the emptiness test is simply "did anything get
+    added" rather than "more than the two this host prepends". Since v6 an object's transform is
+    LOCAL and names a parent, so it cannot be built until the export knows which objects are being
+    written -- an object may hang from an ancestor that authors nothing and is therefore absent
+    from the document. :class:`.placement.Placement` answers that once, over the whole set, and
+    the scene walk applies it to the survivors.
     """
     components = EntityComponentsData(data_dir=paths.data_dir)
-    placement_components(obj, components)
-    placed = len(components.components)
 
     _build_derived(obj, paths, materials, meshes, components)
     _apply_authored_components(obj, components, paths, meshes)
 
-    return components if len(components.components) > placed else None
+    return components if components.components else None
 
 
 def _build_derived(

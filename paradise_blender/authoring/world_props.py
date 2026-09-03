@@ -1,21 +1,7 @@
-"""Environment parameters the contract carries that Blender has no equivalent for.
-
-``EnvironmentData`` is shaped around Godot's ``Environment`` resource: a two-part procedural
-sky gradient, screen-space AO, glow, and fog, each with Godot's specific parameters. Blender
-models none of those the same way -- its world is an arbitrary shader node tree, its AO and
-bloom moved between EEVEE versions, and its "fog" is a volumetric or a mist pass.
-
-Rather than guess a mapping from whatever nodes happen to be in the world tree, the parts with
-no honest Blender source are authored explicitly here. The parts Blender *does* express
-reliably are read from it instead and are deliberately absent from this group:
-
-* tone mapping and exposure -- from ``scene.view_settings`` (see :mod:`..export.world`)
-* the flat background colour -- from the world's Background node
-* sun direction, colour, and energy -- from the scene's sun lamp
-
-The sky gradient fields mirror Godot's ``ProceduralSkyMaterial`` field for field, so a Blender
-scene can be dialled in to match a Godot scene exactly. That is what makes the cross-host
-parity fixture possible.
+"""Environment parameters Blender has no honest source for (Godot's sky gradient, SSAO, glow,
+fog), authored explicitly. Tone mapping, background and sun are read from Blender instead and
+are deliberately absent here. The sky fields mirror ``ProceduralSkyMaterial`` field for field,
+which is what makes the cross-host parity fixture possible.
 """
 
 from __future__ import annotations
@@ -96,9 +82,7 @@ class ParadiseWorldProperties(PropertyGroup):
     )
     sun_curve: FloatProperty(name="Sun Curve", default=0.15, min=0.0001)  # type: ignore[valid-type]
 
-    # -- Post-processing -----------------------------------------------------------------
-    # EEVEE's AO and bloom settings moved between 4.1 and 4.2 (EEVEE Next), so reading them
-    # would break across Blender versions. Authored explicitly instead.
+    # -- Post-processing (EEVEE's AO/bloom moved between 4.1 and 4.2; not read) ------------
 
     ssao_enabled: BoolProperty(name="SSAO", default=False)  # type: ignore[valid-type]
     ssao_radius: FloatProperty(name="Radius", default=1.0, min=0.0)  # type: ignore[valid-type]

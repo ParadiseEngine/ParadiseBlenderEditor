@@ -1,26 +1,15 @@
-"""Puts an authored engine-component payload where the runtime expects to find it.
+"""The contract's own normalization of two authored payloads, applied on the way out.
 
-Python mirror of ``Paradise.Export.Data.AuthoredComponentRouter``, for the subset of engine
-components this host authors through the schema. An editor knows only ids and JSON — it has no
-idea that the rigidbody component belongs in ``Components.Rigidbody`` — so the mapping lives on
-the contract, where both halves can see it.
+This used to be a router: a mirror of ``AuthoredComponentRouter`` that placed each engine
+component in its typed slot. Schema v5 deleted the slots, so every payload now rides verbatim
+under its id and the only thing left to do here is what the slots used to do implicitly --
+clamp and derive the fields whose rules live on the typed record (an emitter's frame count from
+its grid, an audio emitter's attenuation). Nothing on the READING side calls
+``ValidateAndNormalize``, so if the editor did not do it, nobody would.
 
-Components are named in words below and spelled as GUIDs in the code, and the ids come from
-:mod:`.component_ids` so there is one place they are written down. A component's id says nothing
-about what it is, which is exactly why the prose has to.
-
-The subset is deliberate, and the split is this host's, not the schema's:
-
-* **Routed here** (plain fields, authored in the Components panel): agent, rigidbody,
-  audio-emitter, particle-emitter.
-* **Host-derived** (this host reads them off real Blender data, so authoring them as a form would
-  fight the pipeline): the object's name, its transform, its material slots, and the lamp
-  datablock's light. Interactable is NOT among them — it declares no array and no ``authoredBy``,
-  so it is an ordinary form component like any other.
-
-Payloads arrive as the WIRE dicts :func:`.authoring.build_payload` produces — schema defaults
-already filled, enums as member names, colors as ``{r,g,b,a}`` — so this module only maps
-shapes, never invents values.
+Payloads arrive as the WIRE dicts :func:`.authoring.build_payload` produces -- schema defaults
+already filled, enums as member names, colors as ``{r,g,b,a}`` -- so this module only
+normalizes shapes, never invents values.
 
 No ``bpy`` import: pure data, unit-tested standalone.
 """

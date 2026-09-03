@@ -15,6 +15,7 @@ import json
 import os
 
 from . import well_known
+from .project import SCHEMA_CANDIDATES
 
 __all__ = [
     "EDITABLE_TYPES",
@@ -41,11 +42,6 @@ __all__ = [
     "load",
 ]
 
-#: Where the game's dump is looked for, relative to the project root, in order. ``.editor/`` is
-#: where a launcher build writes it now (the editor cache: a function of the game's records, so a
-#: ``paradise assets clean`` must not take it with ``build/``); the other two are older layouts,
-#: kept so a checkout that has not rebuilt since keeps its vocabulary.
-_CANDIDATES = (".editor/authoring-schema.json", "build/authoring-schema.json", "data/authoring-schema.json")
 
 EDITABLE_TYPES = frozenset({
     "bool", "int", "float", "string", "enum", "vector2", "vector3", "quaternion", "color",
@@ -343,7 +339,7 @@ _CACHE: dict[str, tuple[str, int, int, Vocabulary]] = {}
 def load(project_root: str) -> Vocabulary:
     """Read the game's dump, or return an empty vocabulary when there is none. Cached on the
     dump's ``(mtime, size)``, so a rebuild still shows up without reopening."""
-    for candidate in _CANDIDATES:
+    for candidate in SCHEMA_CANDIDATES:
         path = os.path.join(project_root, candidate.replace("/", os.sep))
         try:
             stat = os.stat(path)

@@ -22,7 +22,9 @@ from .host import (
     resolve_cli_command,
     resolve_runtime_command,
     run_cli,
+    schema_build_stage,
     start_cli,
+    start_schema_build,
 )
 
 __all__ = ["classes"]
@@ -369,8 +371,67 @@ def status() -> list[tuple[str, str]]:
     return problems
 
 
+class PARADISE_ASSETS_OT_build_schema(_CliOperator, Operator):
+    """Build the runtime host so it dumps the game's component schema into .editor/"""
+
+    bl_idname = "paradise_assets.build_schema"
+    bl_label = "Build Game Schema"
+    bl_options = {"REGISTER"}
+    verb = "Schema build"
+
+    @classmethod
+    def poll(cls, context) -> bool:
+        return store.read_state(context.scene) is not None and schema_build_stage() is not None
+
+    def execute(self, context):
+        # Not the CLI: the schema is a function of the game's C# records and only the game's
+        # own launcher build can write it, so this runs `dotnet build` on the configured host.
+        found = _project(self)
+        if found is None:
+            return {"CANCELLED"}
+        self._layout, self._document_path = found
+
+        if not _modal_possible(context):
+            stage = schema_build_stage()
+            if stage is None:
+                self.report({"ERROR"}, "Runtime Host is not a csproj; nothing to build")
+                return {"CANCELLED"}
+            job = start_schema_build(self._layout.root)
+            result = None
+            while job is not None and result is None:
+                time.sleep(POLL_INTERVAL)
+                result = job.poll()
+            if result is None:
+                self.report({"ERROR"}, "Runtime Host is not a csproj; nothing to build")
+                return {"CANCELLED"}
+            return self.finished(context, result)
+
+        self._job = start_schema_build(self._layout.root)
+        if self._job is None:
+            self.report({"ERROR"}, "Runtime Host is not a csproj; nothing to build")
+            return {"CANCELLED"}
+
+        window_manager = context.window_manager
+        self._timer = window_manager.event_timer_add(POLL_INTERVAL, window=context.window)
+        window_manager.modal_handler_add(self)
+        return {"RUNNING_MODAL"}
+
+    def finished(self, context, result) -> set[str]:
+        if not result.ok:
+            return self._report_failure(result)
+        schema = os.path.join(self._layout.editor, project.SCHEMA_FILE_NAME)
+        if not os.path.isfile(schema):
+            self.report({"ERROR"}, f"The build succeeded but wrote no {schema}; is ParadiseAuthoringSchemaPath set?")
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"Schema dumped to {schema}")
+        for area in context.screen.areas:
+            area.tag_redraw()
+        return {"FINISHED"}
+
+
 classes = (
     PARADISE_ASSETS_OT_play,
+    PARADISE_ASSETS_OT_build_schema,
     PARADISE_ASSETS_OT_build,
     PARADISE_ASSETS_OT_verify,
     PARADISE_ASSETS_OT_clean,

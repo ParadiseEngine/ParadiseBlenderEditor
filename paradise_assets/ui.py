@@ -171,8 +171,11 @@ class PARADISE_ASSETS_PT_object(_AssetsPanel, Panel):
         layout.operator("paradise_assets.add_component", icon="ADD")
 
         if not vocabulary:
-            # Not a failure: a fresh clone has no dump until the launcher is built once.
-            layout.label(text="No game schema — build the launcher to edit game fields.", icon="INFO")
+            # Not a failure: a fresh clone has no dump until the launcher is built once, and a
+            # `clean` that took .editor/ is back in that state. The button is that build.
+            box = layout.box()
+            box.label(text="No game schema — build the launcher to edit game fields.", icon="INFO")
+            box.operator("paradise_assets.build_schema", icon="MOD_BUILD")
 
         if not components:
             layout.label(text="No components.")

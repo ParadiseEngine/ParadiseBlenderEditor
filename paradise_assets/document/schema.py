@@ -9,10 +9,10 @@ from __future__ import annotations
 import json
 import os
 
+from .project import SCHEMA_CANDIDATES
+
 __all__ = ["MeshFields", "load"]
 
-#: Where a dumped schema is looked for, relative to the project root, in order.
-_CANDIDATES = ("build/authoring-schema.json", "data/authoring-schema.json")
 
 
 class MeshFields:
@@ -39,7 +39,7 @@ class MeshFields:
 
 def load(project_root: str) -> MeshFields:
     """Read the game's schema dump, or return the fallback when there is none."""
-    for candidate in _CANDIDATES:
+    for candidate in SCHEMA_CANDIDATES:
         path = os.path.join(project_root, candidate.replace("/", os.sep))
         if not os.path.isfile(path):
             continue

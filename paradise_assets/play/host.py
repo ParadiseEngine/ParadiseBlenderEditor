@@ -141,6 +141,37 @@ def _cli_csproj() -> str | None:
     return None
 
 
+def _runtime_csproj() -> str | None:
+    """The configured runtime host when it is a csproj, else ``None``: only a build of the
+    game's own launcher can dump its schema, and a prebuilt executable has no build to run."""
+    configured = _preference("runtime_host").strip()
+    if not configured:
+        return None
+    resolved = os.path.realpath(os.path.expanduser(configured))
+    if resolved.endswith(".csproj") and os.path.exists(resolved):
+        return resolved
+    return None
+
+
+def schema_build_stage() -> list[str] | None:
+    """``dotnet build <runtime host csproj>``, or ``None`` when there is nothing to build. The
+    launcher's post-build target writes ``.editor/authoring-schema.json``; this is how the
+    addon gets a schema back after ``clean`` took ``.editor/``, or on a clone never built."""
+    project = _runtime_csproj()
+    if project is None:
+        return None
+    dotnet = shutil.which("dotnet") or _well_known_dotnet()
+    if dotnet is None:
+        return None
+    return [dotnet, "build", project, "-v", "q", "--nologo"]
+
+
+def start_schema_build(cwd: str) -> CliJob | None:
+    """Start the launcher build without waiting; ``None`` when there is nothing to build."""
+    stage = schema_build_stage()
+    return None if stage is None else CliJob([stage], cwd)
+
+
 def ensure_cli_built() -> str | None:
     """Compile the CLI csproj if ``--no-build`` would have nothing to run; a string is why not."""
     project = _cli_csproj()

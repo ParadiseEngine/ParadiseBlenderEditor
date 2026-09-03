@@ -8,12 +8,30 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-__all__ = ["ASSETS_DIR", "BUILD_DIR", "EDITOR_DIR", "MANIFEST_NAME", "ProjectLayout", "locate"]
+__all__ = [
+    "ASSETS_DIR", "BUILD_DIR", "EDITOR_DIR", "MANIFEST_NAME", "SCHEMA_CANDIDATES", "SCHEMA_FILE_NAME",
+    "ProjectLayout", "locate",
+]
 
 ASSETS_DIR = "assets"
 EDITOR_DIR = ".editor"
+
 BUILD_DIR = "build"
 MANIFEST_NAME = "project.toml"
+
+SCHEMA_FILE_NAME = "authoring-schema.json"
+
+#: Where the game's schema dump is looked for, relative to the project root, in order. A
+#: launcher build writes it into ``.editor/`` (the editor cache: a function of the game's
+#: records, not of ``assets/``, so ``paradise assets clean`` must not take it with ``build/``);
+#: the other two are older layouts, kept so a checkout that has not rebuilt since keeps its
+#: vocabulary. Both schema readers share this tuple so a fourth location cannot reach one and
+#: not the other.
+SCHEMA_CANDIDATES = (
+    EDITOR_DIR + "/" + SCHEMA_FILE_NAME,
+    BUILD_DIR + "/" + SCHEMA_FILE_NAME,
+    "data/" + SCHEMA_FILE_NAME,
+)
 
 
 @dataclass(frozen=True)

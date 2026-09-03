@@ -19,7 +19,7 @@ Usage::
     python3 tools/install_addon.py --list     # show candidate extension directories
 
 Blender must be restarted after linking, then the addon enabled in
-Preferences > Add-ons ("Paradise Engine Tools").
+Preferences > Add-ons. Linking prints which one to enable.
 """
 
 from __future__ import annotations
@@ -37,6 +37,12 @@ import sys
 #:
 #: Pass a package name to link just one.
 PACKAGES = ("paradise_blender", "paradise_assets")
+
+#: How each appears in Preferences > Add-ons, and what it is for.
+DISPLAY_NAMES = {
+    "paradise_blender": "'Paradise Engine Tools'  — the .blend is the source, exported to data/",
+    "paradise_assets": "'Paradise Assets'        — open assets/levels/*.prefab and place things in it",
+}
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -159,13 +165,14 @@ def main() -> int:
             print(f"{marker} {root}")
         return 0
 
-    status = install(args.remove, tuple(args.package) or PACKAGES)
+    linked = tuple(args.package) or PACKAGES
+    status = install(args.remove, linked)
     if status == 0 and not args.remove:
-        print(
-            "\nRestart Blender, then enable the add-ons in Preferences > Add-ons:\n"
-            "  'Paradise Engine Tools'  — author and export scenes to data/\n"
-            "  'Paradise Assets'        — open assets/scenes/*.scene and place things in it"
-        )
+        # Only what was actually linked: naming the other one sends someone looking through
+        # Preferences for an add-on this run did not install.
+        print("\nRestart Blender, then enable it in Preferences > Add-ons:")
+        for package in linked:
+            print(f"  {DISPLAY_NAMES[package]}")
     return status
 
 

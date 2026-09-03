@@ -259,6 +259,12 @@ def adopt_loaded_file(*_args) -> None:
 
     import bpy
 
+    # Startup registers addons against a restricted ``bpy.data`` that carries no collections.
+    # Raising here would abort register() before the rest of the addon is wired up, and the file
+    # being opened fires ``load_post`` once the real data is in, so skipping costs nothing.
+    if not hasattr(bpy.data, "scenes"):
+        return
+
     from .document import project as project_layout
     from .materialize import store, workfile
 

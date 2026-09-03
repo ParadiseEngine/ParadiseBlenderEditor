@@ -238,3 +238,24 @@ def test_last_error_reads_the_tail_and_caches_on_the_stamp(tmp_path, monkeypatch
         handle.write("error: another\n")
     assert watch.last_error("/p") == "scanned"
     assert len(calls) == 1
+
+
+def test_adopt_loaded_file_skips_a_restricted_startup_data(monkeypatch):
+    """Blender registers addons against a ``bpy.data`` stub that carries no collections. Reading
+    ``scenes`` off it raised straight out of ``register()``, which cost every step after the
+    watcher -- the Asset Browser's "Open Prefab Document" entry among them -- and left the classes
+    already registered behind, so no later enable could recover without restarting Blender."""
+
+    class RestrictData:
+        """``_RestrictData``: it answers to nothing until a file is actually in."""
+
+    fake = types.ModuleType("bpy")
+    fake.data = RestrictData()
+    monkeypatch.setitem(sys.modules, "bpy", fake)
+
+    # Nothing below the guard may run: this is the no-Blender suite, so reaching the imports
+    # under it fails on ``mathutils`` rather than on ``data.scenes``. Either way it is red
+    # without the guard, and the Blender-side test reproduces the AttributeError itself.
+    watch.adopt_loaded_file()
+
+    assert watch._WATCHERS == {}

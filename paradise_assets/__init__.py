@@ -21,26 +21,34 @@ def register() -> None:
     from .materialize import sync
     from .play import ops as play_ops
 
-    # Preferences first (unregistered reads as "nothing configured"); widgets and operators
-    # before ui, or the panel draws dead buttons rather than failing loudly.
-    for cls in (
-        *prefs.classes, *ops.classes, *play_ops.classes, *field_widgets.classes,
-        *component_ops.classes, *ui.classes, *browser.classes,
-    ):
-        bpy.utils.register_class(cls)
-        _REGISTERED.append(cls)
+    # Blender keeps whatever a register() that raised had already registered, and every enable
+    # after that dies on "already registered as a subclass" -- so a failure has to unwind itself
+    # or the addon cannot be turned back on without restarting Blender.
+    try:
+        # Preferences first (unregistered reads as "nothing configured"); widgets and operators
+        # before ui, or the panel draws dead buttons rather than failing loudly.
+        for cls in (
+            *prefs.classes, *ops.classes, *play_ops.classes, *field_widgets.classes,
+            *component_ops.classes, *ui.classes, *browser.classes,
+        ):
+            bpy.utils.register_class(cls)
+            _REGISTERED.append(cls)
 
-    field_widgets.attach()
+        field_widgets.attach()
 
-    # The Asset Browser's drop cannot be replaced, only followed (see dropped.py).
-    dropped.register_handler()
+        # After the classes (the menu draws the operator, so it must exist by the time anyone
+        # opens it) and before the handlers, so a handler that fails cannot cost us the menu.
+        browser.register_menu()
 
-    # Ctrl+S writes the document too (materialize/sync.py).
-    sync.register_handler()
-    watch.register_handler()
+        # The Asset Browser's drop cannot be replaced, only followed (see dropped.py).
+        dropped.register_handler()
 
-    # After the classes: the menu draws the operator, so it must exist by the time anyone opens it.
-    browser.register_menu()
+        # Ctrl+S writes the document too (materialize/sync.py).
+        sync.register_handler()
+        watch.register_handler()
+    except Exception:
+        unregister()
+        raise
 
 
 def unregister() -> None:

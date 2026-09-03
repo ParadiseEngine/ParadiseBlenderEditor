@@ -27,13 +27,14 @@ import json
 import os
 import sys
 import tempfile
+import types
 
 import bpy
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import paradise_assets
-from paradise_assets import browser, catalogue
+from paradise_assets import browser, catalogue, watch
 from paradise_assets.document import project
 
 DEFAULT_PROJECT = r"C:\proj\paradise-workspace\shiningpie"
@@ -187,6 +188,67 @@ def registration() -> None:
     )
 
 
+class Boom(RuntimeError):
+    """A registration step that fails the way a real one does."""
+
+
+def startup_context() -> None:
+    """Startup hands ``register()`` a restricted ``bpy.data`` with no collections on it, and the
+    watcher's adopt pass read ``scenes`` straight off it. The AttributeError came out of
+    ``register()``, so every step after the watcher was skipped -- the menu entry included -- and
+    Blender kept the classes that had already registered, so no later enable could recover. The
+    whole addon minus its context menu, silently, on every launch."""
+
+    class RestrictData:
+        """``_RestrictData``: it answers to nothing until a file is actually in."""
+
+    real = sys.modules["bpy"]
+    sys.modules["bpy"] = types.ModuleType("bpy")
+    sys.modules["bpy"].data = RestrictData()
+    try:
+        watch.adopt_loaded_file()
+        survived = True
+    except AttributeError as exc:
+        print(f"      {exc}")
+        survived = False
+    finally:
+        sys.modules["bpy"] = real
+
+    check(survived, "the adopt pass declines a restricted bpy.data instead of raising")
+
+
+def failed_registration() -> None:
+    """A step that raises must take the registration back out with it. Blender leaves whatever a
+    failed ``register()`` got through registered while marking the addon disabled, and every
+    enable after that dies on "already registered as a subclass" -- unrecoverable without
+    restarting Blender."""
+    menu = getattr(bpy.types, browser.MENU, None)
+    if menu is None:
+        return
+
+    def explode() -> None:
+        raise Boom("a handler that fails during register")
+
+    real = watch.register_handler
+    watch.register_handler = explode
+    try:
+        paradise_assets.register()
+        raised = False
+    except Boom:
+        raised = True
+    finally:
+        watch.register_handler = real
+
+    check(raised, "a failing step propagates out of register")
+    check(browser._draw not in menu._dyn_ui_initialize(), "and leaves no menu entry behind")
+    check(not paradise_assets._REGISTERED, "and no registered classes behind")
+
+    # The consequence that was actually costing the menu: being able to turn it on again.
+    paradise_assets.register()
+    check(browser._draw in menu._dyn_ui_initialize(), "so the next enable still gets the menu")
+    paradise_assets.unregister()
+
+
 def main() -> int:
     root = sys.argv[sys.argv.index("--") + 1] if "--" in sys.argv else DEFAULT_PROJECT
 
@@ -196,6 +258,10 @@ def main() -> int:
     colliding_names()
     print("\n== registration ==")
     registration()
+    print("\n== a restricted startup context ==")
+    startup_context()
+    print("\n== a registration that fails partway ==")
+    failed_registration()
 
     print(f"\n{len(failures)} failure(s)")
     for label in failures:

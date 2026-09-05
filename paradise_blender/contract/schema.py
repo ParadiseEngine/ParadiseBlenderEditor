@@ -462,6 +462,11 @@ class LevelMaterialData:
     normal_texture: str | None = None
     occlusion_strength: float = 1.0
     occlusion_texture: str | None = None
+    #: KHR_texture_transform on the base-colour uv set. The .blend exporter has no source for it
+    #: (a material document from a GLB does), so it writes the contract's identity transform.
+    base_color_uv_offset: tuple[float, float] = (0.0, 0.0)
+    base_color_uv_scale: tuple[float, float] = (1.0, 1.0)
+    base_color_uv_rotation: float = 0.0
     alpha_mode: str = "Opaque"
     render_queue: int = -1
     transmission_factor: float = 0.0
@@ -487,6 +492,9 @@ class LevelMaterialData:
             "NormalTexture": self.normal_texture,
             "OcclusionStrength": self.occlusion_strength,
             "OcclusionTexture": self.occlusion_texture,
+            "BaseColorUvOffset": list(self.base_color_uv_offset),
+            "BaseColorUvScale": list(self.base_color_uv_scale),
+            "BaseColorUvRotation": self.base_color_uv_rotation,
             "AlphaMode": self.alpha_mode,
             "RenderQueue": self.render_queue,
             "TransmissionFactor": self.transmission_factor,

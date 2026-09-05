@@ -333,10 +333,17 @@ def _write_transform(
         if _unchanged(stored.data, (position, rotation, scale)):
             return   # untouched: keep the authored numbers verbatim
         result.moved += 1
-    elif original is not None and not _unchanged({}, (position, rotation, scale)):
+    elif original is not None:
+        # The document authored NO transform and the object still stands at identity: keep it
+        # absent. Absence is meaningful to a game ("no transform component, no transform" is how
+        # ShiningPie tells a camera or a light from a placed thing), and the engine's extractor
+        # writes model prefabs without one; a save that changes nothing rewrites nothing.
+        if _unchanged({}, (position, rotation, scale)):
+            return
         result.moved += 1
 
-    # A transform-less object gets one, even identity: nothing downstream synthesizes placement.
+    # A NEW object, or one moved off identity, gets a transform: nothing downstream synthesizes
+    # placement.
 
     component = entry.component(well_known.TRANSFORM_ID)
     if component is None:

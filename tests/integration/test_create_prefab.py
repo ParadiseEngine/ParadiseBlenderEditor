@@ -52,7 +52,7 @@ DEFAULT_PROJECT = os.path.join(
     "ShiningPie",
 )
 
-STATIC_COMPONENT = "ShiningPie.Authoring.ObstacleMesh"
+STATIC_COMPONENT = "ShiningPie.Authoring.StaticMesh"
 SKINNED_COMPONENT = "ShiningPie.Authoring.SkinnedMesh"
 
 #: ShiningPie's only rigged models, by GLB stem. Everything else is static.
@@ -358,6 +358,11 @@ def test_mirror(source: str) -> None:
         preferences.static_mesh_component = STATIC_COMPONENT
         preferences.skinned_mesh_component = SKINNED_COMPONENT
 
+        # The mirror starts a watcher only when it CREATES something. A project the engine's
+        # extractor has already given a prefab per model creates nothing on the first pass, and
+        # this test's own writes below (the holder level) still need identities minted.
+        check(model_watch.ensure_watcher(layout.root) is None, "a watcher runs for the copied project")
+
         open_document(layout.resolve("levels/test.prefab"), layout)
 
         models = _models(layout)
@@ -369,6 +374,10 @@ def test_mirror(source: str) -> None:
             f"the rigged models are found by reading the GLBs ({rigged_models})",
         )
 
+        # The engine's `paradise assets extract` also generates a model prefab (beside the GLB,
+        # carrying the same GeneratedFrom marker); the mirror ADOPTS those where they are rather
+        # than filing a second one, so location is only asserted for what the mirror created.
+        adopted = {p.guid for p in model_prefabs.read_generated(layout, schema.load(layout.root))}
         check(bpy.ops.paradise_assets.mirror_model_prefabs() == {"FINISHED"}, "the mirror ran")
         generated = model_prefabs.read_generated(layout, schema.load(layout.root))
         check(
@@ -385,8 +394,13 @@ def test_mirror(source: str) -> None:
         )
         cube = next(p for p in generated if p.stem == "Prim_Cube")
         check(
-            cube.relative == "prefabs/models/Prim_Cube.prefab",
-            f"a generated prefab is filed under prefabs/models ({cube.relative})",
+            cube.guid in adopted or cube.relative == "prefabs/models/Prim_Cube.prefab",
+            f"a generated prefab is filed under prefabs/models, or adopted where the extractor "
+            f"put it ({cube.relative})",
+        )
+        check(
+            all(p.relative.startswith("prefabs/models/") for p in generated if p.guid not in adopted),
+            "everything the mirror itself created is under prefabs/models",
         )
 
         rigged = {p.stem for p in generated if p.mesh_component_id == _component_id(
@@ -450,8 +464,9 @@ def test_mirror(source: str) -> None:
             sphere.mesh_path == _mesh_path(_models(layout), sphere.model_guid),
             f"the mesh reference follows the document the sidecar records ({sphere.mesh_path})",
         )
+        sphere_before = next(p for p in generated if p.model_guid == sphere.model_guid)
         check(
-            sphere.relative == "prefabs/models/Prim_Sphere.prefab",
+            sphere.relative == sphere_before.relative,
             f"and the prefab kept its name, so levels still point at it ({sphere.relative})",
         )
         check(
@@ -464,7 +479,7 @@ def test_mirror(source: str) -> None:
         doomed_guid = _guid_of(models, "Models/Skyline_1.glb")
         os.remove(doomed)
         os.remove(sidecar.path_for(doomed))
-        prefab_path = layout.resolve("prefabs/models/Skyline_1.prefab")
+        prefab_path = next(p.path for p in generated if p.model_guid == doomed_guid)
 
         bpy.ops.paradise_assets.mirror_model_prefabs()
         check(os.path.isfile(prefab_path), "the first pass deletes nothing")
@@ -542,7 +557,16 @@ def _instantiate(layout, prefab) -> None:
         str(uuid.uuid4()), prefab.stem, document.root_guid)
     instance.prefab = AssetReference(prefab.guid, prefab.relative)
     document.objects.append(instance)
-    new_prefab.create(layout.resolve("levels/holder.prefab"), layout, document)
+    # The watcher rebuilds the copied project after each mirror pass (a real game's worth of
+    # assets), and a mint can queue behind that build; the default 10 s is an operator's budget.
+    try:
+        new_prefab.create(layout.resolve("levels/holder.prefab"), layout, document, timeout=90.0)
+    except new_prefab.CreateError:
+        # Say what the watcher was doing, or a timeout reads as "the addon is slow".
+        running, exit_reason = watch.is_running(layout.root), watch.exit_reason(layout.root)
+        print(f"DIAG watcher running: {running}; exit: {exit_reason}")
+        print(f"DIAG last error: {watch.last_error(layout.root)}")
+        raise
 
 
 def main() -> int:

@@ -11,7 +11,7 @@ import tomllib
 import bpy
 from mathutils import Quaternion, Vector
 
-from ..document import axes, project, resolve, schema, well_known
+from ..document import axes, mesh_document, project, resolve, schema, well_known
 from ..document.prefab import PrefabDocument, PrefabObject
 from ..document.prefab import loads as parse_document
 from . import store
@@ -126,7 +126,9 @@ def _create_object(
 
     reference = _mesh_reference(entry, mesh_fields)
     if reference is not None:
-        collection = library.collection_for(layout.resolve(reference))
+        # The field names a mesh DOCUMENT; the GLB it was compiled from is what Blender imports.
+        source = mesh_document.displayable(layout, reference)
+        collection = library.collection_for(source) if source is not None else None
         if collection is not None:
             obj.instance_type = "COLLECTION"
             obj.instance_collection = collection

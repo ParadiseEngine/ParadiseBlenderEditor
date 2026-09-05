@@ -21,14 +21,12 @@ The edit they cannot express -- moving a derived child -- is refused rather than
 from __future__ import annotations
 
 import os
-import shutil
-import tempfile
 
 import bpy
 from mathutils import Quaternion
 
 from .. import edits as component_edits
-from ..document import axes, canonical_toml, well_known
+from ..document import atomic, axes, canonical_toml, well_known
 from ..document import prefab as prefab_document
 from ..document.asset_reference import AssetReference
 from ..document.prefab import PrefabComponent, PrefabDocument, PrefabDocumentError, PrefabObject
@@ -93,7 +91,7 @@ def save_prefab(scene: bpy.types.Scene) -> SaveResult:
             "or reload to put the deleted root back."
         ) from error
 
-    _write_atomic(state.path, prefab_document.dumps(merged))
+    atomic.write_text(state.path, prefab_document.dumps(merged))
     store.write_state(scene, state.path)
 
     # Clear the overlay only AFTER the write: before it, a failed save loses the edits; kept, it
@@ -335,10 +333,17 @@ def _write_transform(
         if _unchanged(stored.data, (position, rotation, scale)):
             return   # untouched: keep the authored numbers verbatim
         result.moved += 1
-    elif original is not None and not _unchanged({}, (position, rotation, scale)):
+    elif original is not None:
+        # The document authored NO transform and the object still stands at identity: keep it
+        # absent. Absence is meaningful to a game ("no transform component, no transform" is how
+        # ShiningPie tells a camera or a light from a placed thing), and the engine's extractor
+        # writes model prefabs without one; a save that changes nothing rewrites nothing.
+        if _unchanged({}, (position, rotation, scale)):
+            return
         result.moved += 1
 
-    # A transform-less object gets one, even identity: nothing downstream synthesizes placement.
+    # A NEW object, or one moved off identity, gets a transform: nothing downstream synthesizes
+    # placement.
 
     component = entry.component(well_known.TRANSFORM_ID)
     if component is None:
@@ -419,23 +424,3 @@ def _document_objects(scene: bpy.types.Scene) -> list[bpy.types.Object]:
         obj for obj in scene.collection.all_objects
         if store.guid_of(obj) is not None and not store.is_derived(obj)
     ]
-
-
-def _write_atomic(path: str, text: str) -> None:
-    """Temp file in the SAME directory then replace: ``os.replace`` is atomic only within one
-    filesystem. The temp is created mode 0600, so the document's own mode is copied onto it
-    first, or every save turned a 0644 file private."""
-    directory = os.path.dirname(path)
-    handle = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", newline="", dir=directory, delete=False, suffix=".tmp"
-        ) as handle:
-            handle.write(text)
-        if os.path.exists(path):
-            shutil.copymode(path, handle.name)
-        os.replace(handle.name, path)
-    except BaseException:
-        if handle is not None and os.path.exists(handle.name):
-            os.unlink(handle.name)
-        raise

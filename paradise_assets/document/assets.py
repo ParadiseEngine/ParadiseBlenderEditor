@@ -8,8 +8,8 @@ panel's job, and verifying that guid and path name the same file is ``verify``'s
 from __future__ import annotations
 
 import os
-import tomllib
 
+from . import sidecar
 from .asset_reference import AssetReference
 from .project import MANIFEST_NAME, ProjectLayout
 
@@ -30,13 +30,13 @@ def list_assets(layout: ProjectLayout, kinds: list[str] | None = None) -> list[A
     for root, dirs, files in os.walk(assets):
         dirs[:] = [name for name in dirs if name not in _SKIP_DIRS]
         for name in files:
-            if name.endswith(".meta") or name == MANIFEST_NAME:
+            if name.endswith(sidecar.SUFFIX) or name == MANIFEST_NAME:
                 continue
             ext = os.path.splitext(name)[1].lower()
             if allowed and ext not in allowed:
                 continue
             absolute = os.path.join(root, name)
-            guid = read_sidecar_guid(absolute + ".meta")
+            guid = read_sidecar_guid(sidecar.path_for(absolute))
             if guid is None:
                 continue
             found.append(AssetReference(guid, layout.relative(absolute)))
@@ -45,11 +45,7 @@ def list_assets(layout: ProjectLayout, kinds: list[str] | None = None) -> list[A
 
 
 def read_sidecar_guid(path: str) -> str | None:
-    """The sidecar's ``guid``, or ``None`` when the file is missing or unreadable."""
-    try:
-        with open(path, "rb") as handle:
-            document = tomllib.load(handle)
-    except (OSError, tomllib.TOMLDecodeError):
-        return None
-    guid = document.get("guid")
-    return guid if isinstance(guid, str) and guid else None
+    """The sidecar's ``guid`` in canonical spelling, or ``None`` when the file is missing,
+    unreadable, or carries no identity."""
+    meta = sidecar.read(path)
+    return None if meta is None else meta.guid

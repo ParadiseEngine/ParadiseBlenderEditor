@@ -11,7 +11,7 @@ import uuid
 import bpy
 from mathutils import Vector
 
-from ..document import assets, project, resolve, schema
+from ..document import assets, mesh_document, project, resolve, schema
 from ..document.prefab import PrefabDocumentError
 from ..document.prefab import loads as parse_document
 from . import store
@@ -189,7 +189,8 @@ def _show_prefab_mesh(obj, document, layout, prefab_path) -> None:
             if not isinstance(path, str) or not mesh_fields.is_mesh_field(component.type, field, path):
                 continue
 
-            collection = MeshLibrary(bpy.context.scene).collection_for(layout.resolve(path))
+            source = mesh_document.displayable(layout, path)
+            collection = MeshLibrary(bpy.context.scene).collection_for(source) if source is not None else None
             if collection is not None:
                 obj.instance_type = "COLLECTION"
                 obj.instance_collection = collection

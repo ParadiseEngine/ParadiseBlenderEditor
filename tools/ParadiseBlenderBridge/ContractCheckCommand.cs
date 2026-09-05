@@ -46,7 +46,7 @@ internal static class ContractCheckCommand
         {
             roundTripped = kind switch
             {
-                "level" => ExportJsonWriter.SerializeToString(ExportJsonReader.ReadLevel(original)),
+                "level" => ExportJsonWriter.SerializeToString(ExportJsonReader.ReadPrefab(original)),
                 "material" => ExportJsonWriter.SerializeToString(ExportJsonReader.ReadMaterial(original)),
                 "settings" => ExportJsonWriter.SerializeToString(
                     ExportJsonReader.ReadProjectSettings(original)),

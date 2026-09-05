@@ -25,9 +25,11 @@ BOTH = model_prefabs.MeshChoice(STATIC, SKINNED)
 FIELDS = schema.MeshFields({(STATIC.type_name, "Mesh"), (SKINNED.type_name, "Mesh")}, "x")
 
 CUBE = model_prefabs.Model(
-    AssetReference("11111111-1111-4111-8111-111111111111", "Models/Prim_Cube.glb"), False)
+    AssetReference("11111111-1111-4111-8111-111111111111", "Models/Prim_Cube.glb"), False,
+    AssetReference("aaaaaaaa-1111-4111-8111-111111111111", "Models/Prim_Cube.mesh"))
 HERO = model_prefabs.Model(
-    AssetReference("22222222-2222-4222-8222-222222222222", "Models/Player.glb"), True)
+    AssetReference("22222222-2222-4222-8222-222222222222", "Models/Player.glb"), True,
+    AssetReference("aaaaaaaa-2222-4222-8222-222222222222", "Models/Player.mesh"))
 
 
 def project(tmp_path) -> ProjectLayout:
@@ -38,7 +40,11 @@ def project(tmp_path) -> ProjectLayout:
 
 
 def moved(model: model_prefabs.Model, path: str) -> model_prefabs.Model:
-    return model_prefabs.Model(AssetReference(model.guid, path), model.skinned)
+    """The model AND its mesh document moved together, as a folder move in Finder does."""
+    mesh_path = os.path.splitext(path)[0] + ".mesh"
+    return model_prefabs.Model(
+        AssetReference(model.guid, path), model.skinned,
+        AssetReference(model.mesh.guid, mesh_path) if model.mesh else None)
 
 
 def generated(
@@ -50,7 +56,7 @@ def generated(
         relative=relative,
         guid="99999999-9999-4999-8999-999999999999",
         model_guid=model.guid,
-        mesh_path=model.path if mesh_path is None else mesh_path,
+        mesh_path=(model.mesh.path if model.mesh else None) if mesh_path is None else mesh_path,
         mesh_component_id=(SKINNED if model.skinned else STATIC).component_id,
         mesh_field="Mesh",
     )
@@ -68,6 +74,17 @@ class TestCreate:
         result = model_prefabs.plan(project(tmp_path), BOTH, [HERO], [])
 
         assert result.actions[0].mesh == SKINNED
+
+    def test_a_model_the_watcher_has_not_given_a_mesh_document_is_skipped(self, tmp_path):
+        # Nothing to reference yet: the prefab would have to name the GLB, which the build
+        # refuses. The next pass, once the watcher has minted the document, creates it.
+        unminted = model_prefabs.Model(CUBE.reference, CUBE.skinned, None)
+
+        result = model_prefabs.plan(project(tmp_path), BOTH, [unminted], [])
+
+        assert len(result.actions) == 1
+        assert isinstance(result.actions[0], model_prefabs.Skip)
+        assert "mesh document" in result.actions[0].reason
 
     def test_a_rigged_model_is_skipped_while_no_skinned_component_is_chosen(self, tmp_path):
         # Authoring it as static would produce a prefab that loads, shows the mesh, and is the
@@ -98,7 +115,8 @@ class TestCreate:
 
     def test_two_models_with_one_stem_generate_one_prefab_and_a_report(self, tmp_path):
         other = model_prefabs.Model(
-            AssetReference("33333333-3333-4333-8333-333333333333", "Props/Prim_Cube.glb"), False)
+            AssetReference("33333333-3333-4333-8333-333333333333", "Props/Prim_Cube.glb"), False,
+            AssetReference("aaaaaaaa-3333-4333-8333-333333333333", "Props/Prim_Cube.mesh"))
 
         result = model_prefabs.plan(project(tmp_path), BOTH, [CUBE, other], [])
 
@@ -187,8 +205,10 @@ class TestApply:
             root = prefab.loads(handle.read(), path).root()
         assert root.name == "Prim_Cube"
         assert root.meta.data[model_prefabs.GENERATED_FROM] == CUBE.guid
+        # The MESH DOCUMENT, never the GLB: a GLB ships nothing, and the build refuses a
+        # reference to one.
         assert dict(root.component(STATIC.component_id).data["Mesh"]) == {
-            "guid": CUBE.guid, "path": CUBE.path}
+            "guid": CUBE.mesh.guid, "path": CUBE.mesh.path}
         assert root.component(well_known.TRANSFORM_ID) is not None
 
     def test_the_marker_is_in_the_document_not_in_the_sidecar(self, tmp_path, watcher):
@@ -211,7 +231,7 @@ class TestApply:
         found = model_prefabs.read_generated(layout, FIELDS)
 
         assert len(found) == 1
-        assert (found[0].model_guid, found[0].mesh_path) == (CUBE.guid, CUBE.path)
+        assert (found[0].model_guid, found[0].mesh_path) == (CUBE.guid, CUBE.mesh.path)
         assert found[0].mesh_component_id == STATIC.component_id
 
     def test_a_hand_authored_prefab_is_not_reported_as_generated(self, tmp_path, watcher):
@@ -231,7 +251,7 @@ class TestApply:
         log = model_prefabs.apply(layout, model_prefabs.plan(layout, BOTH, [renamed], found).actions)
 
         after = model_prefabs.read_generated(layout, FIELDS)[0]
-        assert after.mesh_path == renamed.path
+        assert after.mesh_path == renamed.mesh.path
         assert after.relative == "prefabs/models/Prim_Cube.prefab"
         assert "now points at" in log[0]
 

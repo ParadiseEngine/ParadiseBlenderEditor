@@ -77,10 +77,18 @@ GRACE_SECONDS = 10.0
 
 @dataclass(frozen=True)
 class Model:
-    """A model and the one fact that decides which component stands for it."""
+    """A model, the one fact that decides which component stands for it, and the document a
+    prefab references for it.
+
+    The prefab never references the ``.glb``: a GLB ships nothing, and the build refuses a
+    reference to one. What it references is the ``.mesh`` document ``paradise assets watch``
+    mints beside the model, recorded in the model's sidecar under ``[glb] mesh``. ``mesh`` is
+    ``None`` until the watcher has minted it, and a model without one is skipped, not guessed.
+    """
 
     reference: AssetReference
     skinned: bool
+    mesh: AssetReference | None = None
 
     @property
     def guid(self) -> str:
@@ -213,7 +221,7 @@ def plan(
         if prefab is None:
             result.actions.append(_creation(layout, components, model, claimed))
             continue
-        if prefab.mesh_path != model.path:
+        if model.mesh is not None and prefab.mesh_path != model.mesh.path:
             result.actions.append(Move(prefab, model))
 
     for model_guid, prefab in by_model.items():
@@ -237,6 +245,12 @@ def plan(
 
 
 def _creation(layout: ProjectLayout, components: MeshChoice, model: Model, claimed: set[str]):
+    if model.mesh is None:
+        return Skip(
+            f"{model.path} has no mesh document yet, so no prefab was generated for it -- the "
+            "asset watcher mints one beside the model; it is picked up on the next pass"
+        )
+
     mesh = components.for_model(model)
     if mesh is None:
         kind = "skinned" if model.skinned else "static"
@@ -258,11 +272,23 @@ def _creation(layout: ProjectLayout, components: MeshChoice, model: Model, claim
 
 
 def list_models(layout: ProjectLayout) -> list[Model]:
-    """Every identified model under ``assets/``, classified by whether it carries a rig."""
+    """Every identified model under ``assets/``, classified by whether it carries a rig, with the
+    mesh document its sidecar records."""
     return [
-        Model(reference, gltf.has_skin(layout.resolve(reference.path)))
+        Model(
+            reference,
+            gltf.has_skin(layout.resolve(reference.path)),
+            _mesh_document(layout, reference),
+        )
         for reference in assets.list_assets(layout, list(MODEL_EXTENSIONS))
     ]
+
+
+def _mesh_document(layout: ProjectLayout, model: AssetReference) -> AssetReference | None:
+    """The ``.mesh`` document the model's sidecar names under ``[glb] mesh``, or ``None``."""
+    meta = sidecar.read(sidecar.path_for(layout.resolve(model.path)))
+    glb = meta.setting("glb") if meta else None
+    return asset_reference.read(glb.get("mesh"), "glb.mesh", lambda _message: None) if glb else None
 
 
 def read_generated(
@@ -335,7 +361,7 @@ def _write(layout: ProjectLayout, action: Create, written: dict[str, str]) -> st
     document.root().components.append(PrefabComponent(
         action.mesh.component_id,
         action.mesh.type_name,
-        {action.mesh.field_name: asset_reference.write(action.model.reference)},
+        {action.mesh.field_name: asset_reference.write(action.model.mesh)},
     ))
 
     absolute = layout.resolve(action.relative)
@@ -377,12 +403,12 @@ def _move(action: Move) -> str:
     if component is None:
         return f"could not update {prefab.relative}: its mesh component is gone"
 
-    component.data[prefab.mesh_field] = asset_reference.write(action.model.reference)
+    component.data[prefab.mesh_field] = asset_reference.write(action.model.mesh)
     try:
         atomic.write_text(prefab.path, prefab_document.dumps(document))
     except OSError as error:
         return f"could not update {prefab.relative}: {error}"
-    return f"{prefab.relative} now points at {action.model.path}"
+    return f"{prefab.relative} now points at {action.model.mesh.path if action.model.mesh else action.model.path}"
 
 
 def _delete(action: Delete) -> str:

@@ -380,8 +380,8 @@ def test_mirror(source: str) -> None:
             "each generated prefab names its model by identity",
         )
         check(
-            all(p.mesh_path == _model_path(models, p.model_guid) for p in generated),
-            "each mesh reference points at where its model lives",
+            all(p.mesh_path == _mesh_path(models, p.model_guid) for p in generated),
+            "each mesh reference names the model's .mesh document, never the GLB",
         )
         cube = next(p for p in generated if p.stem == "Prim_Cube")
         check(
@@ -446,7 +446,10 @@ def test_mirror(source: str) -> None:
 
         after = model_prefabs.read_generated(layout, schema.load(layout.root))
         sphere = next(p for p in after if p.model_guid == _guid_of(models, "Models/Prim_Sphere.glb"))
-        check(sphere.mesh_path == "Models/Boulder.glb", f"the mesh path followed ({sphere.mesh_path})")
+        check(
+            sphere.mesh_path == _mesh_path(after_models := _models(layout), sphere.model_guid),
+            f"the mesh reference follows the document the sidecar records ({sphere.mesh_path})",
+        )
         check(
             sphere.relative == "prefabs/models/Prim_Sphere.prefab",
             f"and the prefab kept its name, so levels still point at it ({sphere.relative})",
@@ -505,6 +508,10 @@ def _models(layout):
 
 def _model_path(models, guid: str) -> str | None:
     return next((m.path for m in models if m.guid == guid), None)
+
+
+def _mesh_path(models, guid: str) -> str | None:
+    return next((m.mesh.path for m in models if m.guid == guid and m.mesh), None)
 
 
 def _guid_of(models, path: str) -> str | None:

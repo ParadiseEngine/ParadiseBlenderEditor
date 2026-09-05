@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 
 import bpy
 
-from .document import model_prefabs, project, schema
+from .document import model_prefabs, project, schema, sidecar
 
 __all__ = [
     "INTERVAL",
@@ -38,6 +38,10 @@ __all__ = [
 #: Seconds between polls. A model arrives by drag-and-drop, so the author is looking at Blender
 #: when it lands and a slower poll would read as "nothing happened".
 INTERVAL = 3.0
+
+#: How long a timer pass waits for the watcher to name what it wrote: a fraction of the interval,
+#: since the wait blocks the main thread and the next pass finds the prefab anyway.
+TIMER_WAIT_SECONDS = 1.0
 
 _ROOTS: set[str] = set()
 
@@ -109,9 +113,12 @@ def mesh_choice(
     for attribute, kind, needed in wanted:
         configured = (getattr(preferences, attribute, "") or "").strip()
         if not configured:
-            # One candidate is not an ambiguity, so it needs no decision from anyone.
-            chosen[kind] = candidates[0] if len(candidates) == 1 else None
-            if chosen[kind] is None and needed:
+            # One candidate is not an ambiguity for a STATIC model. It is never assumed for a
+            # rigged one: a rig authored as the static component loads, shows the mesh, and is
+            # the wrong kind of thing in the game, so an unset skinned picker leaves rigged models
+            # unplanned (plan() skips each with a reason) while static generation goes on.
+            chosen[kind] = candidates[0] if kind == "static" and len(candidates) == 1 else None
+            if chosen[kind] is None and needed and kind == "static":
                 problems.append(
                     f"no {kind} mesh component is chosen (this game declares {len(candidates)}: "
                     f"{names})"
@@ -129,8 +136,13 @@ def mesh_choice(
     return choice, "; ".join(problems) + ". Choose in the Model Prefabs panel."
 
 
-def reconcile(layout: project.ProjectLayout) -> Report:
-    """One pass: generate what is missing, follow what moved, delete what the model took away."""
+def reconcile(layout: project.ProjectLayout, timeout: float = sidecar.WAIT_SECONDS) -> Report:
+    """One pass: generate what is missing, follow what moved, delete what the model took away.
+
+    *timeout* bounds the wait for the watcher to identify what was written. An operator waits
+    the full default; the timer passes a fraction of its own interval, because that wait is on
+    the main thread and a prefab the watcher has not named yet is simply found on the next pass.
+    """
     report = Report()
     models = model_prefabs.list_models(layout)
     choice, problem = mesh_choice(layout, any(model.skinned for model in models))
@@ -174,7 +186,7 @@ def reconcile(layout: project.ProjectLayout) -> Report:
         report.problem = blocked
         return report
 
-    report.lines = model_prefabs.apply(layout, result.actions)
+    report.lines = model_prefabs.apply(layout, result.actions, timeout)
     report.failed = sum(1 for line in report.lines if line.startswith("could not"))
     return report
 
@@ -249,5 +261,5 @@ def _tick() -> float | None:
         for root in sorted(_ROOTS):
             layout = project.locate(root)
             if layout is not None:
-                remember(root, reconcile(layout))
+                remember(root, reconcile(layout, timeout=TIMER_WAIT_SECONDS))
     return INTERVAL

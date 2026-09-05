@@ -32,6 +32,7 @@ import os
 from dataclasses import dataclass, field
 
 from . import asset_reference, assets, atomic, gltf, new_prefab, sidecar, well_known
+from . import guid as guid_module
 from . import prefab as prefab_document
 from . import schema as document_schema
 from .asset_reference import AssetReference
@@ -81,8 +82,9 @@ class Model:
     prefab references for it.
 
     The prefab never references the ``.glb``: a GLB ships nothing, and the build refuses a
-    reference to one. What it references is the ``.mesh`` (or, for a rigged model, ``.skinnedmesh``) document ``paradise assets watch``
-    mints beside the model, recorded in the model's sidecar under ``[glb] mesh``. ``mesh`` is
+    reference to one. What it references is the ``.mesh`` (``.skinnedmesh`` for a rigged model)
+    document ``paradise assets watch`` mints beside the model, recorded in the model's sidecar
+    under ``[glb] mesh``. ``mesh`` is
     ``None`` until the watcher has minted it, and a model without one is skipped, not guessed.
     """
 
@@ -221,7 +223,10 @@ def plan(
         if prefab is None:
             result.actions.append(_creation(layout, components, model, claimed))
             continue
-        if model.mesh is not None and prefab.mesh_path != model.mesh.path:
+        # A prefab whose root carries no mesh reference at all is an author's edit; following the
+        # model would mean re-adding a component they removed, so it is left alone (verify reports
+        # a document that references nothing the build writes).
+        if model.mesh is not None and prefab.mesh_path is not None and prefab.mesh_path != model.mesh.path:
             result.actions.append(Move(prefab, model))
 
     for model_guid, prefab in by_model.items():
@@ -285,10 +290,24 @@ def list_models(layout: ProjectLayout) -> list[Model]:
 
 
 def _mesh_document(layout: ProjectLayout, model: AssetReference) -> AssetReference | None:
-    """The ``.mesh`` document the model's sidecar names under ``[glb] mesh``, or ``None``."""
+    """The mesh document the model's sidecar names under ``[glb] mesh``, or ``None``.
+
+    :func:`sidecar.read` hands settings back as plain ``tomllib`` dicts, not the
+    :class:`~canonical_toml.InlineTable` the document codec insists on, so the reference is read
+    by key here. Anything short of ``{ guid, path }`` -- no ``[glb]`` yet, no ``mesh`` yet, a
+    half-written value -- is "not minted yet", never an error: the watcher owns that record and
+    the mirror simply asks again next pass.
+    """
     meta = sidecar.read(sidecar.path_for(layout.resolve(model.path)))
     glb = meta.setting("glb") if meta else None
-    return asset_reference.read(glb.get("mesh"), "glb.mesh", lambda _message: None) if glb else None
+    mesh = glb.get("mesh") if isinstance(glb, dict) else None
+    if not isinstance(mesh, dict):
+        return None
+    guid = mesh.get(asset_reference.GUID_KEY)
+    path = mesh.get(asset_reference.PATH_KEY)
+    if not isinstance(guid, str) or not guid_module.is_text(guid) or not isinstance(path, str) or not path:
+        return None
+    return AssetReference(guid_module.canonical(guid), path)
 
 
 def read_generated(
@@ -305,8 +324,11 @@ def read_generated(
         if root is None or root.meta is None:
             continue
         model_guid = root.meta.data.get(GENERATED_FROM)
-        if not isinstance(model_guid, str) or not model_guid:
+        if not isinstance(model_guid, str) or not guid_module.is_text(model_guid):
             continue
+        # Canonical, like every identity the index hands back; a hand-written marker in another
+        # case would otherwise read as a second prefab for the model plus an orphan to delete.
+        model_guid = guid_module.canonical(model_guid)
 
         path, component_id, field_name = _mesh_reference(root, mesh_fields)
         found.append(GeneratedPrefab(
@@ -408,7 +430,8 @@ def _move(action: Move) -> str:
         atomic.write_text(prefab.path, prefab_document.dumps(document))
     except OSError as error:
         return f"could not update {prefab.relative}: {error}"
-    return f"{prefab.relative} now points at {action.model.mesh.path if action.model.mesh else action.model.path}"
+    target = action.model.mesh.path if action.model.mesh else action.model.path
+    return f"{prefab.relative} now points at {target}"
 
 
 def _delete(action: Delete) -> str:

@@ -124,6 +124,54 @@ class TestCreate:
         assert isinstance(result.actions[1], model_prefabs.Skip)
 
 
+class TestListModels:
+    """``list_models`` reads the model's identity and the mesh document its sidecar records."""
+
+    GLB = b"glTF" + (2).to_bytes(4, "little") + (12).to_bytes(4, "little")
+
+    def _model(self, layout, name: str, sidecar_text: str) -> str:
+        directory = layout.resolve("Models")
+        os.makedirs(directory, exist_ok=True)
+        path = os.path.join(directory, name)
+        with open(path, "wb") as handle:
+            handle.write(self.GLB)
+        with open(path + ".meta", "w", encoding="utf-8") as handle:
+            handle.write(sidecar_text)
+        return path
+
+    def test_the_mesh_document_is_read_off_the_glb_sidecar(self, tmp_path):
+        layout = project(tmp_path)
+        self._model(layout, "Cube.glb", (
+            'schema_version = 1\nguid = "11111111-1111-4111-8111-111111111111"\nimporter = "glb"\n'
+            '\n[glb]\nmesh = { guid = "AAAAAAAA-1111-4111-8111-111111111111", path = "Models/Cube.mesh" }\n'
+        ))
+
+        [model] = model_prefabs.list_models(layout)
+
+        assert model.path == "Models/Cube.glb"
+        assert model.mesh == AssetReference("aaaaaaaa-1111-4111-8111-111111111111", "Models/Cube.mesh")
+
+    def test_a_sidecar_the_watcher_has_not_filled_yet_reads_as_no_document(self, tmp_path):
+        # The failure this pins: the plain dict tomllib returns for `[glb] mesh` used to be handed
+        # to the InlineTable-only codec, which raised on the very sidecar shape the mirror needs.
+        layout = project(tmp_path)
+        self._model(layout, "NoDomain.glb", (
+            'schema_version = 1\nguid = "11111111-1111-4111-8111-111111111111"\n'
+        ))
+        self._model(layout, "NoMesh.glb", (
+            'schema_version = 1\nguid = "22222222-2222-4222-8222-222222222222"\n\n[glb]\nextract = "Models"\n'
+        ))
+        self._model(layout, "HalfWritten.glb", (
+            'schema_version = 1\nguid = "33333333-3333-4333-8333-333333333333"\n'
+            '\n[glb]\nmesh = { guid = "nope" }\n'
+        ))
+
+        models = {model.stem: model for model in model_prefabs.list_models(layout)}
+
+        assert len(models) == 3
+        assert all(model.mesh is None for model in models.values())
+
+
 class TestMove:
     def test_a_model_moved_by_hand_repoints_the_reference(self, tmp_path):
         elsewhere = moved(CUBE, "Models/Primitives/Prim_Cube.glb")
@@ -131,6 +179,17 @@ class TestMove:
         result = model_prefabs.plan(project(tmp_path), BOTH, [elsewhere], [generated(CUBE)])
 
         assert result.actions == [model_prefabs.Move(generated(CUBE), elsewhere)]
+
+    def test_a_prefab_whose_author_removed_the_mesh_reference_is_left_alone(self, tmp_path):
+        # Following the model would re-add a component the author deleted; it is theirs now.
+        elsewhere = moved(CUBE, "Models/Primitives/Prim_Cube.glb")
+        stripped = model_prefabs.GeneratedPrefab(
+            path="/tmp/assets/prefabs/models/Prim_Cube.prefab", relative="prefabs/models/Prim_Cube.prefab",
+            guid="99999999-9999-4999-8999-999999999999", model_guid=CUBE.guid)
+
+        result = model_prefabs.plan(project(tmp_path), BOTH, [elsewhere], [stripped])
+
+        assert result.actions == []
 
     def test_a_renamed_model_does_not_rename_its_prefab(self, tmp_path):
         # The reference's guid is the identity and its path a hint, so renaming the file would
@@ -233,6 +292,20 @@ class TestApply:
         assert len(found) == 1
         assert (found[0].model_guid, found[0].mesh_path) == (CUBE.guid, CUBE.mesh.path)
         assert found[0].mesh_component_id == STATIC.component_id
+
+    def test_a_marker_in_another_case_still_identifies_the_model(self, tmp_path, watcher):
+        layout = project(tmp_path)
+        watcher(layout.root)
+        model_prefabs.apply(layout, model_prefabs.plan(layout, BOTH, [CUBE], []).actions)
+        path = layout.resolve("prefabs/models/Prim_Cube.prefab")
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(text.replace(CUBE.guid, CUBE.guid.upper()))
+
+        [found] = model_prefabs.read_generated(layout, FIELDS)
+
+        assert found.model_guid == CUBE.guid
 
     def test_a_hand_authored_prefab_is_not_reported_as_generated(self, tmp_path, watcher):
         layout = project(tmp_path)

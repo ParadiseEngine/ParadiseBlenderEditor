@@ -26,7 +26,7 @@ class MeshFields:
 
     @property
     def from_schema(self) -> bool:
-        """Whether a real schema backs this, as opposed to the ``.glb`` fallback."""
+        """Whether a real schema backs this, as opposed to the suffix fallback."""
         return self._pairs is not None
 
     def is_mesh_field(self, component_type: str | None, field: str, value: object) -> bool:
@@ -35,7 +35,7 @@ class MeshFields:
             return False
         if self._pairs is not None and component_type is not None:
             return (component_type, field) in self._pairs
-        return value.lower().endswith(".glb")
+        return value.lower().endswith((".glb", ".mesh", ".skinnedmesh"))
 
 
 @dataclass(frozen=True)

@@ -447,7 +447,7 @@ def test_mirror(source: str) -> None:
         after = model_prefabs.read_generated(layout, schema.load(layout.root))
         sphere = next(p for p in after if p.model_guid == _guid_of(models, "Models/Prim_Sphere.glb"))
         check(
-            sphere.mesh_path == _mesh_path(after_models := _models(layout), sphere.model_guid),
+            sphere.mesh_path == _mesh_path(_models(layout), sphere.model_guid),
             f"the mesh reference follows the document the sidecar records ({sphere.mesh_path})",
         )
         check(

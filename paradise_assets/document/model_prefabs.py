@@ -81,7 +81,7 @@ class Model:
     prefab references for it.
 
     The prefab never references the ``.glb``: a GLB ships nothing, and the build refuses a
-    reference to one. What it references is the ``.mesh`` document ``paradise assets watch``
+    reference to one. What it references is the ``.mesh`` (or, for a rigged model, ``.skinnedmesh``) document ``paradise assets watch``
     mints beside the model, recorded in the model's sidecar under ``[glb] mesh``. ``mesh`` is
     ``None`` until the watcher has minted it, and a model without one is skipped, not guessed.
     """

@@ -7,7 +7,7 @@ import os
 
 from bpy.types import Panel
 
-from . import component_ops, edits, field_widgets, model_watch, watch
+from . import component_ops, edits, field_widgets, watch
 from .document import component_schema, project, well_known
 from .materialize import save, store, sync
 
@@ -158,39 +158,6 @@ class PARADISE_ASSETS_PT_models(_AssetsPanel, Panel):
         located = project.locate(state.path) if state is not None else None
         if located is None:
             return
-
-        # Cached on the dump's stamp, or this would parse the schema on every redraw. The
-        # skinned half is offered unconditionally here: the panel cannot know whether the
-        # project has rigged models without walking every GLB, which a draw must not do.
-        choice, problem = model_watch.mesh_choice(located)
-
-        preferences = get_preferences(context)
-        if preferences is not None:
-            layout.prop(preferences, "mirror_model_prefabs")
-
-        for label, component, preference in (
-            ("Static", choice.static, "static_mesh_component"),
-            ("Skinned", choice.skinned, "skinned_mesh_component"),
-        ):
-            row = layout.row(align=True)
-            row.label(text=label)
-            row.operator_menu_enum(
-                "paradise_assets.set_mesh_component", "component",
-                text=component.type_name.rsplit(".", 1)[-1] if component is not None else "Choose…",
-                icon="MESH_DATA",
-            ).preference = preference
-
-        if problem is not None:
-            box = layout.box()
-            box.alert = True
-            for index, line in enumerate(_wrap(problem, 44)[:4]):
-                box.label(text=line, icon="ERROR" if index == 0 else "NONE")
-
-        layout.operator("paradise_assets.mirror_model_prefabs", icon="FILE_REFRESH")
-
-        last = model_watch.last_report(located.root)
-        if last is not None:
-            layout.label(text=f"Last: {last[:60]}", icon="INFO")
 
 
 class PARADISE_ASSETS_PT_object(_AssetsPanel, Panel):

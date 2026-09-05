@@ -6,7 +6,6 @@ and a refusal can be recorded for the panel). The operator remains for saving th
 without saving the working file, and as the path with a report channel.
 
 The two that CREATE prefabs are thin: extraction is document surgery (``document/extract.py``)
-and the model mirror is a pure diff (``document/model_prefabs.py``). What lives here is the
 order those steps have to happen in, which is the part a Blender session can get wrong -- reach
 the file before reading it, mint the identity before the document that references it, and
 rematerialize afterwards so the viewport shows what was written.
@@ -22,7 +21,7 @@ import bpy
 from bpy.props import EnumProperty, StringProperty
 from bpy.types import Operator
 
-from . import catalogue, model_watch, watch
+from . import catalogue, watch
 from .document import atomic, extract, new_prefab, project, schema
 from .document import prefab as prefab_document
 from .document.prefab import PrefabDocumentError, loads
@@ -36,7 +35,6 @@ def _start_watch(operator: Operator, layout: project.ProjectLayout) -> None:
     problem = watch.start_for(layout.root)
     if problem is not None:
         operator.report({"WARNING"}, problem)
-    model_watch.start(layout.root)
 
 
 class PARADISE_ASSETS_OT_open_prefab(Operator):
@@ -349,7 +347,7 @@ class PARADISE_ASSETS_OT_extract_prefab(Operator):
         # The new prefab's identity comes from the watcher's sidecar, and the instance left
         # behind cannot be written without it -- so no watcher means no extraction, and finding
         # that out before the level has been rewritten is the whole point of checking here.
-        blocked = model_watch.ensure_watcher(layout.root)
+        blocked = watch.ensure(layout.root)
         if blocked is not None:
             self.report({"ERROR"}, blocked)
             return {"CANCELLED"}
@@ -407,92 +405,6 @@ class PARADISE_ASSETS_OT_extract_prefab(Operator):
 #: The dropdown's items, kept alive on purpose: Blender stores no reference to the strings a
 #: dynamic enum callback returns, so a list built inside the callback is freed and the menu
 #: draws garbage.
-_MESH_COMPONENT_ITEMS: list = []
-
-
-def mesh_component_items(_self, context):
-    """The game's mesh-bearing components, for the pickers."""
-    _MESH_COMPONENT_ITEMS.clear()
-    state = store.read_state(context.scene) if context is not None else None
-    layout = project.locate(state.path) if state is not None else None
-    if layout is not None:
-        for candidate in schema.mesh_components(layout.root):
-            _MESH_COMPONENT_ITEMS.append((
-                candidate.type_name,
-                candidate.type_name.rsplit(".", 1)[-1],
-                f"Author the mesh into {candidate.type_name}.{candidate.field_name}",
-            ))
-    if not _MESH_COMPONENT_ITEMS:
-        # Blender warns "current value matches no enum" on an empty identifier and refuses an
-        # empty item list outright.
-        _MESH_COMPONENT_ITEMS.append(
-            ("NONE", "No mesh component", "This game's schema declares none -- build the launcher")
-        )
-    return _MESH_COMPONENT_ITEMS
-
-
-class PARADISE_ASSETS_OT_set_mesh_component(Operator):
-    """Choose which component a generated model prefab authors its mesh into"""
-
-    bl_idname = "paradise_assets.set_mesh_component"
-    bl_label = "Mesh Component"
-
-    component: EnumProperty(items=mesh_component_items, name="Component")  # type: ignore[valid-type]
-    #: Which preference to write: "static_mesh_component" or "skinned_mesh_component".
-    preference: StringProperty(default="static_mesh_component", options={"HIDDEN"})  # type: ignore[valid-type]
-
-    def execute(self, context):
-        from .prefs import get_preferences
-
-        preferences = get_preferences(context)
-        if preferences is None:
-            self.report({"ERROR"}, "The addon preferences are not available.")
-            return {"CANCELLED"}
-        if not hasattr(preferences, self.preference):
-            self.report({"ERROR"}, f"No such preference: {self.preference}")
-            return {"CANCELLED"}
-        if self.component == "NONE":
-            self.report({"ERROR"}, "This game declares no mesh component to author into.")
-            return {"CANCELLED"}
-
-        setattr(preferences, self.preference, self.component)
-        bpy.ops.wm.save_userpref()
-        self.report({"INFO"}, f"Model prefabs will author into {self.component}")
-        return {"FINISHED"}
-
-
-class PARADISE_ASSETS_OT_mirror_model_prefabs(Operator):
-    """Generate, update and remove the prefab that stands for each model in this project"""
-
-    bl_idname = "paradise_assets.mirror_model_prefabs"
-    bl_label = "Generate Model Prefabs"
-    bl_options = {"REGISTER"}
-
-    @classmethod
-    def poll(cls, context):
-        return store.read_state(context.scene) is not None
-
-    def execute(self, context):
-        state = store.read_state(context.scene)
-        layout = project.locate(state.path)
-        if layout is None:
-            self.report({"ERROR"}, "No asset project found for the open document")
-            return {"CANCELLED"}
-
-        report = model_watch.reconcile(layout)
-        model_watch.remember(layout.root, report)
-        if report.problem is not None:
-            self.report({"ERROR"}, report.problem)
-            return {"CANCELLED"}
-
-        for line in report.lines[:5]:
-            self.report({"WARNING" if line.startswith("could not") else "INFO"}, line)
-        self.report(
-            {"INFO"},
-            report.summary()
-            + (". Refresh the catalogue to see them in the Asset Browser." if report.created else ""),
-        )
-        return {"FINISHED"}
 
 
 #: The catalogue build, in its own Blender. ``__package__``, not a literal: an extension's
@@ -627,8 +539,6 @@ classes = (
     PARADISE_ASSETS_OT_toggle_watch,
     PARADISE_ASSETS_OT_add_prefab_instance,
     PARADISE_ASSETS_OT_extract_prefab,
-    PARADISE_ASSETS_OT_set_mesh_component,
-    PARADISE_ASSETS_OT_mirror_model_prefabs,
     PARADISE_ASSETS_OT_refresh_catalogue,
     PARADISE_ASSETS_FH_prefab,
 )

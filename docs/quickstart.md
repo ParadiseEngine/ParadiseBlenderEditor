@@ -179,10 +179,8 @@ shows the mesh, and is the wrong kind of thing in the game — so it is never gu
 with no rigged models needs only the static one. With no schema at all, build the game's
 launcher once.
 
-The **Keep a Prefab per Model** preference does the same on a timer while a document is open.
-It is **off by default**, because that pass also DELETES: when a model is gone, the prefab that
-stood for it goes too. Three things bound that. A prefab is only the mirror's if its root's
-`meta` carries `GeneratedFrom`, so a hand-authored one is never touched or removed. A missing
-model has to stay missing for several seconds and several polls, because a Finder move arrives
-as a delete followed by an add. And a prefab some document still instantiates is kept and
-reported, whatever happened to its model.
+A prefab is written only when the model has nowhere to be placed from yet. If anything already
+references its mesh — the prefab written last time, one moved elsewhere since, or a document that
+adopted the mesh by hand — `extract` leaves it alone and says so. Nothing tracks the pair
+afterwards: a prefab you edit is yours, and deleting a model leaves its prefab behind for
+`assets verify` to report as a dangling reference.

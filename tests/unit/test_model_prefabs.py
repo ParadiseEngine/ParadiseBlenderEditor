@@ -16,7 +16,7 @@ from paradise_assets.document.asset_reference import AssetReference
 from paradise_assets.document.project import ProjectLayout
 
 STATIC = schema.MeshComponent(
-    "edee8bd8-9321-47db-819d-9bdadf010be4", "ShiningPie.Authoring.ObstacleMesh", "Mesh"
+    "edee8bd8-9321-47db-819d-9bdadf010be4", "ShiningPie.Authoring.StaticMesh", "Mesh"
 )
 SKINNED = schema.MeshComponent(
     "195846ac-d5e5-49a2-8c98-62ac1914c000", "ShiningPie.Authoring.SkinnedMesh", "Mesh"

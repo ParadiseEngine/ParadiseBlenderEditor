@@ -1,7 +1,7 @@
 """Just enough of the GLB container to tell a rigged model from a static one.
 
 A generated prefab has to name a component, and a skinned mesh is a different component from a
-static one in every game that has both (ShiningPie: ``SkinnedMesh`` and ``ObstacleMesh``). The
+static one in every game that has both (ShiningPie: ``SkinnedMesh`` and ``StaticMesh``). The
 distinction is in the model, not in the schema, so it is read from the file: a glTF asset with a
 non-empty ``skins`` array has a rig.
 

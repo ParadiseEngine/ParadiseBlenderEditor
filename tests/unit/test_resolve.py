@@ -31,7 +31,7 @@ def single_object_prefab() -> prefab.PrefabDocument:
             {well_known.POSITION: [0.0, 0.0, 0.0], well_known.SCALE: [1.0, 1.0, 1.0]},
         )
     )
-    root.components.append(PrefabComponent(MESH_ID, "ObstacleMesh", {"Mesh": "Models/unit_box.glb"}))
+    root.components.append(PrefabComponent(MESH_ID, "StaticMesh", {"Mesh": "Models/unit_box.glb"}))
     root.components.append(PrefabComponent(TAG_ID, "ObstacleTag"))
     return validated(PrefabDocument([root]), "lamp.prefab")
 

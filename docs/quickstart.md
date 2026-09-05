@@ -140,3 +140,49 @@ run that test and file the output.
 **Live preview lags, or reports dropped messages** — lower the update rate in preferences. The
 send queue is bounded on purpose, so a runtime that cannot keep up loses old messages rather
 than growing Blender's memory without limit.
+
+## 9. Creating prefabs (the Paradise Assets tab)
+
+Everything above belongs to `paradise_blender`, which exports a `.blend` to `data/`. The
+**Paradise Assets** tab is the other addon: it opens an `assets/**/*.prefab` document and writes
+that document back. Two of its buttons create prefabs rather than edit one.
+
+Both need the asset watcher running, and will start it for you. A new file has no identity until
+`paradise assets watch` writes its `.meta`, and until it has one nothing can reference it — so a
+creation without a watcher is refused rather than half-done. If the `paradise` CLI is not on
+PATH or set in the addon preferences, neither button can work.
+
+**Extract…** (Prefab Document panel, beside *Add Prefab…*) turns the active object and
+everything parented under it into a new `.prefab`, and leaves an instance of it where the
+subtree was. The instance keeps the object's identity, its name and where it stands, so
+anything that referenced that object still does; the prefab holds the shape, with its root at
+the origin. Two consequences worth knowing before pressing it:
+
+- A reference from elsewhere in the level to a **child** of what you extracted breaks. A
+  resolved child's identity is minted per instance, so the authored one stops naming anything.
+  The operator warns, once per reference, and extracts anyway.
+- The document root cannot be extracted (that would be "make an instance of the whole level"),
+  and the operator refuses a path that already holds a prefab or a stray `.meta`.
+
+Save your placement changes first: the extraction works on the file, so it refuses to run while
+the scene holds edits the document does not have.
+
+**Model Prefabs** (a panel of its own) keeps one prefab per model. *Generate Model Prefabs* runs
+one pass: every `.glb` under `assets/` that no generated prefab stands for gets one at
+`prefabs/models/<name>.prefab`, and a model that moved or was renamed has its prefab's mesh
+reference refreshed. The prefab itself is never renamed — its guid is what levels reference, and
+moving the file would break them to fix nothing.
+
+Pick two components in that panel, static and skinned. The mirror reads each `.glb` to see
+whether it carries a rig, and a rigged model authored as a static one is a prefab that loads,
+shows the mesh, and is the wrong kind of thing in the game — so it is never guessed. A project
+with no rigged models needs only the static one. With no schema at all, build the game's
+launcher once.
+
+The **Keep a Prefab per Model** preference does the same on a timer while a document is open.
+It is **off by default**, because that pass also DELETES: when a model is gone, the prefab that
+stood for it goes too. Three things bound that. A prefab is only the mirror's if its root's
+`meta` carries `GeneratedFrom`, so a hand-authored one is never touched or removed. A missing
+model has to stay missing for several seconds and several polls, because a Finder move arrives
+as a delete followed by an add. And a prefab some document still instantiates is kept and
+reported, whatever happened to its model.

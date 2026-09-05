@@ -7,7 +7,7 @@ import os
 
 from bpy.types import Panel
 
-from . import component_ops, edits, field_widgets, watch
+from . import component_ops, edits, field_widgets, model_watch, watch
 from .document import component_schema, project, well_known
 from .materialize import save, store, sync
 
@@ -57,7 +57,9 @@ class PARADISE_ASSETS_PT_document(_AssetsPanel, Panel):
             box.label(text="Your work is in the working file, not lost.")
             box.label(text=refused[:70])
 
-        layout.operator("paradise_assets.add_prefab_instance", text="Add Prefab…", icon="ADD")
+        row = layout.row(align=True)
+        row.operator("paradise_assets.add_prefab_instance", text="Add Prefab…", icon="ADD")
+        row.operator("paradise_assets.extract_prefab", text="Extract…", icon="EXPORT")
         layout.operator("paradise_assets.refresh_catalogue", icon="ASSET_MANAGER")
 
         column = layout.column(align=True)
@@ -134,6 +136,61 @@ def _draw_watch(layout, context) -> None:
         box.label(text="The watcher stopped on its own.", icon="ERROR")
         for line in _wrap(reason, 44)[:3]:
             box.label(text=line)
+
+
+class PARADISE_ASSETS_PT_models(_AssetsPanel, Panel):
+    """One prefab per model, generated and kept in step."""
+
+    bl_label = "Model Prefabs"
+    bl_idname = "PARADISE_ASSETS_PT_models"
+    bl_parent_id = "PARADISE_ASSETS_PT_document"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    @classmethod
+    def poll(cls, context):
+        return store.read_state(context.scene) is not None
+
+    def draw(self, context):
+        from .prefs import get_preferences
+
+        layout = self.layout
+        state = store.read_state(context.scene)
+        located = project.locate(state.path) if state is not None else None
+        if located is None:
+            return
+
+        # Cached on the dump's stamp, or this would parse the schema on every redraw. The
+        # skinned half is offered unconditionally here: the panel cannot know whether the
+        # project has rigged models without walking every GLB, which a draw must not do.
+        choice, problem = model_watch.mesh_choice(located)
+
+        preferences = get_preferences(context)
+        if preferences is not None:
+            layout.prop(preferences, "mirror_model_prefabs")
+
+        for label, component, preference in (
+            ("Static", choice.static, "static_mesh_component"),
+            ("Skinned", choice.skinned, "skinned_mesh_component"),
+        ):
+            row = layout.row(align=True)
+            row.label(text=label)
+            row.operator_menu_enum(
+                "paradise_assets.set_mesh_component", "component",
+                text=component.type_name.rsplit(".", 1)[-1] if component is not None else "Choose…",
+                icon="MESH_DATA",
+            ).preference = preference
+
+        if problem is not None:
+            box = layout.box()
+            box.alert = True
+            for index, line in enumerate(_wrap(problem, 44)[:4]):
+                box.label(text=line, icon="ERROR" if index == 0 else "NONE")
+
+        layout.operator("paradise_assets.mirror_model_prefabs", icon="FILE_REFRESH")
+
+        last = model_watch.last_report(located.root)
+        if last is not None:
+            layout.label(text=f"Last: {last[:60]}", icon="INFO")
 
 
 class PARADISE_ASSETS_PT_object(_AssetsPanel, Panel):
@@ -358,6 +415,7 @@ classes = (
     PARADISE_ASSETS_PT_document,
     # Parents before children, or Blender warns about an unregistered bl_parent_id.
     PARADISE_ASSETS_PT_play,
+    PARADISE_ASSETS_PT_models,
     PARADISE_ASSETS_PT_object,
 )
 

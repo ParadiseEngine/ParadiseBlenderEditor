@@ -85,6 +85,14 @@ if command -v "$BLENDER" >/dev/null 2>&1; then
     | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2})' | tail -30
   check "${PIPESTATUS[0]}" "open scene"
 
+  # Creating prefabs: extraction, and the model prefab mirror. It COPIES the project first --
+  # these operators write and delete, so the checkout must never be the thing under test.
+  step "Integration: extract to prefab, and the model prefab mirror"
+  "$BLENDER" --background --factory-startup --python-exit-code 1 --python tests/integration/test_create_prefab.py -- \
+    "${PARADISE_ASSETS_PROJECT:-../shiningpie}" 2>&1 \
+    | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2}|Info: |.*\| Saved:)' | tail -30
+  check "${PIPESTATUS[0]}" "create prefab"
+
   # Asset Browser thumbnails. Renders, so it wants the same real project -- and its load-bearing
   # check is that the catalogue came out with no geometry in it.
   step "Integration: prefab thumbnails and the catalogue's weight"

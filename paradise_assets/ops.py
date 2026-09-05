@@ -1,9 +1,15 @@
-"""The operators: open a prefab document, save it back, reload it.
+"""The operators: open a prefab document, save it back, reload it, and create new ones.
 
 The explicit save operator predates sync-on-save; both paths exist now. Ctrl+S goes through
 ``materialize/sync.py`` (a ``save_pre`` handler, so the document is written before the .blend
 and a refusal can be recorded for the panel). The operator remains for saving the document
 without saving the working file, and as the path with a report channel.
+
+The two that CREATE prefabs are thin: extraction is document surgery (``document/extract.py``)
+and the model mirror is a pure diff (``document/model_prefabs.py``). What lives here is the
+order those steps have to happen in, which is the part a Blender session can get wrong -- reach
+the file before reading it, mint the identity before the document that references it, and
+rematerialize afterwards so the viewport shows what was written.
 """
 
 from __future__ import annotations
@@ -13,11 +19,12 @@ import os
 import subprocess
 
 import bpy
-from bpy.props import StringProperty
+from bpy.props import EnumProperty, StringProperty
 from bpy.types import Operator
 
-from . import catalogue, watch
-from .document import project
+from . import catalogue, model_watch, watch
+from .document import atomic, extract, new_prefab, project, schema
+from .document import prefab as prefab_document
 from .document.prefab import PrefabDocumentError, loads
 from .materialize import instancing, load, save, store, workfile
 
@@ -29,6 +36,7 @@ def _start_watch(operator: Operator, layout: project.ProjectLayout) -> None:
     problem = watch.start_for(layout.root)
     if problem is not None:
         operator.report({"WARNING"}, problem)
+    model_watch.start(layout.root)
 
 
 class PARADISE_ASSETS_OT_open_prefab(Operator):
@@ -265,6 +273,228 @@ class PARADISE_ASSETS_OT_add_prefab_instance(Operator):
         return {"FINISHED"}
 
 
+class PARADISE_ASSETS_OT_extract_prefab(Operator):
+    """Move the active object and everything under it into a new prefab, leaving an instance"""
+
+    bl_idname = "paradise_assets.extract_prefab"
+    bl_label = "Extract to Prefab"
+    # No UNDO: it writes two files and reloads the scene, and an undo step over that is a lie.
+    bl_options = {"REGISTER"}
+
+    filepath: StringProperty(subtype="FILE_PATH")  # type: ignore[valid-type]
+    filter_glob: StringProperty(default="*.prefab", options={"HIDDEN"})  # type: ignore[valid-type]
+
+    @classmethod
+    def poll(cls, context):
+        if store.read_state(context.scene) is None:
+            return False
+        obj = context.active_object
+        return (
+            obj is not None
+            and store.guid_of(obj) is not None
+            and not store.is_derived(obj)
+            # The root IS the document; extracting it would leave an instance of everything.
+            and obj.parent is not None
+        )
+
+    def invoke(self, context, event):
+        state = store.read_state(context.scene)
+        layout = project.locate(state.path) if state is not None else None
+        if layout is not None and not self.filepath:
+            name = store.document_name(context.active_object) or context.active_object.name
+            self.filepath = os.path.join(layout.assets, "prefabs", f"{name}.prefab")
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        scene = context.scene
+        state = store.read_state(scene)
+        if state is None:
+            self.report({"ERROR"}, "No prefab document is open.")
+            return {"CANCELLED"}
+
+        layout = project.locate(state.path)
+        if layout is None:
+            self.report({"ERROR"}, f"No asset project above {state.path}")
+            return {"CANCELLED"}
+
+        obj = context.active_object
+        guid = store.guid_of(obj)
+        if guid is None:
+            self.report({"ERROR"}, "The active object is not a document object.")
+            return {"CANCELLED"}
+
+        path = os.path.abspath(bpy.path.abspath(self.filepath))
+        if not path.endswith(".prefab"):
+            path += ".prefab"
+
+        # Before anything is written or saved, so a refused target costs nothing.
+        try:
+            relative = new_prefab.refuse_target(path, layout)
+        except new_prefab.CreateError as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+
+        # The extraction works on the FILE, so anything Blender is still holding has to reach it
+        # first -- and a reload at the end would drop pending edits without this.
+        kept = workfile.unsaved_work(scene)
+        if kept is not None:
+            self.report(
+                {"ERROR"},
+                f"This scene has work the document does not: {kept}. Save to the prefab document "
+                "first (Paradise Assets > Save), then extract.",
+            )
+            return {"CANCELLED"}
+
+        # The new prefab's identity comes from the watcher's sidecar, and the instance left
+        # behind cannot be written without it -- so no watcher means no extraction, and finding
+        # that out before the level has been rewritten is the whole point of checking here.
+        blocked = model_watch.ensure_watcher(layout.root)
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+
+        try:
+            save.save_prefab(scene)
+            with open(state.path, encoding="utf-8") as handle:
+                document = loads(handle.read(), state.path)
+        except (save.SaveError, PrefabDocumentError) as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+        except OSError as error:
+            self.report({"ERROR"}, f"Could not read the document: {error}")
+            return {"CANCELLED"}
+
+        try:
+            result = extract.extract(document, guid)
+        except extract.ExtractError as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+
+        # Prefab first, then its identity, then the document that references it. The level is
+        # untouched until there is something real to point it at.
+        try:
+            reference = new_prefab.create(path, layout, result.prefab)
+        except (new_prefab.CreateError, OSError) as error:
+            self.report({"ERROR"}, f"Could not create {relative}: {error}")
+            return {"CANCELLED"}
+
+        try:
+            atomic.write_text(state.path, prefab_document.dumps(result.remaining(reference)))
+        except OSError as error:
+            self.report(
+                {"ERROR"},
+                f"{relative} was written but {os.path.basename(state.path)} could not be updated "
+                f"({error}). Delete {relative} and its .meta, then try again.",
+            )
+            return {"CANCELLED"}
+
+        with open(state.path, encoding="utf-8") as handle:
+            remaining = loads(handle.read(), state.path)
+        load.load_document(scene, remaining, state.path, layout)
+        workfile.save(layout, state.path)
+
+        for warning in result.warnings[:5]:
+            self.report({"WARNING"}, warning)
+        self.report(
+            {"INFO"},
+            f"Extracted {result.objects} object(s) into {relative}. "
+            "Refresh the catalogue to see it in the Asset Browser.",
+        )
+        return {"FINISHED"}
+
+
+#: The dropdown's items, kept alive on purpose: Blender stores no reference to the strings a
+#: dynamic enum callback returns, so a list built inside the callback is freed and the menu
+#: draws garbage.
+_MESH_COMPONENT_ITEMS: list = []
+
+
+def mesh_component_items(_self, context):
+    """The game's mesh-bearing components, for the pickers."""
+    _MESH_COMPONENT_ITEMS.clear()
+    state = store.read_state(context.scene) if context is not None else None
+    layout = project.locate(state.path) if state is not None else None
+    if layout is not None:
+        for candidate in schema.mesh_components(layout.root):
+            _MESH_COMPONENT_ITEMS.append((
+                candidate.type_name,
+                candidate.type_name.rsplit(".", 1)[-1],
+                f"Author the mesh into {candidate.type_name}.{candidate.field_name}",
+            ))
+    if not _MESH_COMPONENT_ITEMS:
+        # Blender warns "current value matches no enum" on an empty identifier and refuses an
+        # empty item list outright.
+        _MESH_COMPONENT_ITEMS.append(
+            ("NONE", "No mesh component", "This game's schema declares none -- build the launcher")
+        )
+    return _MESH_COMPONENT_ITEMS
+
+
+class PARADISE_ASSETS_OT_set_mesh_component(Operator):
+    """Choose which component a generated model prefab authors its mesh into"""
+
+    bl_idname = "paradise_assets.set_mesh_component"
+    bl_label = "Mesh Component"
+
+    component: EnumProperty(items=mesh_component_items, name="Component")  # type: ignore[valid-type]
+    #: Which preference to write: "static_mesh_component" or "skinned_mesh_component".
+    preference: StringProperty(default="static_mesh_component", options={"HIDDEN"})  # type: ignore[valid-type]
+
+    def execute(self, context):
+        from .prefs import get_preferences
+
+        preferences = get_preferences(context)
+        if preferences is None:
+            self.report({"ERROR"}, "The addon preferences are not available.")
+            return {"CANCELLED"}
+        if not hasattr(preferences, self.preference):
+            self.report({"ERROR"}, f"No such preference: {self.preference}")
+            return {"CANCELLED"}
+        if self.component == "NONE":
+            self.report({"ERROR"}, "This game declares no mesh component to author into.")
+            return {"CANCELLED"}
+
+        setattr(preferences, self.preference, self.component)
+        bpy.ops.wm.save_userpref()
+        self.report({"INFO"}, f"Model prefabs will author into {self.component}")
+        return {"FINISHED"}
+
+
+class PARADISE_ASSETS_OT_mirror_model_prefabs(Operator):
+    """Generate, update and remove the prefab that stands for each model in this project"""
+
+    bl_idname = "paradise_assets.mirror_model_prefabs"
+    bl_label = "Generate Model Prefabs"
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context):
+        return store.read_state(context.scene) is not None
+
+    def execute(self, context):
+        state = store.read_state(context.scene)
+        layout = project.locate(state.path)
+        if layout is None:
+            self.report({"ERROR"}, "No asset project found for the open document")
+            return {"CANCELLED"}
+
+        report = model_watch.reconcile(layout)
+        model_watch.remember(layout.root, report)
+        if report.problem is not None:
+            self.report({"ERROR"}, report.problem)
+            return {"CANCELLED"}
+
+        for line in report.lines[:5]:
+            self.report({"WARNING" if line.startswith("could not") else "INFO"}, line)
+        self.report(
+            {"INFO"},
+            report.summary()
+            + (". Refresh the catalogue to see them in the Asset Browser." if report.created else ""),
+        )
+        return {"FINISHED"}
+
+
 #: The catalogue build, in its own Blender. ``__package__``, not a literal: an extension's
 #: module is ``bl_ext.<repo>.paradise_assets``. The root travels as an argument after ``--``
 #: rather than inside the expression, where a quote in the path would break the script.
@@ -396,6 +626,9 @@ classes = (
     PARADISE_ASSETS_OT_save_prefab,
     PARADISE_ASSETS_OT_toggle_watch,
     PARADISE_ASSETS_OT_add_prefab_instance,
+    PARADISE_ASSETS_OT_extract_prefab,
+    PARADISE_ASSETS_OT_set_mesh_component,
+    PARADISE_ASSETS_OT_mirror_model_prefabs,
     PARADISE_ASSETS_OT_refresh_catalogue,
     PARADISE_ASSETS_FH_prefab,
 )

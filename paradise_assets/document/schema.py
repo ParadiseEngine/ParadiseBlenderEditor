@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass
 
 from .project import SCHEMA_CANDIDATES
 
-__all__ = ["MeshFields", "load"]
+__all__ = ["MeshComponent", "MeshFields", "load", "mesh_components"]
 
 
 
@@ -37,12 +38,77 @@ class MeshFields:
         return value.lower().endswith(".glb")
 
 
+@dataclass(frozen=True)
+class MeshComponent:
+    """A component that carries a mesh reference, named completely enough to AUTHOR one.
+
+    :class:`MeshFields` answers "is this field a mesh?" for a payload that already exists; a
+    generator has to write the component from nothing, so it needs the id and the CLR type name
+    as well. The game decides how many of these it declares -- ShiningPie has two -- so nothing
+    here may guess which one a generated prefab should use.
+    """
+
+    component_id: str
+    type_name: str
+    field_name: str
+
+
 def load(project_root: str) -> MeshFields:
     """Read the game's schema dump, or return the fallback when there is none."""
+    document, path = _read_dump(project_root)
+    if document is None:
+        return MeshFields(None, None)
+
+    pairs: set[tuple[str, str]] = set()
+    for component in document.get("components", []):
+        type_name = component.get("type")
+        if isinstance(type_name, str):
+            _collect(component.get("fields"), type_name, pairs)
+    return MeshFields(pairs, path)
+
+
+def mesh_components(project_root: str) -> list[MeshComponent]:
+    """Every mesh-bearing component the game declares, by display order of its type name."""
+    document, _ = _read_dump(project_root)
+    if document is None:
+        return []
+
+    found: list[MeshComponent] = []
+    for component in document.get("components", []):
+        if not isinstance(component, dict):
+            continue
+        component_id = component.get("id")
+        type_name = component.get("type")
+        if not isinstance(component_id, str) or not isinstance(type_name, str):
+            continue
+        for entry in component.get("fields") or []:
+            if not isinstance(entry, dict) or entry.get("authoredBy") != "mesh":
+                continue
+            name = entry.get("name")
+            if isinstance(name, str):
+                found.append(MeshComponent(component_id, type_name, name))
+    found.sort(key=lambda item: (item.type_name.lower(), item.field_name))
+    return found
+
+
+#: path -> (mtime_ns, size, document). The panel asks per redraw and the dump is ~40 KB of
+#: JSON, so parsing it per frame was the redraw's cost; a rebuild changes the stamp.
+_CACHE: dict[str, tuple[int, int, dict]] = {}
+
+
+def _read_dump(project_root: str) -> tuple[dict | None, str | None]:
+    """The game's schema dump and where it was read from, or ``(None, None)``."""
     for candidate in SCHEMA_CANDIDATES:
         path = os.path.join(project_root, candidate.replace("/", os.sep))
-        if not os.path.isfile(path):
+        try:
+            stat = os.stat(path)
+        except OSError:
             continue
+
+        cached = _CACHE.get(path)
+        if cached is not None and cached[:2] == (stat.st_mtime_ns, stat.st_size):
+            return cached[2], path
+
         try:
             with open(path, "rb") as handle:
                 document = json.load(handle)
@@ -50,15 +116,10 @@ def load(project_root: str) -> MeshFields:
             # An unreadable dump is not worth failing a scene load over: the fallback still
             # finds every .glb, and the panel reports which source is in use.
             continue
-
-        pairs: set[tuple[str, str]] = set()
-        for component in document.get("components", []):
-            type_name = component.get("type")
-            if isinstance(type_name, str):
-                _collect(component.get("fields"), type_name, pairs)
-        return MeshFields(pairs, path)
-
-    return MeshFields(None, None)
+        if isinstance(document, dict):
+            _CACHE[path] = (stat.st_mtime_ns, stat.st_size, document)
+            return document, path
+    return None, None
 
 
 def _collect(fields, type_name: str, pairs: set[tuple[str, str]]) -> None:

@@ -58,6 +58,37 @@ def test_first_error_line_prefers_the_cause_over_sdk_noise(tmp_path):
     )
 
 
+def test_first_error_line_skips_a_successful_build_tally_before_a_crash(tmp_path):
+    # The log is now the whole `host play` stream: a green launcher build's tally comes
+    # before the game's crash, and "0 Error(s)" must not be reported as the cause.
+    log = tmp_path / "play.log"
+    log.write_text(
+        "build: 231 asset(s) into .editor/play\n"
+        "    0 Warning(s)\n"
+        "    0 Error(s)\n"
+        "Time Elapsed 00:00:04.61\n"
+        "Unhandled exception. System.InvalidOperationException: the scene names no player\n",
+        encoding="utf-8",
+    )
+
+    assert session.first_error_line(str(log)) == (
+        "Unhandled exception. System.InvalidOperationException: the scene names no player"
+    )
+
+
+def test_first_error_line_names_an_msbuild_diagnostic_not_its_tally(tmp_path):
+    log = tmp_path / "play.log"
+    log.write_text(
+        "play: sources changed since the last build, building\n"
+        "/repo/Game/Sim.cs(12,5): error CS1002: ; expected [/repo/Game/Game.csproj]\n"
+        "Build FAILED.\n"
+        "    1 Error(s)\n",
+        encoding="utf-8",
+    )
+
+    assert session.first_error_line(str(log)).startswith("/repo/Game/Sim.cs(12,5): error CS1002")
+
+
 def test_first_error_line_falls_back_to_the_first_real_line(tmp_path):
     log = tmp_path / "play.log"
     log.write_text(

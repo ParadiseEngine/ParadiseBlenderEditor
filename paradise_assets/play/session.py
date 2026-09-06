@@ -11,10 +11,13 @@ whose latest rebuild is the interesting one.
 from __future__ import annotations
 
 import atexit
+import contextlib
 import hashlib
 import os
+import signal
 import subprocess
 import tempfile
+import threading
 
 __all__ = [
     "exit_reason",
@@ -115,6 +118,8 @@ def start(
     argv = play_command(command, project_root, document_path, watch=watch)
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     try:
+        # Its own session on POSIX, so `stop` can signal the whole group -- the CLI, a dotnet
+        # watch and the game -- rather than trust the CLI alone to pass a SIGTERM down.
         process = subprocess.Popen(  # argv is built from resolved paths
             argv,
             cwd=project_root,
@@ -123,6 +128,7 @@ def start(
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
             creationflags=flags,
+            start_new_session=os.name != "nt",
         )
     except (OSError, subprocess.SubprocessError) as error:
         handle.close()
@@ -136,23 +142,62 @@ def start(
     return process, None
 
 
+#: How long `stop` waits on the calling thread before handing the rest to a reaper.
+_STOP_GRACE_SECONDS = 0.5
+#: How long the reaper gives the tree before SIGKILL.
+_STOP_KILL_AFTER_SECONDS = 5.0
+
+
 def stop(project_root: str) -> None:
-    """Terminate, wait briefly, then kill; Blender must not block on it. On POSIX the CLI
-    handles SIGTERM by killing the game's whole process tree; on Windows ``terminate()`` IS
-    ``TerminateProcess`` and no handler runs, so the game may outlive the CLI there."""
+    """End the whole tree -- the CLI, a dotnet watch, the game -- and return quickly.
+
+    POSIX: SIGTERM to the process group (the session is its own), SIGKILL from a reaper thread
+    if it is still there after a grace. Windows: ``taskkill /T /F`` on the CLI's pid, since
+    ``terminate()`` is ``TerminateProcess`` and would orphan the grandchildren. Blender's main
+    thread waits half a second at most.
+    """
     key = _normalize(project_root)
     process = _SESSIONS.pop(key, None)
     if process is None or process.poll() is not None:
         return
 
+    if os.name == "nt":
+        _taskkill(process.pid)
+        return
+
+    _signal_group(process, signal.SIGTERM)
     try:
-        process.terminate()
-        try:
-            process.wait(timeout=5.0)
-        except subprocess.TimeoutExpired:
-            process.kill()
-    except OSError:
+        process.wait(timeout=_STOP_GRACE_SECONDS)
+        return
+    except subprocess.TimeoutExpired:
         pass
+    threading.Thread(target=_reap, args=(process,), name="paradise-play-reaper", daemon=True).start()
+
+
+def _reap(process: subprocess.Popen) -> None:
+    try:
+        process.wait(timeout=_STOP_KILL_AFTER_SECONDS)
+    except subprocess.TimeoutExpired:
+        _signal_group(process, signal.SIGKILL)
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=2.0)
+
+
+def _signal_group(process: subprocess.Popen, signum: int) -> None:
+    try:
+        os.killpg(os.getpgid(process.pid), signum)
+    except OSError:
+        with contextlib.suppress(OSError):
+            process.send_signal(signum)
+
+
+def _taskkill(pid: int) -> None:
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        subprocess.run(
+            ["taskkill", "/T", "/F", "/PID", str(pid)],
+            capture_output=True, timeout=10.0, creationflags=flags, check=False,
+        )
 
 
 def stop_all() -> None:
@@ -172,27 +217,48 @@ def exit_reason(project_root: str) -> str | None:
     return f"exit {code}: {detail}" if detail else f"exit {code}"
 
 
-# "error" catches MSBuild, the exception words catch a .NET crash banner.
-_FAILURE_MARKERS = ("error", "exception", "unhandled", "fatal")
+#: The log is the whole `host play` stream, and the cause is near its top: the asset build's
+#: `error:`, MSBuild's `error CSxxxx`, or the launcher's first line. 64 KiB covers all three.
+_HEAD_BYTES = 64 * 1024
+
+#: A .NET crash banner, as a whole-word marker; "error" alone would match MSBuild's tally.
+_CRASH_MARKERS = ("unhandled exception", "fatal error", "exception:")
 
 
 def first_error_line(path: str) -> str | None:
-    """The most explanatory line of a failed run's log. Falls back to the FIRST non-warning
-    line: a launcher prints its cause first and hints after, and the first line of a build log
-    is usually an irrelevant SDK warning that would read as the diagnosis."""
+    """The most explanatory line of a failed run's log: the first diagnostic (``error:`` from
+    the CLI, ``error CS1002:``/``error MSB4025:`` from MSBuild, a crash banner), else the FIRST
+    non-warning line -- a launcher prints its cause first and hints after, and the first line of
+    a build log is usually an irrelevant SDK warning that would read as the diagnosis."""
     try:
         with open(path, encoding="utf-8", errors="replace") as handle:
-            lines = [line.strip() for line in handle if line.strip()]
+            head = handle.read(_HEAD_BYTES)
     except OSError:
         return None
 
+    lines = [line.strip() for line in head.splitlines() if line.strip()]
     if not lines:
         return None
 
-    match = next((line for line in lines if any(m in line.lower() for m in _FAILURE_MARKERS)), None)
+    match = next((line for line in lines if _is_diagnostic(line)), None)
     if match is None:
         match = next((line for line in lines if not _is_build_noise(line)), lines[0])
     return match if len(match) <= 300 else match[:297] + "..."
+
+
+def _is_diagnostic(line: str) -> bool:
+    """A line that NAMES a failure. MSBuild's ``0 Error(s)`` / ``1 Error(s)`` tallies and
+    ``Build FAILED.`` are counts, not causes, and would otherwise win by coming first."""
+    lowered = line.lower()
+    if lowered.endswith("error(s)") or lowered == "build failed.":
+        return False
+    return (
+        lowered.startswith("error")
+        or ": error " in lowered
+        or " error cs" in lowered
+        or " error msb" in lowered
+        or any(marker in lowered for marker in _CRASH_MARKERS)
+    )
 
 
 def _is_build_noise(line: str) -> bool:

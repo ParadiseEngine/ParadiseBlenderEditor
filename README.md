@@ -104,7 +104,7 @@ Everything lives in the **Paradise** tab of the 3D viewport sidebar (`N`), as fo
 
 | panel | scope | what it is for |
 |---|---|---|
-| **Prefab Document** | the open document | open, save, reload; add a prefab instance; extract a selection into a new prefab |
+| **Prefab Document** | the open document | open, save, reload, recreate; add a prefab instance; extract a selection into a new prefab |
 | **Project** | the project it lives in | the asset watcher, Build / Verify / Clean, the Asset Browser catalogue |
 | **Play** | the open document | run the game on it, and say why it stopped |
 | **Components** | the selected object | the document's components, editable where the game's schema says they are |
@@ -129,7 +129,10 @@ A typical loop:
 2. **Place things.** Add Prefab… instances a document; the Asset Browser catalogue gives you
    thumbnails to drag from.
 3. **Ctrl+S.** The document is written first, then the working `.blend`. The explicit **Save**
-   button writes only the document.
+   button writes only the document. **Recreate Working File** deletes the cached `.blend` and
+   rebuilds the scene from the document — the way out of a workfile that has accumulated
+   something you do not want, a stuck viewport included. **Reload** keeps what the working file
+   holds; Recreate does not, which is why it asks first.
 4. **Build & Play.** The CLI builds `assets/` into `build/`, brings the launcher up to date, and
    runs the game on the open document.
 

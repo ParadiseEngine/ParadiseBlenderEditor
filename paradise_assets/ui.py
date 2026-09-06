@@ -72,6 +72,9 @@ class PARADISE_ASSETS_PT_document(_AssetsPanel, Panel):
         row = layout.row(align=True)
         row.operator("paradise_assets.save_prefab", text="Save", icon="EXPORT")
         row.operator("paradise_assets.reload_prefab", text="Reload", icon="FILE_REFRESH")
+        # Its own row, and spelled out: Reload keeps what the working file holds and this throws
+        # the file away, so the two must not read as a pair of near-synonyms side by side.
+        layout.operator("paradise_assets.recreate_workfile", icon="TRASH")
 
         row = layout.row(align=True)
         row.operator("paradise_assets.add_prefab_instance", text="Add Prefab…", icon="ADD")

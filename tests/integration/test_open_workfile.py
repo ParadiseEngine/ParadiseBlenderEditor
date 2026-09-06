@@ -149,6 +149,49 @@ def main() -> int:
                 f"and started the watcher for the project ({started})",
             )
 
+            print("\n== Recreate throws the working file away and rebuilds from the document ==")
+            bpy.ops.paradise_assets.open_prefab(filepath=document)
+            cached = workfile.path_for(layout, document)
+            stray = bpy.data.objects.new("StrayImport", None)
+            bpy.context.scene.collection.objects.link(stray)
+            bpy.ops.wm.save_mainfile()
+            # Blender writes the backup beside it on that save; both must go, or File > Recover
+            # Last Session brings the discarded state straight back.
+            backup = cached + "1"
+            check(os.path.isfile(cached), "the working file exists before")
+
+            bpy.ops.paradise_assets.recreate_workfile()
+
+            check(os.path.isfile(cached), "a working file exists after")
+            check(not os.path.isfile(backup), f"and the .blend1 backup is gone ({backup})")
+            rebuilt = {obj.name for obj in bpy.context.scene.collection.all_objects}
+            check(
+                "StrayImport" not in rebuilt,
+                f"what only the cache held is gone ({sorted(rebuilt)})",
+            )
+            check(
+                names_in_scene() == {"Root", "Crate", "AddedOutside"},
+                f"and the document is all there ({names_in_scene()})",
+            )
+
+            print("\n== a document that will not parse leaves the cache alone ==")
+            with open(document, encoding="utf-8") as handle:
+                good = handle.read()
+            with open(document, "w", encoding="utf-8") as handle:
+                handle.write("schema_version = 1\nthis is not toml [[[\n")
+            refused = None
+            try:
+                bpy.ops.paradise_assets.recreate_workfile()
+            except RuntimeError as error:
+                refused = str(error)
+            check(refused is not None, "the operator refused")
+            check(
+                os.path.isfile(cached),
+                "and the working file it would have deleted is still there",
+            )
+            with open(document, "w", encoding="utf-8") as handle:
+                handle.write(good)
+
             print("\n== the startup file's content goes, and only the startup file's ==")
             # `read_homefile`, not `read_factory_settings(use_empty=True)`: the cube, the camera,
             # the light and the `Collection` holding them are exactly what this has to remove,

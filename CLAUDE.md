@@ -140,6 +140,14 @@ tuning: below it, the load itself would churn the document.
 exactly unit, and the length error leaks through the rotation matrix and comes back out of the
 decompose as SCALE — it turned a stored `20.0` into `19.999998` on ShiningPie's skyline props.
 
+**Reload and Recreate are not near-synonyms, and the panel must not let them read as a pair.**
+`reload_prefab` re-reads the document into the CURRENT session, keeping the working file's
+extras, camera and selection. `recreate_workfile` deletes `.editor/blend/<...>.blend` AND the
+`.blend1` beside it — a backup of exactly the state being discarded is one File > Recover Last
+Session from undoing the whole point — then rebuilds from the document. It parses the document
+BEFORE deleting anything, so a document that will not parse leaves the author with the cache
+they still had rather than with neither it nor a scene.
+
 **A load leaves the scene holding the document and nothing else, but only when asked.**
 `load_document(..., clear_startup=True)` removes Blender's startup content — the cube, the
 camera, the light and the `Collection` around them — and only `open_prefab` passes it, because

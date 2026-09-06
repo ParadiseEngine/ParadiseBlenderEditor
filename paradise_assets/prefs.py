@@ -1,5 +1,5 @@
-"""Machine-scoped toolchain paths. "Which launcher runs this game" would belong in
-``project.toml``, but the manifest loader is strict and an addon key there would fail the build.
+"""Machine-scoped toolchain paths. "Which launcher runs this game" is the project's, not the
+machine's: ``[host]`` in ``assets/project.toml``, read by ``paradise host play``.
 """
 
 from __future__ import annotations
@@ -15,7 +15,9 @@ PACKAGE = __package__
 
 
 class ParadiseAssetsPreferences(AddonPreferences):
-    """Where the asset CLI, the game runtime and the texture encoder are."""
+    """Where the asset CLI and the texture encoder are. The game's launcher is NOT here: it is
+    ``[host]`` in the project's ``assets/project.toml``, so a script and CI run the same game the
+    same way (ParadiseEngine's ``paradise host play``)."""
 
     bl_idname = PACKAGE
 
@@ -26,25 +28,6 @@ class ParadiseAssetsPreferences(AddonPreferences):
             "`dotnet run --project`). Empty looks on PATH and then for the installed dotnet tool"
         ),
         subtype="FILE_PATH",
-        default="",
-    )
-
-    runtime_host: StringProperty(  # type: ignore[valid-type]
-        name="Runtime Host",
-        description=(
-            "The game's launcher: an executable, or a .csproj run via `dotnet run --project`. "
-            "This is the game's, not the engine's -- there is no default that could be right"
-        ),
-        subtype="FILE_PATH",
-        default="",
-    )
-
-    runtime_arguments: StringProperty(  # type: ignore[valid-type]
-        name="Runtime Arguments",
-        description=(
-            "Extra arguments appended to every launch. The addon passes --scene itself; "
-            "anything game-specific (--config, --ui, --seed) belongs here"
-        ),
         default="",
     )
 
@@ -89,11 +72,6 @@ class ParadiseAssetsPreferences(AddonPreferences):
         box.prop(self, "build_profile")
         box.prop(self, "ktx_path")
         box.prop(self, "auto_watch")
-
-        box = layout.box()
-        box.label(text="Play", icon="PLAY")
-        box.prop(self, "runtime_host")
-        box.prop(self, "runtime_arguments")
 
 
 def get_preferences(context=None):

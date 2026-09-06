@@ -75,10 +75,10 @@ Do the work with the shell and a headless Blender. Do not ask me to click throug
 
 5. Point Paradise Assets at the toolchain. Discover these; do not invent them:
    - cli: Paradise.Cli.csproj in a ParadiseEngine checkout (src/Paradise.Cli/Paradise.Cli.csproj), or a `paradise` executable on PATH / the installed dotnet tool. Prefer the .csproj in a sibling engine checkout when one exists.
-   - runtime_host: the GAME's launcher, not the engine sample. Look for a *.Launcher.csproj (or similar host .csproj) next to an assets/project.toml. For ShiningPie that is ShiningPie.Launcher/ShiningPie.Launcher.csproj.
+   - (The game's launcher is NOT a preference: it is `[host] project` in the game's assets/project.toml, relative to the project root -- for ShiningPie, `ShiningPie.Launcher/ShiningPie.Launcher.csproj`. Play and Build Game Schema run `paradise host play` / `paradise host build` on it.)
    - ktx_path: the ktx EXECUTABLE (KTX-Software v5 `ktx`, not a directory, not toktx for this addon). Probe `which ktx`, $PARADISE_KTX_PATH, /usr/local/bin/ktx, /opt/homebrew/bin/ktx. Blender launched from the Dock/Finder does not inherit the shell PATH, so store an absolute file path even if `which ktx` works in the terminal. A directory looks configured and is ignored.
 
-   Write them with blender --background --python-expr, then bpy.ops.wm.save_userpref(). Print the three values you set.
+   Write them with blender --background --python-expr, then bpy.ops.wm.save_userpref(). Print the values you set.
 
 6. Optionally set Paradise Engine Tools prefs the same way (runtime_host, ktx_path, and tools/ParadiseBlenderBridge/ParadiseBlenderBridge.csproj as bridge_project) if this machine will export .blend → data/. Skip if we only author assets/ documents.
 

@@ -100,6 +100,7 @@ def load_document(
     root_guid = expansion.document.single_root()
     root_guid = root_guid.guid if root_guid is not None else None
     parents = {entry.parent for entry in expansion.document.objects if entry.parent is not None}
+    by_guid = {entry.guid: entry for entry in expansion.document.objects}
 
     for entry in expansion.document.objects:
         # Only an AUTHORED entry can be a group: a resolved child is the prefab's, locked, and
@@ -134,7 +135,17 @@ def load_document(
         # A group holds its children by COLLECTION membership, since a Blender collection has no
         # transform to parent to; an ordinary parent is a parent.
         if (holder := grouped.get(entry.parent)) is not None:
-            _link(holder, created.get(entry.guid) or grouped.get(entry.guid))
+            member = created.get(entry.guid) or grouped.get(entry.guid)
+            _link(holder, member)
+            # Parented to where the GROUP hangs, not to the group: a collection has no transform
+            # to be relative to, and without this an object inside a group under a placed object
+            # would be drawn at the group's ancestor's origin instead of its own place. It is
+            # also what makes the save's "the group hangs where the object already hung" test
+            # true on the next round trip.
+            anchor = created.get(_anchor_of(entry.parent, by_guid, grouped))
+            if anchor is not None and not isinstance(member, bpy.types.Collection):
+                member.parent = anchor
+                member.matrix_parent_inverse.identity()
             continue
 
         child = created.get(entry.guid)
@@ -159,6 +170,17 @@ def load_document(
     result.sources |= library.sources
     store.write_state(scene, scene_path)
     return result
+
+
+def _anchor_of(group_guid: str, by_guid: dict, grouped: dict) -> str | None:
+    """The nearest ancestor of a group that is an OBJECT: what its members parent to. A group
+    inside a group has no transform of its own, so the walk continues past it."""
+    current = by_guid.get(group_guid)
+    while current is not None and current.parent is not None:
+        if current.parent not in grouped:
+            return current.parent
+        current = by_guid.get(current.parent)
+    return None
 
 
 def _create_group(entry: PrefabObject) -> bpy.types.Collection:

@@ -284,28 +284,33 @@ def _root_guid(scene: bpy.types.Scene) -> str | None:
 def _parent_guid(obj: bpy.types.Object, scene: bpy.types.Scene) -> tuple[str | None, str | None]:
     """The document parent of ``obj``, and a warning when Blender says two things at once.
 
-    Parenting wins over membership, because a parent is a TRANSFORM relationship the document
-    must keep and a collection is not. An object that is both parented and dropped into a group
-    is therefore saved under its parent and its membership is lost on the next load -- said out
-    loud rather than discovered, since the document has one parent link and cannot hold both.
+    Membership wins WHERE THE GROUP HANGS WHERE THE OBJECT ALREADY HUNG, which is the ordinary
+    authoring gesture and is transform-neutral by construction: a group's transform is the
+    identity and its parent is the object's old parent, so re-hanging under it moves nothing.
+
+    That case has to win, or the feature cannot be used at all. Dragging rows into a collection
+    in the Outliner does NOT clear their object parenting, and every object in a real level is
+    parented to the document root -- so a rule that let parenting win unconditionally discarded
+    every group an author could actually make (#41).
+
+    Parenting still wins when the group hangs somewhere ELSE, because then the two disagree about
+    the transform space and only the parent's answer is the one the object is drawn at. Said out
+    loud rather than discovered: the document has one parent link and cannot hold both.
     """
-    if obj.parent is not None:
-        parent = store.guid_of(obj.parent)
-        held = next(
-            (groups.guid_of(c) for c in obj.users_collection if groups.guid_of(c) is not None),
-            None,
-        )
-        if held is not None and parent is not None:
-            return parent, (
-                f"{obj.name} is parented to '{obj.parent.name}' AND inside a group; the document "
-                "keeps the parent, so its place in the group is not saved."
-            )
+    parent = store.guid_of(obj.parent) if obj.parent is not None else None
+    group = next(
+        (c for c in obj.users_collection if groups.guid_of(c) is not None), None)
+    if group is None:
         return parent, None
 
-    for collection in obj.users_collection:
-        if (guid := groups.guid_of(collection)) is not None:
-            return guid, None
-    return None, None
+    if parent is None or _holder_guid(group, scene) == parent:
+        return groups.guid_of(group), None
+
+    return parent, (
+        f"{obj.name} is parented to '{obj.parent.name}', which is not where its group "
+        f"'{group.name}' hangs; the document keeps the parent, so its place in the group is "
+        "not saved."
+    )
 
 
 def _group_entry(

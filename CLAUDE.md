@@ -174,9 +174,19 @@ placement on the first save), and at least one child (or every marker empty sile
 empty collection). A group linked straight into the scene collection hangs off the ROOT, not off
 nothing — returning nothing there wrote a second root and the save refused itself.
 
-Parenting beats membership. An object that is both parented and dropped into a group is saved
-under its parent and warned about, because `meta.Parent` is one link and a parent is a TRANSFORM
-relationship the document must keep.
+Membership beats parenting WHERE THE GROUP HANGS WHERE THE OBJECT ALREADY HUNG, and that case
+has to win or the feature cannot be used at all: dragging rows into a collection does not clear
+their object parenting, and every object in a real level is parented to the document root — so
+the first rule, "parenting always wins", discarded every group an author could actually make.
+It is transform-neutral by construction (a group's transform is the identity and its parent is
+the object's old parent). Where the group hangs somewhere else the two disagree about the
+transform space, only the parent's answer matches what the object is drawn at, and the save
+keeps the parent and says so.
+
+The load half is what keeps that true across a round trip: a group's members are parented to
+the nearest ancestor that is an OBJECT, not to the group — a collection has no transform to be
+relative to, and without it an object in a group under a placed object would be drawn at that
+object's origin.
 
 **An instance loaded from a document carries no prefab reference of its own** — the expansion
 in `resolve.py` replaces the instance entry with the prefab's resolved root, consuming it. So

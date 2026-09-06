@@ -146,7 +146,9 @@ def main() -> int:
             for holder in list(pivot.users_collection):
                 holder.objects.unlink(pivot)
             made.objects.link(pivot)
-            pivot.parent = None
+            # NOT unparented. Dragging a row into a collection in the Outliner does not clear
+            # its object parenting, and every object in a real level is parented to the root --
+            # so a rule that let parenting win here made groups impossible to author (#41).
 
             save.save_prefab(bpy.context.scene)
             written = prefab_document.loads(read(path), path)

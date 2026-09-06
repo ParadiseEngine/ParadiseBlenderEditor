@@ -46,18 +46,19 @@ ROOT = "aaaaaaaa-1111-4111-8111-111111111111"
 CAR = "cccccccc-3333-4333-8333-333333333333"
 
 SCHEMA = {"components": [{
-    "id": COLLIDER, "type": "Game.AuthoredCollider", "displayName": "Collider",
+    "id": COLLIDER, "type": "Game.AuthoredColliders", "displayName": "Colliders",
     "fields": [{"name": "Shapes", "type": "array", "items": {
-        "name": "Shapes", "type": "object", "authoredBy": "shape", "fields": [
-            {"name": "Id", "type": "string"},
+        "name": "Shapes", "type": "object", "fields": [
+            {"name": "Shape", "type": "object", "authoredBy": "shape", "fields": [
+                {"name": "ShapeType", "type": "enum", "values": ["Box", "Sphere", "Capsule"]},
+                {"name": "LocalCenter", "type": "vector3"},
+                {"name": "LocalRotation", "type": "quaternion"},
+                {"name": "Size", "type": "vector3"},
+                {"name": "Radius", "type": "float"},
+                {"name": "Height", "type": "float"},
+            ]},
             {"name": "IsTrigger", "type": "bool"},
             {"name": "Layer", "type": "int"},
-            {"name": "ShapeType", "type": "enum", "values": ["Box", "Sphere", "Capsule"]},
-            {"name": "LocalCenter", "type": "vector3"},
-            {"name": "LocalRotation", "type": "quaternion"},
-            {"name": "Size", "type": "vector3"},
-            {"name": "Radius", "type": "float"},
-            {"name": "Height", "type": "float"},
         ]}}],
 }]}
 
@@ -96,12 +97,13 @@ Scale = [1.0, 1.0, 1.0]
 
 [[objects.components]]
 id = "{COLLIDER}"
-type = "Game.AuthoredCollider"
+type = "Game.AuthoredColliders"
 
 [[objects.components.Shapes]]
-Id = "Body"
 IsTrigger = false
 Layer = 0
+
+[objects.components.Shapes.Shape]
 ShapeType = "Box"
 LocalCenter = [0, 0.25, 0]
 LocalRotation = [0, 0, 0, 1]
@@ -110,9 +112,10 @@ Radius = 0.0
 Height = 0.0
 
 [[objects.components.Shapes]]
-Id = "Bumper"
 IsTrigger = true
 Layer = 2
+
+[objects.components.Shapes.Shape]
 ShapeType = "Sphere"
 LocalCenter = [0, 0, 2]
 LocalRotation = [0, 0, 0, 1]
@@ -154,6 +157,10 @@ def shapes_of(path: str) -> list:
     return car.component(COLLIDER).data["Shapes"]
 
 
+def geometry(row: dict) -> dict:
+    return row["Shape"]
+
+
 def close(a, b, eps=1e-5) -> bool:
     return all(abs(float(x) - float(y)) <= eps for x, y in zip(a, b, strict=True))
 
@@ -193,12 +200,13 @@ def main() -> int:
             body.scale.z = 2.0
             save.save_prefab(bpy.context.scene)
             rows = shapes_of(path)
-            check(close(rows[0]["LocalCenter"], (1, 0.25, 0)),
-                  f"LocalCenter moved ({rows[0]['LocalCenter']})")
-            check(close(rows[0]["Size"], (2, 2, 4)), f"Size follows the scale ({rows[0]['Size']})")
-            check(rows[0]["Id"] == "Body" and rows[0]["IsTrigger"] is False and rows[0]["Layer"] == 0,
+            check(close(geometry(rows[0])["LocalCenter"], (1, 0.25, 0)),
+                  f"LocalCenter moved ({geometry(rows[0])['LocalCenter']})")
+            check(close(geometry(rows[0])["Size"], (2, 2, 4)),
+                  f"Size follows the scale ({geometry(rows[0])['Size']})")
+            check(rows[0]["IsTrigger"] is False and rows[0]["Layer"] == 0,
                   "the row's game members are untouched")
-            check(rows[1]["Radius"] == 0.4 and rows[1]["IsTrigger"] is True,
+            check(geometry(rows[1])["Radius"] == 0.4 and rows[1]["IsTrigger"] is True,
                   "the other row is untouched")
             again = read(path)
             save.save_prefab(bpy.context.scene)
@@ -208,19 +216,39 @@ def main() -> int:
             bpy.data.objects.remove(body, do_unlink=True)
             save.save_prefab(bpy.context.scene)
             rows = shapes_of(path)
-            check(len(rows) == 1 and rows[0]["Id"] == "Bumper",
-                  f"one row left ({[r.get('Id') for r in rows]})")
+            check(len(rows) == 1 and rows[0]["IsTrigger"] is True,
+                  f"one row left ({[geometry(r).get('ShapeType') for r in rows]})")
+
+            print("\n== the panel plans from the Empties, not the last save ==")
+            from paradise_assets.document import component_schema
+            vocabulary = component_schema.load(layout.root)
+            schema = vocabulary.get(COLLIDER)
+            def planned_rows():
+                data = {"Shapes": [dict(r) for r in shapes_of(path)]}
+                live = shapes.overlay_live(car, COLLIDER, schema, data, shapes.default_row)
+                return [i for i in schema.plan(live) if i.role == component_schema.ROLE_ROW]
+            check(len(planned_rows()) == 1, "one row after the delete, before any save")
+            extra = shapes.add_shape(car, COLLIDER, "Shapes", "Sphere")
+            check(len(planned_rows()) == 2, "two rows the moment an Empty is added")
+            bpy.data.objects.remove(extra, do_unlink=True)
+            for e in shapes.shape_empties(car, COLLIDER, "Shapes"):
+                bpy.data.objects.remove(e, do_unlink=True)
+            check(len(planned_rows()) == 0, "and none once every Empty is gone")
+            open_document(path, layout)
+            car = object_named("Car")
 
             print("\n== adding a shape appends a complete row ==")
             capsule = shapes.add_shape(car, COLLIDER, "Shapes", "Capsule")
             capsule.location = (0, 0, 1.0)          # Blender Z is document Y
             save.save_prefab(bpy.context.scene)
             rows = shapes_of(path)
-            check(len(rows) == 2 and rows[1]["ShapeType"] == "Capsule", "a Capsule row was appended")
-            check(rows[1]["Radius"] == 0.25 and rows[1]["Height"] == 1.0, "with the default extents")
-            check(close(rows[1]["LocalCenter"], (0, 1, 0)),
-                  f"where the Empty was put ({rows[1]['LocalCenter']})")
-            check(rows[1].get("IsTrigger") is False and rows[1].get("Layer") == 0 and rows[1].get("Id") == "",
+            check(len(rows) == 2 and geometry(rows[1])["ShapeType"] == "Capsule",
+                  "a Capsule row was appended")
+            check(geometry(rows[1])["Radius"] == 0.25 and geometry(rows[1])["Height"] == 1.0,
+                  "with the default extents")
+            check(close(geometry(rows[1])["LocalCenter"], (0, 1, 0)),
+                  f"where the Empty was put ({geometry(rows[1])['LocalCenter']})")
+            check(rows[1].get("IsTrigger") is False and rows[1].get("Layer") == 0,
                   "and every game member at its schema default")
 
             print("\n== an instance's own collider is shown; its prefab's is not ==")
@@ -231,8 +259,9 @@ def main() -> int:
                 handle.write(
                     f'schema_version = 1\n\n[[objects]]\n\n[[objects.components]]\nid = "{META}"\n'
                     f'type = "meta"\nGuid = "{PROP}"\nName = "Crate"\n\n[[objects.components]]\n'
-                    f'id = "{COLLIDER}"\ntype = "Game.AuthoredCollider"\n\n[[objects.components.Shapes]]\n'
-                    'Id = "PrefabOwned"\nShapeType = "Box"\nSize = [1, 1, 1]\n')
+                    f'id = "{COLLIDER}"\ntype = "Game.AuthoredColliders"\n\n[[objects.components.Shapes]]\n'
+                    'IsTrigger = false\n\n[objects.components.Shapes.Shape]\n'
+                    'ShapeType = "Box"\nSize = [1, 1, 1]\n')
             with open(prop + ".meta", "w", encoding="utf-8") as handle:
                 handle.write(f'schema_version = 1\nguid = "{PROP}"\n')
             level = path.replace("arena.prefab", "placed.prefab")
@@ -245,8 +274,9 @@ def main() -> int:
                     + f'[[objects]]\nprefab = {{ guid = "{PROP}", path = "props/crate.prefab" }}\n\n'
                     f'[[objects.components]]\nid = "{META}"\ntype = "meta"\nGuid = "{OWN}"\n'
                     f'Name = "OwnCollider"\nParent = "{ROOT}"\n\n[[objects.components]]\n'
-                    f'id = "{COLLIDER}"\ntype = "Game.AuthoredCollider"\n\n[[objects.components.Shapes]]\n'
-                    'Id = "LevelOwned"\nShapeType = "Sphere"\nRadius = 2.0\n\n'
+                    f'id = "{COLLIDER}"\ntype = "Game.AuthoredColliders"\n\n[[objects.components.Shapes]]\n'
+                    'IsTrigger = true\n\n[objects.components.Shapes.Shape]\n'
+                    'ShapeType = "Sphere"\nRadius = 2.0\n\n'
                     f'[[objects]]\nprefab = {{ guid = "{PROP}", path = "props/crate.prefab" }}\n\n'
                     f'[[objects.components]]\nid = "{META}"\ntype = "meta"\nGuid = "{FROM_PREFAB}"\n'
                     f'Name = "PrefabCollider"\nParent = "{ROOT}"\n')
@@ -262,7 +292,7 @@ def main() -> int:
             save.save_prefab(bpy.context.scene)
             placed = prefab_document.loads(read(level), level)
             moved = next(e for e in placed.objects if e.name == "OwnCollider")
-            check(close(moved.component(COLLIDER).data["Shapes"][0]["LocalCenter"], (3, 0, 0)),
+            check(close(moved.component(COLLIDER).data["Shapes"][0]["Shape"]["LocalCenter"], (3, 0, 0)),
                   "and moving it writes the instance's own row")
             untouched = next(e for e in placed.objects if e.name == "PrefabCollider")
             check(untouched.component(COLLIDER) is None, "without inventing a collider on the other")

@@ -18,7 +18,7 @@ from bpy.types import Panel
 from . import component_ops, edits, field_widgets, watch
 from .document import assets as asset_index
 from .document import component_schema, well_known
-from .materialize import save, store, sync, workfile
+from .materialize import save, shapes, store, sync, workfile
 
 __all__ = ["classes"]
 
@@ -324,9 +324,7 @@ class PARADISE_ASSETS_PT_object(_AssetsPanel, Panel):
             drawn.append((component, component_id, schema, edited))
             if schema is None or component_schema.is_format_owned(component_id):
                 continue
-            raw = component.get("data")
-            data = raw if isinstance(raw, dict) else {}
-            merged = component_ops.merged_data(obj, component_id, data)
+            merged = _live_payload(obj, component_id, schema, component)
             for item in schema.plan(merged):
                 if item.role not in (
                     component_schema.ROLE_LEAF, component_schema.ROLE_ROW
@@ -375,12 +373,20 @@ class PARADISE_ASSETS_PT_object(_AssetsPanel, Panel):
             _draw_schema_fields(box, context, obj, component, schema, edited)
 
 
-def _draw_schema_fields(box, context, obj, component: dict, schema, edited: dict) -> None:
-    """One component's fields, editable where the schema says they can be."""
+def _live_payload(obj, component_id: str, schema, component: dict) -> dict:
+    """The payload as the panel shows it: document, plus pending edits, plus what the shape
+    Empties say now. ONE function for the widget sync and the draw: when the two planned from
+    different payloads, a row the sync never saw drew as a label instead of a checkbox."""
     raw = component.get("data")
     data = raw if isinstance(raw, dict) else {}
-    component_id = str(component.get("id", ""))
     merged = component_ops.merged_data(obj, component_id, data)
+    return shapes.overlay_live(obj, component_id, schema, merged, shapes.default_row)
+
+
+def _draw_schema_fields(box, context, obj, component: dict, schema, edited: dict) -> None:
+    """One component's fields, editable where the schema says they can be."""
+    component_id = str(component.get("id", ""))
+    merged = _live_payload(obj, component_id, schema, component)
 
     for item in schema.plan(merged):
         value = edits.read_path(merged, item.path)
@@ -403,13 +409,12 @@ def _draw_schema_fields(box, context, obj, component: dict, schema, edited: dict
                 add.shape_type = shape_type
             continue
 
-        if item.role == component_schema.ROLE_ROW and item.field.authored_by == "shape":
+        if item.role == component_schema.ROLE_ROW and _is_shape_row(item):
             row = box.row(align=True)
-            shape_type = value.get("ShapeType") if isinstance(value, dict) else None
-            label = value.get("Id") if isinstance(value, dict) and value.get("Id") else None
+            shape_type = _shape_type_of(item, value)
             select = row.operator(
                 "paradise_assets.select_shape",
-                text=f"{item.index}  {label or shape_type or 'shape'}", icon="RESTRICT_SELECT_OFF")
+                text=f"{item.index}  {shape_type or 'shape'}", icon="RESTRICT_SELECT_OFF")
             select.component_id = component_id
             select.field_name, _, _ = item.path.rpartition("/")
             select.index = item.index if item.index is not None else 0
@@ -446,6 +451,16 @@ def _draw_schema_fields(box, context, obj, component: dict, schema, edited: dict
             continue
 
         field_widgets.draw_item(box, context, obj, component_id, item, value, edited)
+
+
+def _is_shape_row(item) -> bool:
+    return any(child.authored_by == "shape" for child in item.field.fields)
+
+
+def _shape_type_of(item, value) -> str | None:
+    member = next((c for c in item.field.fields if c.authored_by == "shape"), None)
+    nested = value.get(member.name) if member is not None and isinstance(value, dict) else None
+    return nested.get("ShapeType") if isinstance(nested, dict) else None
 
 
 def _draw_meta(box, obj, component: dict) -> None:

@@ -22,8 +22,8 @@ from mathutils import Quaternion, Vector
 from ..document import collider_shapes, component_schema
 
 __all__ = [
-    "SHAPE_KEY", "add_shape", "bake", "is_shape", "materialize", "owner_of", "remove_all",
-    "shape_empties",
+    "SHAPE_KEY", "add_shape", "bake", "default_row", "is_shape", "materialize", "overlay_live", "owner_of",
+    "remove_all", "shape_empties",
 ]
 
 #: JSON ``{"component": id, "field": path, "index": row, "shape": ShapeType}``.
@@ -52,11 +52,14 @@ def materialize(obj, components: list, vocabulary: component_schema.Vocabulary) 
             if not collider_shapes.is_shape_array(field):
                 continue
             rows = data.get(field.name)
+            member = collider_shapes.host_member(field).name
             if not isinstance(rows, list):
                 continue
             for index, row in enumerate(rows):
                 if isinstance(row, dict):
-                    _create(obj, component_id, field.name, index, row)
+                    geometry = row.get(member)
+                    _create(obj, component_id, field.name, index,
+                            geometry if isinstance(geometry, dict) else {})
                     made += 1
     return made
 
@@ -85,9 +88,9 @@ def shape_empties(obj, component_id: str, field_name: str) -> list:
 
 
 def bake(obj, entry, vocabulary: component_schema.Vocabulary, item_default) -> int:
-    """Write the shape Empties into ``entry``'s host-shape lists. Returns how many rows the
-    Empties changed. A row whose Empty is gone is dropped; a new Empty gains a default row.
-    Afterwards the Empties are renumbered to the rows they now are."""
+    """Write the shape Empties into ``entry``'s shape lists. Returns how many rows the Empties
+    changed. A row whose Empty is gone is dropped; a new Empty gains a default row. Afterwards
+    the Empties are renumbered to the rows they now are."""
     changed = 0
     for component in entry.components:
         payload = {"id": component.id, "type": component.type, "data": component.data}
@@ -97,22 +100,13 @@ def bake(obj, entry, vocabulary: component_schema.Vocabulary, item_default) -> i
         for field in schema.fields:
             if not collider_shapes.is_shape_array(field):
                 continue
-            empties = shape_empties(obj, component.id, field.name)
             stored = component.data.get(field.name)
             stored_rows = stored if isinstance(stored, list) else []
+            live = _live_rows(obj, component.id, field, stored_rows, item_default)
             rows = []
-            for position, empty in enumerate(empties):
-                tag = _tag(empty)
-                original = stored_rows[tag["index"]] if tag["index"] < len(stored_rows) else None
-                base = copy.deepcopy(original) if isinstance(original, dict) else item_default(field)
-                computed = collider_shapes.from_gizmo(
-                    tag["shape"], empty.empty_display_size,
-                    empty.location, _quaternion_xyzw(empty), empty.scale)
-                geometry = collider_shapes.keep_unchanged(base, computed)
-                if any(base.get(k) != v for k, v in geometry.items()):
-                    changed += 1
-                base.update(geometry)
-                rows.append(base)
+            for position, (empty, tag, row, moved) in enumerate(live):
+                changed += moved
+                rows.append(row)
                 tag["index"] = position
                 empty[SHAPE_KEY] = json.dumps(tag)
             if len(rows) != len(stored_rows):
@@ -120,6 +114,49 @@ def bake(obj, entry, vocabulary: component_schema.Vocabulary, item_default) -> i
             if rows or field.name in component.data:
                 component.data[field.name] = rows
     return changed
+
+
+def overlay_live(obj, component_id: str, schema, data: dict, item_default) -> dict:
+    """``data`` with every shape list replaced by what the Empties say NOW -- the rows the save
+    would write. The panel plans from this, or it keeps showing the rows of the last save while
+    an author adds and deletes Empties."""
+    for field in schema.fields:
+        if not collider_shapes.is_shape_array(field):
+            continue
+        stored = data.get(field.name)
+        stored_rows = stored if isinstance(stored, list) else []
+        data[field.name] = [
+            row for _, _, row, _ in _live_rows(obj, component_id, field, stored_rows, item_default)
+        ]
+    return data
+
+
+def _live_rows(obj, component_id: str, field, stored_rows: list, item_default) -> list:
+    """Per shape Empty, in row order: ``(empty, tag, row, changed)`` where ``row`` is the stored
+    row it stands for (or a default one) with the Empty's geometry baked into the host member."""
+    member = collider_shapes.host_member(field).name
+    out = []
+    for empty in shape_empties(obj, component_id, field.name):
+        tag = _tag(empty)
+        original = stored_rows[tag["index"]] if tag["index"] < len(stored_rows) else None
+        base = copy.deepcopy(original) if isinstance(original, dict) else item_default(field)
+        held = base.get(member)
+        held = held if isinstance(held, dict) else {}
+        computed = collider_shapes.from_gizmo(
+            tag["shape"], empty.empty_display_size,
+            empty.location, _quaternion_xyzw(empty), empty.scale)
+        geometry = collider_shapes.keep_unchanged(held, computed)
+        changed = int(any(held.get(k) != v for k, v in geometry.items()))
+        held.update(geometry)
+        base[member] = held
+        out.append((empty, tag, base, changed))
+    return out
+
+
+def default_row(field) -> dict:
+    """A new shape row: every member at its schema default, so the game reads a complete record
+    rather than one whose omitted keys it has to guess."""
+    return {child.name: child.default_value() for child in field.items.fields}
 
 
 def remove_all(scene) -> None:
@@ -130,8 +167,7 @@ def remove_all(scene) -> None:
 def _create(owner, component_id: str, field_name: str, index: int, row: dict):
     display, size, position, rotation, scale = collider_shapes.to_gizmo(row)
     shape_type = str(row.get("ShapeType") or "Box")
-    label = row.get("Id") if isinstance(row.get("Id"), str) and row.get("Id") else shape_type
-    empty = bpy.data.objects.new(f"{owner.name}.{label}", None)
+    empty = bpy.data.objects.new(f"{owner.name}.{shape_type}", None)
     empty.empty_display_type = display
     empty.empty_display_size = size
     empty.show_in_front = True

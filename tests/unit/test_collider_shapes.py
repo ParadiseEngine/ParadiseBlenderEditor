@@ -81,10 +81,17 @@ def test_an_unmoved_shape_keeps_the_documents_own_numbers():
     assert collider_shapes.keep_unchanged(stored, moved)["LocalCenter"] == [5.0, 0.0, 0.0]
 
 
-def test_only_a_shape_list_is_a_shape_array():
+def test_only_a_list_of_rows_with_a_host_shape_member_is_a_shape_array():
     class Field:
-        def __init__(self, type_, items=None, authored_by=None):
+        def __init__(self, type_, items=None, authored_by=None, fields=(), name=""):
             self.type, self.items, self.authored_by = type_, items, authored_by
-    assert collider_shapes.is_shape_array(Field("array", Field("object", authored_by="shape")))
-    assert not collider_shapes.is_shape_array(Field("array", Field("object", authored_by="light")))
-    assert not collider_shapes.is_shape_array(Field("object", authored_by="shape"))
+            self.fields, self.name = list(fields), name
+    shape = Field("object", authored_by="shape", name="Shape")
+    flag = Field("bool", name="IsTrigger")
+    rows = Field("array", Field("object", fields=[shape, flag]))
+    assert collider_shapes.is_shape_array(rows)
+    assert collider_shapes.host_member(rows) is shape
+    assert not collider_shapes.is_shape_array(Field("array", Field("object", fields=[flag])))
+    assert not collider_shapes.is_shape_array(
+        Field("array", Field("object", fields=[Field("object", authored_by="light")])))
+    assert not collider_shapes.is_shape_array(Field("object", fields=[shape]))

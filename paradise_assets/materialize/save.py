@@ -32,6 +32,7 @@ from ..document import prefab as prefab_document
 from ..document.asset_reference import AssetReference
 from ..document.prefab import PrefabComponent, PrefabDocument, PrefabDocumentError, PrefabObject
 from . import shapes, store
+from .shapes import default_row as shapes_default_row
 
 __all__ = ["SaveError", "SaveResult", "document_trs", "save_prefab"]
 
@@ -317,9 +318,7 @@ def _object_entry(
 
 
 def _default_row(field) -> dict:
-    """A new host-shape row: every member at its schema default, so the game reads a complete
-    record rather than one whose omitted keys it has to guess."""
-    return {child.name: child.default_value() for child in field.items.fields}
+    return shapes_default_row(field)
 
 
 def _apply_edits(obj: bpy.types.Object, entry: PrefabObject, result: SaveResult) -> None:

@@ -2,6 +2,10 @@
 Empty's transform means is a contract with the game (``Paradise.Authoring.HostShape``), and it
 is tested without Blender.
 
+A shape ROW is the game's record: one member typed as the host kind (``authoredBy: shape``,
+``HostShape``'s six geometry members nested under it) beside whatever the game says about the
+shape (``IsTrigger``). The Empty decides the nested member and nothing else.
+
 One Empty per shape, parented to the object it collides for. Its LOCAL transform is the shape's
 placement, and the primitive's extents ride on the scale so the ordinary gizmos edit them:
 
@@ -19,7 +23,7 @@ from . import axes
 
 __all__ = [
     "GEOMETRY_FIELDS", "HOST_KIND", "SHAPE_TYPES",
-    "from_gizmo", "is_shape_array", "keep_unchanged", "to_gizmo",
+    "from_gizmo", "host_member", "is_shape_array", "keep_unchanged", "to_gizmo",
 ]
 
 #: The ``authoredBy`` the schema dump puts on a ``HostShape`` member.
@@ -36,12 +40,19 @@ _EPSILON = 1e-5
 
 
 def is_shape_array(field) -> bool:
-    """Whether a schema field is a list of host shapes."""
-    return (
-        field.type == "array"
-        and field.items is not None
-        and field.items.authored_by == HOST_KIND
-    )
+    """Whether a schema field is a list of shape rows: rows with a host-shape member."""
+    return field.type == "array" and host_member(field) is not None
+
+
+def host_member(field):
+    """The row member the Empty decides -- the one typed as the host shape -- or ``None``."""
+    items = getattr(field, "items", None)
+    if items is None:
+        return None
+    for child in getattr(items, "fields", ()):
+        if child.authored_by == HOST_KIND:
+            return child
+    return None
 
 
 def to_gizmo(shape: dict):

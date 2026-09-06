@@ -106,8 +106,13 @@ class FieldSchema:
         if is_host_locked(self):
             return False
         if self.type == "array":
-            # Host-baked items stay locked, so no Add button over them either.
-            return self.items is not None and not is_host_locked(self.items)
+            # Host-baked items stay locked, so no Add button over them either; a shape list's
+            # Add is an Empty, not a row.
+            return (
+                self.items is not None
+                and not is_host_locked(self.items)
+                and _shape_member(self) is None
+            )
         return self.type in EDITABLE_TYPES or is_asset_field(self)
 
     def default_value(self):
@@ -229,11 +234,18 @@ def _walk(
 
 
 _SHAPE_KIND = "shape"
-_SHAPE_GEOMETRY = frozenset({"ShapeType", "LocalCenter", "LocalRotation", "Size", "Radius", "Height"})
+
+
+def _shape_member(field: FieldSchema) -> FieldSchema | None:
+    """The row member typed as the host shape, when *field* is a list of such rows."""
+    if field.type != "array" or field.items is None:
+        return None
+    return next((c for c in field.items.fields if c.authored_by == _SHAPE_KIND), None)
 
 
 def _walk_shapes(field: FieldSchema, path: str, value, items: list[PlanItem]) -> None:
-    """A host-shape list: one header, then per row the members the Empty does not decide."""
+    """A shape list: one header, then per row the members the Empty does not decide."""
+    member = _shape_member(field)
     items.append(PlanItem(path, field, ROLE_SHAPES))
     rows = value if isinstance(value, list) else []
     for index, row in enumerate(rows):
@@ -241,7 +253,7 @@ def _walk_shapes(field: FieldSchema, path: str, value, items: list[PlanItem]) ->
         items.append(PlanItem(row_path, field.items, ROLE_ROW, index=index))
         node = row if isinstance(row, dict) else {}
         for child in field.items.fields:
-            if child.name in _SHAPE_GEOMETRY:
+            if child is member:
                 continue
             _walk_field(child, join_path(row_path, child.name), node.get(child.name), items, node)
 
@@ -256,7 +268,7 @@ def _walk_field(
         return
     # Arrays before the asset check, or ``assetKinds`` on the list makes it one picker.
     if field.type == "array":
-        if field.items is not None and field.items.authored_by == _SHAPE_KIND:
+        if _shape_member(field) is not None:
             _walk_shapes(field, path, value, items)
             return
         if field.items is None or is_host_locked(field.items):

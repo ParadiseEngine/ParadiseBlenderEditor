@@ -123,16 +123,18 @@ def test_a_host_shape_list_is_rows_of_empties_with_only_the_game_members_typed()
         "fields": [{
             "name": "Shapes",
             "type": "array",
-            "items": {"type": "object", "authoredBy": "shape", "fields": [
+            "items": {"type": "object", "fields": [
+                {"name": "Shape", "type": "object", "authoredBy": "shape", "fields": [
+                    {"name": "ShapeType", "type": "enum", "values": ["Box", "Sphere"]},
+                    {"name": "Size", "type": "vector3"},
+                ]},
                 {"name": "IsTrigger", "type": "bool"},
-                {"name": "ShapeType", "type": "enum", "values": ["Box", "Sphere"]},
-                {"name": "Size", "type": "vector3"},
             ]},
         }],
     }])
 
     schema = component_schema.load(root).get("44444444-4444-4444-8444-444444444444")
-    plan = schema.plan({"Shapes": [{"Size": [1, 1, 1], "IsTrigger": False}]})
+    plan = schema.plan({"Shapes": [{"Shape": {"Size": [1, 1, 1]}, "IsTrigger": False}]})
 
     assert [(item.path, item.role) for item in plan] == [
         ("Shapes", component_schema.ROLE_SHAPES),

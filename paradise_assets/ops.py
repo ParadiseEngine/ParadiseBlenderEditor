@@ -18,11 +18,11 @@ import os
 import subprocess
 
 import bpy
-from bpy.props import EnumProperty, StringProperty
+from bpy.props import StringProperty
 from bpy.types import Operator
 
 from . import catalogue, watch
-from .document import atomic, extract, new_prefab, project, schema
+from .document import atomic, extract, new_prefab, project
 from .document import prefab as prefab_document
 from .document.prefab import PrefabDocumentError, loads
 from .materialize import instancing, load, save, store, workfile

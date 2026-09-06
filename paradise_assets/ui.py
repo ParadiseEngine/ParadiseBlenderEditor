@@ -4,10 +4,12 @@ and ``transform`` stay live from Blender, host-baked fields stay locked."""
 from __future__ import annotations
 
 import os
+import time
 
 from bpy.types import Panel
 
 from . import component_ops, edits, field_widgets, watch
+from .document import assets as asset_index
 from .document import component_schema, project, well_known
 from .materialize import save, store, sync
 
@@ -138,8 +140,37 @@ def _draw_watch(layout, context) -> None:
             box.label(text=line)
 
 
+#: Listing models walks assets/, which a draw must not do on every redraw. Cached per project
+#: and refreshed no more often than this: a panel showing a two-second-old answer is fine, one
+#: that walks the tree at redraw rate is not.
+_MODELS_TTL = 2.0
+
+#: project root -> (taken at, [(model path, a prefab sits beside it)])
+_models_cache: dict[str, tuple[float, list[tuple[str, bool]]]] = {}
+
+
+def _models(layout) -> list[tuple[str, bool]]:
+    """Each model in the project, and whether a prefab sits BESIDE it.
+
+    Beside, not "has one": `extract` skips a model anything already places, wherever that
+    document lives, so a prefab moved elsewhere reads as absent here while the extractor still
+    leaves the model alone. Saying the narrower thing is the only one a draw can afford.
+    """
+    cached = _models_cache.get(layout.root)
+    now = time.monotonic()
+    if cached is not None and now - cached[0] < _MODELS_TTL:
+        return cached[1]
+
+    rows = [
+        (model.path, os.path.exists(os.path.splitext(layout.resolve(model.path))[0] + ".prefab"))
+        for model in asset_index.list_assets(layout, [".glb"])
+    ]
+    _models_cache[layout.root] = (now, rows)
+    return rows
+
+
 class PARADISE_ASSETS_PT_models(_AssetsPanel, Panel):
-    """One prefab per model, generated and kept in step."""
+    """Which models have a prefab beside them. Read-only: `paradise assets extract` writes them."""
 
     bl_label = "Model Prefabs"
     bl_idname = "PARADISE_ASSETS_PT_models"
@@ -151,13 +182,30 @@ class PARADISE_ASSETS_PT_models(_AssetsPanel, Panel):
         return store.read_state(context.scene) is not None
 
     def draw(self, context):
-        from .prefs import get_preferences
-
         layout = self.layout
         state = store.read_state(context.scene)
         located = project.locate(state.path) if state is not None else None
         if located is None:
             return
+
+        rows = _models(located)
+        if not rows:
+            layout.label(text="No models in this project.", icon="INFO")
+            return
+
+        for path, beside in rows:
+            row = layout.row(align=True)
+            row.label(
+                text=os.path.basename(path),
+                icon="OUTLINER_OB_MESH" if beside else "MESH_DATA",
+            )
+            row.label(text="prefab" if beside else "-")
+
+        for line in _wrap(
+            "`paradise assets extract` writes a prefab for a model that has none, unless "
+            "something already places its mesh. It is yours from then on.", 44
+        ):
+            layout.label(text=line)
 
 
 class PARADISE_ASSETS_PT_object(_AssetsPanel, Panel):

@@ -29,7 +29,10 @@ def _well_known_dotnet() -> str | None:
         "/usr/local/share/dotnet/dotnet",
         "/opt/homebrew/bin/dotnet",
         os.path.expanduser("~/.dotnet/dotnet"),
-        r"C:\Program Files\dotnet\dotnet.exe",
+        os.path.join(os.environ.get("PROGRAMFILES", r"C:\Program Files"), "dotnet", "dotnet.exe"),
+        os.path.join(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"), "dotnet", "dotnet.exe"),
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "dotnet", "dotnet.exe"),
+        os.path.expanduser("~/.dotnet/dotnet.exe"),
     ]
     return next((c for c in candidates if os.path.exists(c)), None)
 

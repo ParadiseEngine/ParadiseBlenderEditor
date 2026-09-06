@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 import paradise_assets
 from paradise_assets.document import prefab as prefab_document
 from paradise_assets.document import project
-from paradise_assets.materialize import load, save, shapes
+from paradise_assets.materialize import grouping, load, save, shapes
 
 failures: list[str] = []
 
@@ -339,6 +339,59 @@ def main() -> int:
             check(marker.data.get("Volume", {}).get("ShapeType") == "Box",
                   f"adding one back writes the Volume ({marker.data.get('Volume')})")
             open_document(path, layout)
+
+            print("\n== the operators: add, select, remove, and where they are refused ==")
+            open_document(path, layout)
+            car = object_named("Car")
+            bpy.context.view_layer.objects.active = car
+            car.select_set(True)
+            bpy.ops.paradise_assets.add_shape(component_id=COLLIDER, field_name="Shapes", shape_type="Sphere")
+            handles = shapes.shape_empties(car, COLLIDER, "Shapes")
+            active = bpy.context.view_layer.objects.active
+            check(len(handles) == 3 and active is handles[-1], "Add Shape makes an Empty and activates it")
+            from paradise_assets import component_ops
+            check(component_ops.document_object(bpy.context) is car,
+                  "with the Empty active, the panel is still about the Car")
+            bpy.ops.paradise_assets.select_shape(component_id=COLLIDER, field_name="Shapes", index=0)
+            check(bpy.context.view_layer.objects.active is handles[0], "Select Shape picks by live row")
+            bpy.ops.paradise_assets.remove_shape(component_id=COLLIDER, field_name="Shapes", index=1)
+            remaining = shapes.shape_empties(car, COLLIDER, "Shapes")
+            check([e.name for e in remaining] == [handles[0].name, handles[2].name],
+                  f"Remove Shape deletes the row clicked, not another ({[e.name for e in remaining]})")
+            check(bpy.context.view_layer.objects.active in (car, handles[0]),
+                  "and leaves a document object or its handle active")
+
+            open_document(level, layout)
+            from_prefab = object_named("PrefabCollider")
+            bpy.context.view_layer.objects.active = from_prefab
+            check(not shapes.editable(from_prefab, COLLIDER),
+                  "an instance whose collider is the prefab's is not editable here")
+            refused = None
+            try:
+                bpy.ops.paradise_assets.add_shape(
+                    component_id=COLLIDER, field_name="Shapes", shape_type="Box")
+            except RuntimeError as error:
+                refused = str(error)
+            check(refused is not None and "prefab" in refused,
+                  f"and Add Shape refuses, naming the prefab ({refused})")
+            check(not shapes.shape_empties(from_prefab, COLLIDER, "Shapes"), "with nothing created")
+            own = object_named("OwnCollider")
+            check(shapes.editable(own, COLLIDER), "an instance that authors its own collider is editable")
+
+            print("\n== a shape Empty is never adopted as a group ==")
+            open_document(level, layout)
+            handle = shapes.shape_empties(object_named("OwnCollider"), COLLIDER, "Shapes")[0]
+            grouping.parent_keeping_world(object_named("PrefabCollider"), handle)
+            refused = None
+            try:
+                save.save_prefab(bpy.context.scene)
+            except save.SaveError as error:
+                refused = str(error)
+            check(refused is not None and handle.name in refused,
+                  "dropping a document object on a handle is refused, naming the handle "
+                  f"({(refused or '')[:80]})")
+            check(shapes.is_shape(handle) and handle.get("paradise_guid") is None,
+                  "and the handle gained no identity")
 
             print("\n== a reload rebuilds the Empties from the document ==")
             written = read(path)

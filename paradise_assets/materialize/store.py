@@ -37,6 +37,11 @@ GUID_KEY = "paradise_guid"
 #: Set on an object RESOLVED out of a prefab: saving one back would flatten the instance.
 DERIVED_KEY = "paradise_derived"
 
+#: JSON list of component ids the object's OWN file entry carries. Set on an instance, whose
+#: displayed payload folds the prefab's components in; absent on an ordinary object, where the
+#: payload is the entry.
+AUTHORED_KEY = "paradise_authored_components"
+
 #: The object's components as a JSON string. Read-only display data; never written back.
 COMPONENTS_KEY = "paradise_components"
 
@@ -190,6 +195,26 @@ def object_with_guid(scene: bpy.types.Scene, guid: str | None):
         if found is not None and found.lower() == needle:
             return obj
     return None
+
+
+def tag_authored(obj: bpy.types.Object, component_ids) -> None:
+    """Record which components this instance's own entry authors (lower-cased ids)."""
+    obj[AUTHORED_KEY] = json.dumps(sorted({str(c).lower() for c in component_ids}))
+
+
+def authors(obj: bpy.types.Object, component_id: str) -> bool:
+    """Whether the object's OWN file entry carries this component -- the only components the
+    save writes for it. An ordinary object authors everything it shows; an instance only what
+    its entry adds over the prefab; a derived child nothing."""
+    if is_derived(obj):
+        return False
+    raw = obj.get(AUTHORED_KEY)
+    if not isinstance(raw, str):
+        return True
+    try:
+        return component_id.lower() in json.loads(raw)
+    except json.JSONDecodeError:
+        return True
 
 
 def is_derived(obj: bpy.types.Object) -> bool:

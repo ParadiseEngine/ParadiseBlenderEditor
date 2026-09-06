@@ -250,7 +250,10 @@ def _adopt_new_groups(scene: bpy.types.Scene) -> None:
     while adopted:
         adopted = False
         for obj in scene.collection.all_objects:
-            if obj.type != "EMPTY" or store.guid_of(obj) is not None:
+            if obj.type != "EMPTY" or store.guid_of(obj) is not None or shapes.is_shape(obj):
+                # A collision-shape Empty is its owner's handle, never a group: adopted, it would
+                # be written twice, as a group object and as a shape row on the same Empty. Left
+                # alone, the foreign-parent rule names it.
                 continue
             if not any(store.guid_of(child) is not None for child in obj.children):
                 continue
@@ -272,7 +275,8 @@ def _fold_parent_inverses(scene: bpy.types.Scene) -> None:
     object somewhere else on the next load. Folded here, once, rather than read through on every
     save -- a decomposition is lossy, and the channels are what :func:`_unchanged` compares.
     """
-    for obj in _document_objects(scene):
+    handles = [obj for obj in scene.collection.all_objects if shapes.is_shape(obj)]
+    for obj in _document_objects(scene) + handles:
         if obj.parent is None or obj.matrix_parent_inverse == _IDENTITY:
             continue
         local = obj.matrix_parent_inverse @ obj.matrix_basis

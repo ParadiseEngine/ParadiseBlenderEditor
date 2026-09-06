@@ -90,6 +90,7 @@ def load_document(
         if entry.guid is not None and entry.prefab is not None
     }
 
+    own_entries = {entry.guid: entry for entry in document.objects if entry.guid is not None}
     library = MeshLibrary(scene, result.warn)
     created: dict[str, bpy.types.Object] = {}
 
@@ -100,6 +101,7 @@ def load_document(
             result.derived += 1
         if (reference := instanced.get(entry.guid)) is not None:
             store.tag_prefab(obj, reference.guid, reference.path)
+            store.tag_authored(obj, [c.id for c in own_entries[entry.guid].components])
         created[entry.guid] = obj
         result.objects += 1
 

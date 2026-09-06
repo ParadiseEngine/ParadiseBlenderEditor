@@ -280,13 +280,15 @@ class PARADISE_ASSETS_PT_object(_AssetsPanel, Panel):
 
     def draw(self, context):
         layout = self.layout
-        obj = context.active_object
+        obj = component_ops.document_object(context)
 
-        guid = store.guid_of(obj)
+        guid = store.guid_of(obj) if obj is not None else None
         if guid is None:
             layout.label(text="Not a document object.", icon="DOT")
             return
 
+        if obj is not context.active_object:
+            layout.label(text=f"Shape of {obj.name}", icon="MESH_CUBE")
         layout.label(text=guid, icon="COPY_ID")
 
         vocabulary = component_ops.vocabulary_for(context)
@@ -404,6 +406,10 @@ def _draw_schema_fields(box, context, obj, component: dict, schema, edited: dict
             count = (1 if isinstance(value, dict) else 0) if single else (
                 len(value) if isinstance(value, list) else 0)
             caption = "an Empty under this object" if single else "Empties under this object"
+            if not shapes.editable(obj, component_id):
+                row.label(text=f"{item.path} ({count})  — the prefab's; edit it there",
+                          icon="DECORATE_LOCKED")
+                continue
             row.label(text=f"{item.path} ({count})  — {caption}", icon="MESH_CUBE")
             if not single or count == 0:
                 for shape_type, icon in (

@@ -17,7 +17,7 @@ from . import edits
 from .document import component_schema, project
 from .materialize import shapes, store
 
-__all__ = ["classes", "components_of", "merged_data", "schema_for", "vocabulary_for"]
+__all__ = ["classes", "components_of", "document_object", "merged_data", "schema_for", "vocabulary_for"]
 
 
 def vocabulary_for(context) -> component_schema.Vocabulary:
@@ -132,6 +132,16 @@ class PARADISE_ASSETS_OT_remove_array_row(Operator):
         return {"FINISHED"}
 
 
+def document_object(context):
+    """The document object the panel is about: the active one, or -- when a shape Empty is
+    active, which selecting or adding a shape makes it -- the object it collides for. Without
+    this the add-and-adjust loop blanked the panel after the first click."""
+    obj = context.active_object if context is not None else None
+    if obj is None:
+        return None
+    return obj if store.guid_of(obj) is not None else shapes.owner_of(obj)
+
+
 class PARADISE_ASSETS_OT_add_shape(Operator):
     """Add a collision shape: an Empty under this object you move, rotate and scale."""
 
@@ -144,10 +154,22 @@ class PARADISE_ASSETS_OT_add_shape(Operator):
     shape_type: StringProperty(name="Shape", default="Box")
     single: BoolProperty(name="Single", default=False)
 
+    @classmethod
+    def description(cls, context, properties) -> str:
+        return (
+            f"Add a {properties.shape_type} shape to {properties.field_name}: an Empty under "
+            "this object you move, rotate and scale")
+
     def execute(self, context):
-        obj = context.active_object
-        if obj is None or store.guid_of(obj) is None:
+        obj = document_object(context)
+        if obj is None:
             self.report({"ERROR"}, "Select a document object first")
+            return {"CANCELLED"}
+        if not shapes.editable(obj, self.component_id):
+            self.report(
+                {"ERROR"},
+                f"{obj.name} does not author this component -- it comes from the prefab. Edit "
+                "the shape there.")
             return {"CANCELLED"}
         try:
             empty = shapes.add_shape(
@@ -175,10 +197,13 @@ class PARADISE_ASSETS_OT_remove_shape(Operator):
     index: IntProperty(name="Index", min=0)
 
     def execute(self, context):
-        empty = _shape_at(context.active_object, self.component_id, self.field_name, self.index)
+        owner = document_object(context)
+        empty = _shape_at(owner, self.component_id, self.field_name, self.index)
         if empty is None:
             self.report({"ERROR"}, f"{self.field_name} has no shape {self.index} in the scene")
             return {"CANCELLED"}
+        if context.active_object is empty:
+            context.view_layer.objects.active = owner
         bpy.data.objects.remove(empty, do_unlink=True)
         return {"FINISHED"}
 
@@ -195,7 +220,7 @@ class PARADISE_ASSETS_OT_select_shape(Operator):
     index: IntProperty(name="Index", min=0)
 
     def execute(self, context):
-        empty = _shape_at(context.active_object, self.component_id, self.field_name, self.index)
+        empty = _shape_at(document_object(context), self.component_id, self.field_name, self.index)
         if empty is None:
             self.report({"ERROR"}, f"{self.field_name} has no shape {self.index} in the scene")
             return {"CANCELLED"}

@@ -20,10 +20,11 @@ import bpy
 from mathutils import Quaternion, Vector
 
 from ..document import collider_shapes, component_schema
+from . import store
 
 __all__ = [
-    "SHAPE_KEY", "add_shape", "bake", "default_row", "is_shape", "materialize", "overlay_live", "owner_of",
-    "remove_all", "shape_empties",
+    "SHAPE_KEY", "add_shape", "bake", "default_row", "editable", "is_shape", "materialize",
+    "overlay_live", "owner_of", "remove_all", "shape_empties",
 ]
 
 #: JSON ``{"component": id, "field": path, "index": row, "shape": ShapeType}``.
@@ -37,6 +38,13 @@ def is_shape(obj) -> bool:
 def owner_of(obj):
     """The document object a shape Empty collides for."""
     return obj.parent if is_shape(obj) and obj.parent is not None else None
+
+
+def editable(obj, component_id: str) -> bool:
+    """Whether shapes of this component on ``obj`` reach the document: the save bakes only the
+    components an object's OWN entry authors, so a derived child, or an instance whose collider
+    is its prefab's, must not be offered an Empty that would be silently dropped."""
+    return obj is not None and store.guid_of(obj) is not None and store.authors(obj, component_id)
 
 
 def materialize(obj, components: list, vocabulary: component_schema.Vocabulary) -> int:

@@ -461,7 +461,8 @@ def _draw_schema_fields(box, context, obj, component: dict, schema, edited: dict
 
 
 def _is_shape_row(item) -> bool:
-    return any(child.authored_by == "shape" for child in item.field.fields)
+    field = item.field
+    return field.authored_by == "shape" or any(c.authored_by == "shape" for c in field.fields)
 
 
 def _shape_field_of(item) -> str:
@@ -471,8 +472,11 @@ def _shape_field_of(item) -> str:
 
 
 def _shape_type_of(item, value) -> str | None:
-    member = next((c for c in item.field.fields if c.authored_by == "shape"), None)
-    nested = value.get(member.name) if member is not None and isinstance(value, dict) else None
+    if item.field.authored_by == "shape":
+        nested = value
+    else:
+        member = next((c for c in item.field.fields if c.authored_by == "shape"), None)
+        nested = value.get(member.name) if member is not None and isinstance(value, dict) else None
     return nested.get("ShapeType") if isinstance(nested, dict) else None
 
 

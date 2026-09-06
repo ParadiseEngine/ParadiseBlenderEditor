@@ -1,4 +1,4 @@
-"""Collision shapes: a host-authored ``Shapes`` list shown as Empties under the object.
+"""Collision shapes: host-authored shape rows shown as Empties under the object.
 
     blender --background --factory-startup --python tests/integration/test_shapes.py
 
@@ -59,26 +59,12 @@ SCHEMA = {"components": [{
     "id": MARKER, "type": "Game.CameraTriggerMarker", "displayName": "Camera Trigger",
     "fields": [
         {"name": "Yaw", "type": "float"},
-        {"name": "Volume", "type": "object", "fields": [
-            {"name": "Shape", "type": "object", "authoredBy": "shape", "fields": SHAPE_FIELDS},
-            {"name": "IsTrigger", "type": "bool"},
-        ]},
+        {"name": "Volume", "type": "object", "authoredBy": "shape", "fields": SHAPE_FIELDS},
     ],
 }, {
     "id": COLLIDER, "type": "Game.AuthoredColliders", "displayName": "Colliders",
     "fields": [{"name": "Shapes", "type": "array", "items": {
-        "name": "Shapes", "type": "object", "fields": [
-            {"name": "Shape", "type": "object", "authoredBy": "shape", "fields": [
-                {"name": "ShapeType", "type": "enum", "values": ["Box", "Sphere", "Capsule"]},
-                {"name": "LocalCenter", "type": "vector3"},
-                {"name": "LocalRotation", "type": "quaternion"},
-                {"name": "Size", "type": "vector3"},
-                {"name": "Radius", "type": "float"},
-                {"name": "Height", "type": "float"},
-            ]},
-            {"name": "IsTrigger", "type": "bool"},
-            {"name": "Layer", "type": "int"},
-        ]}}],
+        "name": "Shapes", "type": "object", "authoredBy": "shape", "fields": SHAPE_FIELDS}}],
 }]}
 
 DOCUMENT = f'''schema_version = 1
@@ -119,10 +105,6 @@ id = "{COLLIDER}"
 type = "Game.AuthoredColliders"
 
 [[objects.components.Shapes]]
-IsTrigger = false
-Layer = 0
-
-[objects.components.Shapes.Shape]
 ShapeType = "Box"
 LocalCenter = [0, 0.25, 0]
 LocalRotation = [0, 0, 0, 1]
@@ -131,10 +113,6 @@ Radius = 0.0
 Height = 0.0
 
 [[objects.components.Shapes]]
-IsTrigger = true
-Layer = 2
-
-[objects.components.Shapes.Shape]
 ShapeType = "Sphere"
 LocalCenter = [0, 0, 2]
 LocalRotation = [0, 0, 0, 1]
@@ -177,7 +155,7 @@ def shapes_of(path: str) -> list:
 
 
 def geometry(row: dict) -> dict:
-    return row["Shape"]
+    return row
 
 
 def close(a, b, eps=1e-5) -> bool:
@@ -223,9 +201,7 @@ def main() -> int:
                   f"LocalCenter moved ({geometry(rows[0])['LocalCenter']})")
             check(close(geometry(rows[0])["Size"], (2, 2, 4)),
                   f"Size follows the scale ({geometry(rows[0])['Size']})")
-            check(rows[0]["IsTrigger"] is False and rows[0]["Layer"] == 0,
-                  "the row's game members are untouched")
-            check(geometry(rows[1])["Radius"] == 0.4 and rows[1]["IsTrigger"] is True,
+            check(geometry(rows[1])["Radius"] == 0.4 and close(geometry(rows[1])["LocalCenter"], (0, 0, 2)),
                   "the other row is untouched")
             again = read(path)
             save.save_prefab(bpy.context.scene)
@@ -235,7 +211,7 @@ def main() -> int:
             bpy.data.objects.remove(body, do_unlink=True)
             save.save_prefab(bpy.context.scene)
             rows = shapes_of(path)
-            check(len(rows) == 1 and rows[0]["IsTrigger"] is True,
+            check(len(rows) == 1 and geometry(rows[0])["ShapeType"] == "Sphere",
                   f"one row left ({[geometry(r).get('ShapeType') for r in rows]})")
 
             print("\n== the panel plans from the Empties, not the last save ==")
@@ -267,8 +243,8 @@ def main() -> int:
                   "with the default extents")
             check(close(geometry(rows[1])["LocalCenter"], (0, 1, 0)),
                   f"where the Empty was put ({geometry(rows[1])['LocalCenter']})")
-            check(rows[1].get("IsTrigger") is False and rows[1].get("Layer") == 0,
-                  "and every game member at its schema default")
+            check(set(rows[1]) == {"ShapeType", "LocalCenter", "LocalRotation", "Radius", "Height"},
+                  f"and nothing but geometry on it ({sorted(rows[1])})")
 
             print("\n== an instance's own collider is shown; its prefab's is not ==")
             os.makedirs(os.path.join(root, "assets", "props"))
@@ -279,7 +255,6 @@ def main() -> int:
                     f'schema_version = 1\n\n[[objects]]\n\n[[objects.components]]\nid = "{META}"\n'
                     f'type = "meta"\nGuid = "{PROP}"\nName = "Crate"\n\n[[objects.components]]\n'
                     f'id = "{COLLIDER}"\ntype = "Game.AuthoredColliders"\n\n[[objects.components.Shapes]]\n'
-                    'IsTrigger = false\n\n[objects.components.Shapes.Shape]\n'
                     'ShapeType = "Box"\nSize = [1, 1, 1]\n')
             with open(prop + ".meta", "w", encoding="utf-8") as handle:
                 handle.write(f'schema_version = 1\nguid = "{PROP}"\n')
@@ -294,7 +269,6 @@ def main() -> int:
                     f'[[objects.components]]\nid = "{META}"\ntype = "meta"\nGuid = "{OWN}"\n'
                     f'Name = "OwnCollider"\nParent = "{ROOT}"\n\n[[objects.components]]\n'
                     f'id = "{COLLIDER}"\ntype = "Game.AuthoredColliders"\n\n[[objects.components.Shapes]]\n'
-                    'IsTrigger = true\n\n[objects.components.Shapes.Shape]\n'
                     'ShapeType = "Sphere"\nRadius = 2.0\n\n'
                     f'[[objects]]\nprefab = {{ guid = "{PROP}", path = "props/crate.prefab" }}\n\n'
                     f'[[objects.components]]\nid = "{META}"\ntype = "meta"\nGuid = "{FROM_PREFAB}"\n'
@@ -311,7 +285,7 @@ def main() -> int:
             save.save_prefab(bpy.context.scene)
             placed = prefab_document.loads(read(level), level)
             moved = next(e for e in placed.objects if e.name == "OwnCollider")
-            check(close(moved.component(COLLIDER).data["Shapes"][0]["Shape"]["LocalCenter"], (3, 0, 0)),
+            check(close(moved.component(COLLIDER).data["Shapes"][0]["LocalCenter"], (3, 0, 0)),
                   "and moving it writes the instance's own row")
             untouched = next(e for e in placed.objects if e.name == "PrefabCollider")
             check(untouched.component(COLLIDER) is None, "without inventing a collider on the other")
@@ -326,8 +300,8 @@ def main() -> int:
                     + f'[[objects]]\n\n[[objects.components]]\nid = "{META}"\ntype = "meta"\n'
                     f'Guid = "{GUIDE}"\nName = "Guide"\nParent = "{ROOT}"\n\n'
                     f'[[objects.components]]\nid = "{MARKER}"\ntype = "Game.CameraTriggerMarker"\n'
-                    'Yaw = 40.0\n\n[objects.components.Volume]\nIsTrigger = true\n\n'
-                    '[objects.components.Volume.Shape]\nShapeType = "Sphere"\nLocalCenter = [0, 0, 0]\n'
+                    'Yaw = 40.0\n\n[objects.components.Volume]\nShapeType = "Sphere"\n'
+                    'LocalCenter = [0, 0, 0]\n'
                     'LocalRotation = [0, 0, 0, 1]\nSize = [0, 0, 0]\nRadius = 8.0\nHeight = 0.0\n')
             with open(marked + ".meta", "w", encoding="utf-8") as handle:
                 handle.write('schema_version = 1\nguid = "eeeeeeee-8888-4888-8888-888888888888"\n')
@@ -344,9 +318,8 @@ def main() -> int:
             save.save_prefab(bpy.context.scene)
             written = prefab_document.loads(read(marked), marked)
             marker = next(e for e in written.objects if e.name == "Guide").component(MARKER)
-            check(marker.data["Volume"]["Shape"]["Radius"] == 5.0
-                  and marker.data["Volume"]["IsTrigger"] is True,
-                  f"resizing it writes Volume.Shape and keeps IsTrigger ({marker.data['Volume']})")
+            check(marker.data["Volume"]["Radius"] == 5.0 and marker.data["Yaw"] == 40.0,
+                  f"resizing it writes the Volume and nothing else ({marker.data['Volume']})")
             try:
                 shapes.add_shape(guide, MARKER, "Volume", "Box", single=True)
                 check(False, "a second Volume is refused")
@@ -363,9 +336,8 @@ def main() -> int:
             save.save_prefab(bpy.context.scene)
             written = prefab_document.loads(read(marked), marked)
             marker = next(e for e in written.objects if e.name == "Guide").component(MARKER)
-            check(marker.data.get("Volume", {}).get("Shape", {}).get("ShapeType") == "Box"
-                  and marker.data["Volume"]["IsTrigger"] is False,
-                  f"adding one back writes a complete row ({marker.data.get('Volume')})")
+            check(marker.data.get("Volume", {}).get("ShapeType") == "Box",
+                  f"adding one back writes the Volume ({marker.data.get('Volume')})")
             open_document(path, layout)
 
             print("\n== a reload rebuilds the Empties from the document ==")

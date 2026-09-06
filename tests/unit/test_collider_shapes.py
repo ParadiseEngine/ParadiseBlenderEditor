@@ -95,3 +95,8 @@ def test_only_a_list_of_rows_with_a_host_shape_member_is_a_shape_array():
     assert not collider_shapes.is_shape_array(
         Field("array", Field("object", fields=[Field("object", authored_by="light")])))
     assert not collider_shapes.is_shape_array(Field("object", fields=[shape]))
+    # The row may BE the shape: then there is no member to look under.
+    bare = Field("array", Field("object", authored_by="shape", name="Value"))
+    assert collider_shapes.is_shape_array(bare) and collider_shapes.member_name(bare) is None
+    assert collider_shapes.member_name(rows) == "Shape"
+    assert collider_shapes.is_shape_single(Field("object", authored_by="shape", name="Volume"))

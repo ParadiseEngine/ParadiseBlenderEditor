@@ -184,10 +184,11 @@ the document has no field for. The save folds such an inverse into the channels 
 (`save._fold_parent_inverses`) so hand parenting is safe too; before it, an object parented by
 Ctrl+P loaded back somewhere else.
 
-**A collision shape is an Empty under its object, and the Empty is the editor.** A collider's
-list holds the game's rows, each with one member typed as the host shape (`authoredBy: shape`,
-the six geometry members nested under it — ShiningPie's `Shape`) beside the game's own members
-(`IsTrigger`). The HOST draws and bakes the nested member; the panel types the rest. A trigger
+**A collision shape is an Empty under its object, and the Empty is the editor.** A shape row is
+the host shape itself (`authoredBy: shape` on the row — ShiningPie's `AuthoredColliders` rows,
+and every marker's `Volume`: `ObstacleMarker`'s solid, a trigger's sensor) or a game record with
+one member typed as the host shape beside the game's own members. The HOST draws and bakes the
+geometry; the panel types whatever else the row carries, which for a bare shape is nothing. A trigger
 marker's `Volume` is the same row as ONE field rather than a list: one Empty, its row kept at the
 field's own path (`Volume/IsTrigger`), the key removed when the Empty is deleted so the game
 refuses the marker rather than sensing with nothing. `materialize/shapes.py` makes one child Empty per row on load

@@ -236,9 +236,9 @@ def _walk(
 _SHAPE_KIND = "shape"
 
 
-def _shape_member(field: FieldSchema) -> FieldSchema | None:
-    """The row member typed as the host shape, when *field* is a list of such rows (the member
-    is on the row type) or ONE such row (it is on the field itself -- a marker's Volume)."""
+def _shape_row(field: FieldSchema) -> FieldSchema | None:
+    """The row type of a shape field: the list's item type or the field itself. A row is a shape
+    when it IS the host shape (``authoredBy: shape`` on it) or carries a member that is."""
     if field.type == "array":
         row = field.items
     elif field.type == "object":
@@ -247,22 +247,31 @@ def _shape_member(field: FieldSchema) -> FieldSchema | None:
         return None
     if row is None:
         return None
-    return next((c for c in row.fields if c.authored_by == _SHAPE_KIND), None)
+    if row.authored_by == _SHAPE_KIND or any(c.authored_by == _SHAPE_KIND for c in row.fields):
+        return row
+    return None
+
+
+def _shape_member(field: FieldSchema) -> FieldSchema | None:
+    """Backwards name: whether *field* is a shape field at all. Kept for the two callers."""
+    return _shape_row(field)
 
 
 def _walk_shapes(field: FieldSchema, path: str, value, items: list[PlanItem]) -> None:
     """A shape list, or one shape: a header, then per row the members the Empty does not decide.
-    A single row keeps the field's own path, so its members are ``Volume/IsTrigger``."""
-    member = _shape_member(field)
+    A row that IS the shape has none. A single row keeps the field's own path, so a game member
+    beside the geometry is ``Volume/IsTrigger``."""
+    row_type = _shape_row(field)
+    member = next((c for c in row_type.fields if c.authored_by == _SHAPE_KIND), None)
     items.append(PlanItem(path, field, ROLE_SHAPES))
     if field.type == "array":
-        row_type = field.items
         rows = [(join_path(path, str(i)), r) for i, r in enumerate(value)] if isinstance(value, list) else []
     else:
-        row_type = field
         rows = [(path, value)] if isinstance(value, dict) else []
     for index, (row_path, row) in enumerate(rows):
         items.append(PlanItem(row_path, row_type, ROLE_ROW, index=index))
+        if row_type.authored_by == _SHAPE_KIND:
+            continue
         node = row if isinstance(row, dict) else {}
         for child in row_type.fields:
             if child is member:
@@ -274,6 +283,10 @@ def _walk_field(
     field: FieldSchema, path: str, value, items: list[PlanItem], siblings: dict
 ) -> None:
     if not _is_visible(field, siblings):
+        return
+    # A shape before the host lock: the field IS host-authored, and the Empty is its editor.
+    if _shape_row(field) is not None:
+        _walk_shapes(field, path, value, items)
         return
     if is_host_locked(field):
         items.append(PlanItem(path, field, ROLE_LOCKED))
@@ -304,10 +317,6 @@ def _walk_field(
 
     if is_asset_field(field, value):
         items.append(PlanItem(path, field, ROLE_LEAF if field.editable else ROLE_LOCKED))
-        return
-
-    if _shape_member(field) is not None:
-        _walk_shapes(field, path, value, items)
         return
 
     if field.fields:

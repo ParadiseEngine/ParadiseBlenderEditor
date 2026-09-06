@@ -171,6 +171,29 @@ def test_one_shape_row_is_a_shapes_header_and_a_row_at_the_fields_own_path():
         ("Yaw", component_schema.ROLE_LEAF), ("Volume", component_schema.ROLE_SHAPES)]
 
 
+def test_a_row_that_is_the_host_shape_is_a_row_with_nothing_to_type():
+    root = _project([{
+        "id": "47444444-4444-4444-8444-444444444444",
+        "type": "Game.Obstacle",
+        "fields": [
+            {"name": "Volume", "type": "object", "authoredBy": "shape", "fields": [
+                {"name": "ShapeType", "type": "enum", "values": ["Box"]},
+                {"name": "Size", "type": "vector3"}]},
+            {"name": "Bodies", "type": "array", "items": {
+                "type": "object", "authoredBy": "shape", "fields": [
+                    {"name": "Radius", "type": "float"}]}},
+        ],
+    }])
+    schema = component_schema.load(root).get("47444444-4444-4444-8444-444444444444")
+    plan = schema.plan({"Volume": {"ShapeType": "Box", "Size": [1, 1, 1]}, "Bodies": [{"Radius": 1}]})
+    assert [(i.path, i.role) for i in plan] == [
+        ("Volume", component_schema.ROLE_SHAPES),
+        ("Volume", component_schema.ROLE_ROW),
+        ("Bodies", component_schema.ROLE_SHAPES),
+        ("Bodies/0", component_schema.ROLE_ROW),
+    ]
+
+
 def test_another_host_kind_list_stays_locked():
     root = _project([{
         "id": "45444444-4444-4444-8444-444444444444",

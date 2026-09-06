@@ -49,10 +49,10 @@ def materialize(obj, components: list, vocabulary: component_schema.Vocabulary) 
         data = component.get("data") if isinstance(component.get("data"), dict) else {}
         component_id = str(component.get("id", ""))
         for field in collider_shapes.shape_fields(schema):
-            member = collider_shapes.host_member(field).name
+            member = collider_shapes.member_name(field)
             for index, row in enumerate(_stored_rows(field, data.get(field.name))):
                 if isinstance(row, dict):
-                    geometry = row.get(member)
+                    geometry = row if member is None else row.get(member)
                     _create(obj, component_id, field.name, index,
                             geometry if isinstance(geometry, dict) else {})
                     made += 1
@@ -147,21 +147,25 @@ def _store_rows(field, data: dict, rows: list) -> None:
 def _live_rows(obj, component_id: str, field, stored_rows: list, item_default) -> list:
     """Per shape Empty, in row order: ``(empty, tag, row, changed)`` where ``row`` is the stored
     row it stands for (or a default one) with the Empty's geometry baked into the host member."""
-    member = collider_shapes.host_member(field).name
+    member = collider_shapes.member_name(field)
     out = []
     for empty in shape_empties(obj, component_id, field.name):
         tag = _tag(empty)
         original = stored_rows[tag["index"]] if tag["index"] < len(stored_rows) else None
         base = copy.deepcopy(original) if isinstance(original, dict) else item_default(field)
-        held = base.get(member)
-        held = held if isinstance(held, dict) else {}
+        if member is None:
+            held = base
+        else:
+            held = base.get(member)
+            held = held if isinstance(held, dict) else {}
         computed = collider_shapes.from_gizmo(
             tag["shape"], empty.empty_display_size,
             empty.location, _quaternion_xyzw(empty), empty.scale)
         geometry = collider_shapes.keep_unchanged(held, computed)
         changed = int(any(held.get(k) != v for k, v in geometry.items()))
         held.update(geometry)
-        base[member] = held
+        if member is not None:
+            base[member] = held
         out.append((empty, tag, base, changed))
     return out
 
@@ -170,6 +174,8 @@ def default_row(field) -> dict:
     """A new shape row: every member at its schema default, so the game reads a complete record
     rather than one whose omitted keys it has to guess."""
     row = field.items if field.type == "array" else field
+    if getattr(row, "authored_by", None) == collider_shapes.HOST_KIND:
+        return {}   # the row is the geometry, and the Empty fills every member of it
     return {child.name: child.default_value() for child in row.fields}
 
 

@@ -101,13 +101,12 @@ def load_document(
     root_guid = root_guid.guid if root_guid is not None else None
     parents = {entry.parent for entry in expansion.document.objects if entry.parent is not None}
     by_guid = {entry.guid: entry for entry in expansion.document.objects}
+    group_guids = _group_guids(expansion.document, root_guid, parents)
 
     for entry in expansion.document.objects:
         # Only an AUTHORED entry can be a group: a resolved child is the prefab's, locked, and
         # showing a prefab's internals as collections would multiply them per instance.
-        if entry.guid in authored and groups.is_group_entry(
-            entry, is_root=entry.guid == root_guid, has_children=entry.guid in parents
-        ):
+        if entry.guid in authored and entry.guid in group_guids:
             grouped[entry.guid] = _create_group(entry)
             result.objects += 1
             continue
@@ -170,6 +169,40 @@ def load_document(
     result.sources |= library.sources
     store.write_state(scene, scene_path)
     return result
+
+
+def _group_guids(document, root_guid: str | None, parents: set) -> set:
+    """Which entries are shown as Blender collections.
+
+    Shape decides most of it (:func:`groups.is_group_entry`); ANCESTRY decides the rest, and it
+    has to, because Blender cannot express the alternative. A ``Collection`` has no ``parent``
+    property AT ALL and ``Collection.children`` takes only Collections, so a group whose document
+    parent is an ordinary object has nowhere to hang. Shown as a collection it would be linked
+    beside that object and saved back under the ROOT -- a silent reparent of somebody's document.
+
+    So a group's parent must be the root or another group. Anything else stays an Empty, exactly
+    as a group with a placement does, and the document survives the round trip untouched.
+    """
+    by_guid = {entry.guid: entry for entry in document.objects}
+    decided: dict[str, bool] = {}
+
+    def decide(guid: str) -> bool:
+        if guid in decided:
+            return decided[guid]
+        # False before recursing: a document whose parents form a cycle is not a tree, and this
+        # must answer rather than recur forever. The reader refuses such a document anyway.
+        decided[guid] = False
+        entry = by_guid.get(guid)
+        if entry is None:
+            return False
+        answer = groups.is_group_entry(
+            entry, is_root=guid == root_guid, has_children=guid in parents)
+        if answer and entry.parent is not None and entry.parent != root_guid:
+            answer = decide(entry.parent)
+        decided[guid] = answer
+        return answer
+
+    return {guid for guid in by_guid if decide(guid)}
 
 
 def _anchor_of(group_guid: str, by_guid: dict, grouped: dict) -> str | None:

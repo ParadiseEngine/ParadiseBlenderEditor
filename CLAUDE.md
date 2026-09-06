@@ -171,7 +171,11 @@ each with a reason it cannot go the other way: never the root (the root IS the d
 instance places, what `instancing` parents under, what extraction refuses), never an instance,
 identity transform only (a Blender collection cannot be moved, so a placed group would lose its
 placement on the first save), and at least one child (or every marker empty silently becomes an
-empty collection). A group linked straight into the scene collection hangs off the ROOT, not off
+empty collection). A fifth is ANCESTRY, and Blender's data model forces it: a `Collection` has no
+`parent` property at all and `Collection.children` takes only Collections, so a group whose
+document parent is an ordinary object has nowhere to hang. Shown as a collection it was linked
+beside that object and saved back under the ROOT — a silent reparent of somebody's document. A
+group's parent must therefore be the root or another group; anything else stays an Empty. A group linked straight into the scene collection hangs off the ROOT, not off
 nothing — returning nothing there wrote a second root and the save refused itself.
 
 Membership beats parenting WHERE THE GROUP HANGS WHERE THE OBJECT ALREADY HUNG, and that case

@@ -132,6 +132,30 @@ def main() -> int:
                 "a PLACED empty stays an empty — a collection could not carry its transform",
             )
 
+            print("\n== a group under an ordinary object stays an object ==")
+            # Blender has no way to express it: `Collection` has no `parent` property at all and
+            # `Collection.children` takes only Collections. Shown as a collection it would be
+            # linked beside that object and saved back under the ROOT, silently reparenting
+            # somebody's document. So it stays an Empty and the document survives untouched.
+            nested = path.replace("arena.prefab", "nested.prefab")
+            with open(nested, "w", encoding="utf-8") as handle:
+                handle.write(
+                    "schema_version = 1\n"
+                    + obj_toml(ROOT, "Level", None)
+                    + obj_toml(LOOSE, "Placed", ROOT, (7.0, 0.0, 0.0))
+                    + obj_toml(GROUP, "Under", LOOSE)
+                    + obj_toml(PLACED, "Member", GROUP, (1.0, 0.0, 0.0))
+                )
+            with open(nested + ".meta", "w", encoding="utf-8") as handle:
+                handle.write('schema_version = 1\nguid = "ffffffff-6666-4666-8666-666666666666"\n')
+            was = read(nested)
+            open_document(nested, layout)
+            check(collection_named("Under") is None, "'Under' is NOT a collection")
+            check(object_named("Under") is not None, "it stays an object")
+            save.save_prefab(bpy.context.scene)
+            check(read(nested) == was, "and saving does not reparent it under the root")
+            open_document(path, layout)
+
             print("\n== saving changes nothing ==")
             save.save_prefab(bpy.context.scene)
             check(

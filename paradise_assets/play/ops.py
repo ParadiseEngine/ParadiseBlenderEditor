@@ -1,12 +1,13 @@
-"""Build, Play, Verify and Clean as buttons. Play builds first and a failed build stops it:
-nothing else keeps ``.editor/play/`` fresh, and launching anyway would show an hour-old level
-with nothing on screen saying so. The open document plays; every prefab is playable (§2.9).
+"""Build, Play, Stop, Verify and Clean as buttons. Play is ``paradise host play``: the CLI builds
+the assets, brings the launcher up to date, runs the game and waits for it, so a failed build
+stops the launch (nothing else keeps ``.editor/play/`` fresh) and a Stop is one terminate. The
+open document plays; every prefab is playable (§2.9).
 """
 
 from __future__ import annotations
 
-import json
 import os
+import subprocess
 import time
 
 import bpy
@@ -15,25 +16,19 @@ from bpy.types import Operator
 
 from ..document import project
 from ..materialize import store
-from .host import (
-    first_error_line,
-    launch_runtime,
-    log_path,
-    resolve_cli_command,
-    resolve_runtime_command,
-    run_cli,
-    schema_build_stage,
-    start_cli,
-    start_schema_build,
-)
+from . import session
+from .host import resolve_cli_command, run_cli, start_cli
 
 __all__ = ["classes"]
 
-# Three minutes: thirty seconds was not enough, and the failure was the worst kind (watch
-# expired, success reported, build died a minute later unheard). Waiting is free. It bounds
-# the failure rather than removing it: Blender cannot see whether a window opened.
+# How long Play keeps an eye on the game before handing its lifetime to the player. Long enough
+# for a launcher build plus the load: a build that dies a minute in must still be reported here,
+# not only in the panel. Blender cannot see whether a window opened; this bounds the failure.
 WATCH_SECONDS = 180.0
 POLL_INTERVAL = 0.4
+
+#: Background Blender has no event loop; a scripted Play waits this long for an early death.
+BACKGROUND_WAIT_SECONDS = 5.0
 
 CLI_MISSING = (
     "No Paradise CLI found. Set 'Paradise CLI' in the addon preferences to the `paradise` "
@@ -137,121 +132,125 @@ class _CliOperator:
         return {"CANCELLED"}
 
 
-def _built_scene(layout, document_path: str) -> str:
-    """``assets/levels/x.prefab`` -> ``.editor/play/levels/x.prefab`` (play keeps the name)."""
-    relative = os.path.relpath(document_path, layout.assets)
-    return os.path.join(layout.editor, "play", relative)
-
-
-def _derived_config(play_root: str) -> list[str]:
-    """``--config`` when ``<play>/<name>/config.{toml,json}`` exists, nothing otherwise; a game
-    arranged differently says so through the Runtime Arguments preference."""
-    manifest = os.path.join(play_root, "manifest.json")
-    try:
-        with open(manifest, encoding="utf-8") as handle:
-            name = json.load(handle).get("project")
-    except (OSError, ValueError, AttributeError):
-        return []
-
-    if not isinstance(name, str) or not name:
-        return []
-    directory = os.path.join(play_root, name)
-    for extension in (".toml", ".json"):
-        config = os.path.join(directory, "config" + extension)
-        if os.path.isfile(config):
-            return ["--config", config]
-    return []
-
-
-class PARADISE_ASSETS_OT_play(_CliOperator, Operator):
-    """Build this project into .editor/play and launch the game on the open document"""
+class PARADISE_ASSETS_OT_play(Operator):
+    """Build this project and run the game on the open document (replacing a running one)"""
 
     bl_idname = "paradise_assets.play"
     bl_label = "Build & Play"
     bl_options = {"REGISTER"}
-    verb = "Build"
+
+    watch: BoolProperty(  # type: ignore[valid-type]
+        name="Watch Code",
+        description=(
+            "Run under `dotnet watch`: a C# edit is hot-patched into the running game, or "
+            "rebuilds and restarts it when it cannot be. Slower to start; no rebuild afterwards"
+        ),
+        default=False,
+    )
 
     # Plain attributes, not RNA properties: watch state must not reach the redo panel or a keymap.
     _process = None
+    _timer = None
+    _root = ""
     _deadline = 0.0
 
     @classmethod
     def poll(cls, context) -> bool:
         return store.read_state(context.scene) is not None
 
-    def cli_arguments(self) -> list[str]:
-        return ["assets", "build", "--profile", _profile(), "--editor"]
+    def execute(self, context):
+        found = _project(self)
+        if found is None:
+            return {"CANCELLED"}
+        layout, document_path = found
 
-    def modal(self, context, event):
-        if self._process is None:
-            return _CliOperator.modal(self, context, event)
-        return self._watch_runtime(context, event)
-
-    def finished(self, context, result) -> set[str]:
-        if not result.ok:
-            return self._report_failure(result)
-        layout, document_path = self._layout, self._document_path
-
-        scene_path = _built_scene(layout, document_path)
-        if not os.path.isfile(scene_path):
-            # Name the expected file rather than "something went wrong".
-            self.report(
-                {"ERROR"},
-                f"The build succeeded but {os.path.relpath(scene_path, layout.root)} is not there.",
-            )
+        if resolve_cli_command() is None:
+            self.report({"ERROR"}, CLI_MISSING)
             return {"CANCELLED"}
 
-        play_root = os.path.join(layout.editor, "play")
-        arguments = ["--scene", scene_path, *_derived_config(play_root)]
-
-        # In the project root, not wherever Blender is (see launch_runtime).
-        process, error = launch_runtime(arguments, cwd=layout.root)
+        process, error = session.start(layout.root, document_path, watch=self.watch)
         if process is None:
-            self.report({"ERROR"}, error or "Could not launch the runtime")
+            self.report({"ERROR"}, error or "Could not start the game")
             return {"CANCELLED"}
 
-        self.report({"INFO"}, f"Launched {os.path.basename(document_path)} (pid {process.pid})")
+        self._process, self._root = process, layout.root
+        self.report(
+            {"INFO"},
+            f"{'Watching and playing' if self.watch else 'Playing'} "
+            f"{os.path.basename(document_path)} (pid {process.pid})")
 
-        # Background Blender has no event loop, so a modal would sit in RUNNING_MODAL forever.
         if not _modal_possible(context):
-            return {"FINISHED"}
+            return self._background_wait()
 
-        # A detached runtime's death would otherwise show up as a pid and nothing else. The
-        # build's modal handler is still registered; it now watches the runtime instead.
-        self._process = process
+        # The panel would show a death too, but only on its next redraw; a build error is worth
+        # a report in the author's face. The handler watches the session it started and no other.
         self._deadline = time.monotonic() + WATCH_SECONDS
         window_manager = context.window_manager
         self._timer = window_manager.event_timer_add(POLL_INTERVAL, window=context.window)
+        window_manager.modal_handler_add(self)
         return {"RUNNING_MODAL"}
 
-    def _watch_runtime(self, context, event):
+    def modal(self, context, event):
         if event.type != "TIMER":
             return {"PASS_THROUGH"}
 
-        code = self._process.poll()
-        if code is None:
+        if self._process.poll() is None:
             # Still alive past the window: it opened, and its lifetime is the player's business.
             return self._release(context) if time.monotonic() >= self._deadline else {"PASS_THROUGH"}
 
-        if code == 0:
-            return self._release(context)
-
-        detail = first_error_line(log_path())
-        self.report(
-            {"ERROR"},
-            f"The game exited with code {code}: {detail}"
-            if detail
-            else f"The game exited with code {code} — see {log_path()}",
-        )
+        status = self._report_exit()
         self._release(context)
-        return {"CANCELLED"}
+        return status
 
     def cancel(self, context) -> None:
-        _CliOperator.cancel(self, context)
+        self._release(context)
+
+    def _background_wait(self) -> set[str]:
+        try:
+            self._process.wait(timeout=BACKGROUND_WAIT_SECONDS)
+        except subprocess.TimeoutExpired:
+            # Still running, which is the good case.
+            return {"FINISHED"}
+        return self._report_exit()
+
+    def _report_exit(self) -> set[str]:
+        """Reap through the session so the panel and this report agree on the reason."""
+        session.process_for(self._root)
+        reason = session.exit_reason(self._root)
+        if reason is None:
+            return {"FINISHED"}
+        self.report({"ERROR"}, f"The game stopped — {reason} (see {session.log_path(self._root)})")
+        return {"CANCELLED"}
 
     def _release(self, context) -> set[str]:
         """Drop the timer. Safe to call twice -- cancel also runs on a modal that finished."""
-        self._drop_timer(context)
+        if self._timer is not None:
+            context.window_manager.event_timer_remove(self._timer)
+            self._timer = None
+        return {"FINISHED"}
+
+
+class PARADISE_ASSETS_OT_stop_play(Operator):
+    """Stop the running game (and its dotnet watch, if any)"""
+
+    bl_idname = "paradise_assets.stop_play"
+    bl_label = "Stop"
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context) -> bool:
+        state = store.read_state(context.scene)
+        if state is None:
+            return False
+        layout = project.locate(state.path)
+        return layout is not None and session.is_running(layout.root)
+
+    def execute(self, context):
+        found = _project(self)
+        if found is None:
+            return {"CANCELLED"}
+        session.stop(found[0].root)
+        self.report({"INFO"}, "Game stopped")
         return {"FINISHED"}
 
 
@@ -353,15 +352,44 @@ class PARADISE_ASSETS_OT_clean(_CliOperator, Operator):
         return {"FINISHED"}
 
 
-def status() -> list[tuple[str, str]]:
+#: manifest path -> ((mtime_ns, size), declares a host). The panel asks per redraw.
+_HOST_DECLARED: dict[str, tuple[tuple[int, int], bool]] = {}
+
+
+def declares_host(layout: project.ProjectLayout) -> bool:
+    """Whether ``assets/project.toml`` has a ``[host] project``; without one the CLI has nothing
+    to run and Play would only say so after a build."""
+    path = layout.manifest
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return False
+    stamp = (stat.st_mtime_ns, stat.st_size)
+    cached = _HOST_DECLARED.get(path)
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
+
+    import tomllib
+
+    try:
+        with open(path, "rb") as handle:
+            manifest = tomllib.load(handle)
+        answer = bool((manifest.get("host") or {}).get("project"))
+    except (OSError, tomllib.TOMLDecodeError, AttributeError):
+        answer = False
+    _HOST_DECLARED[path] = (stamp, answer)
+    return answer
+
+
+def status(layout: project.ProjectLayout | None = None) -> list[tuple[str, str]]:
     """``(icon, message)`` per unready tool. No logging: the panel asks on every redraw."""
     from .host import _preference
 
     problems: list[tuple[str, str]] = []
     if resolve_cli_command() is None:
         problems.append(("ERROR", "No Paradise CLI — set it in preferences"))
-    if resolve_runtime_command() is None:
-        problems.append(("ERROR", "No runtime host — set it in preferences"))
+    if layout is not None and not declares_host(layout):
+        problems.append(("ERROR", "No [host] project in assets/project.toml — nothing to play"))
 
     # The pipeline resolves PARADISE_KTX_PATH with File.Exists, so a directory or typo is
     # silently discarded; a field that LOOKS filled in is worse than an empty one.
@@ -372,7 +400,7 @@ def status() -> list[tuple[str, str]]:
 
 
 class PARADISE_ASSETS_OT_build_schema(_CliOperator, Operator):
-    """Build the runtime host so it dumps the game's component schema into .editor/"""
+    """Build the game's launcher so it dumps the component schema into .editor/"""
 
     bl_idname = "paradise_assets.build_schema"
     bl_label = "Build Game Schema"
@@ -381,40 +409,12 @@ class PARADISE_ASSETS_OT_build_schema(_CliOperator, Operator):
 
     @classmethod
     def poll(cls, context) -> bool:
-        return store.read_state(context.scene) is not None and schema_build_stage() is not None
+        return store.read_state(context.scene) is not None
 
-    def execute(self, context):
-        # Not the CLI: the schema is a function of the game's C# records and only the game's
-        # own launcher build can write it, so this runs `dotnet build` on the configured host.
-        found = _project(self)
-        if found is None:
-            return {"CANCELLED"}
-        self._layout, self._document_path = found
-
-        if not _modal_possible(context):
-            stage = schema_build_stage()
-            if stage is None:
-                self.report({"ERROR"}, "Runtime Host is not a csproj; nothing to build")
-                return {"CANCELLED"}
-            job = start_schema_build(self._layout.root)
-            result = None
-            while job is not None and result is None:
-                time.sleep(POLL_INTERVAL)
-                result = job.poll()
-            if result is None:
-                self.report({"ERROR"}, "Runtime Host is not a csproj; nothing to build")
-                return {"CANCELLED"}
-            return self.finished(context, result)
-
-        self._job = start_schema_build(self._layout.root)
-        if self._job is None:
-            self.report({"ERROR"}, "Runtime Host is not a csproj; nothing to build")
-            return {"CANCELLED"}
-
-        window_manager = context.window_manager
-        self._timer = window_manager.event_timer_add(POLL_INTERVAL, window=context.window)
-        window_manager.modal_handler_add(self)
-        return {"RUNNING_MODAL"}
+    def cli_arguments(self) -> list[str]:
+        # The schema is a function of the game's C# records and only the launcher's own build
+        # writes it; `host build` is that build, on whatever [host] names.
+        return ["host", "build"]
 
     def finished(self, context, result) -> set[str]:
         if not result.ok:
@@ -433,6 +433,7 @@ class PARADISE_ASSETS_OT_build_schema(_CliOperator, Operator):
 
 classes = (
     PARADISE_ASSETS_OT_play,
+    PARADISE_ASSETS_OT_stop_play,
     PARADISE_ASSETS_OT_build_schema,
     PARADISE_ASSETS_OT_build,
     PARADISE_ASSETS_OT_verify,

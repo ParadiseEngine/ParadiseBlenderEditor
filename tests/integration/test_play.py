@@ -3,13 +3,14 @@
     blender --background --factory-startup --python tests/integration/test_play.py
 
 Launching an actual game is not a test -- it needs a display, a built engine and a minute. But
-everything BEFORE the process is exactly where this feature can go wrong, so the CLI and the
-runtime are replaced with two scripts that record their argv and exit with whatever they are told.
+everything BEFORE the process is exactly where this feature can go wrong, so the CLI is replaced
+with a script that records its argv and exits with whatever it is told.
 
-The check that matters most is that a FAILED BUILD DOES NOT LAUNCH. The whole reason Play builds
-first is that nothing else keeps `.editor/play/` fresh; a Play that launched anyway after a failed
-build would show the author the previous build's world with nothing on screen saying so, which is
-indistinguishable from the edit not having worked.
+Play is ONE child: ``paradise host play`` builds the assets, builds the launcher and runs the game.
+What the addon owes is the right verb on the right document from the right directory, a report
+when that child dies early, and a Stop that ends it. The check that matters most is that a
+failed build is REPORTED: a Play that quietly showed last build's world would be indistinguishable
+from the edit not having worked.
 
 No project argument: this builds its own throwaway project, because it has to control what the
 tools do and a real one would run the real ones.
@@ -21,6 +22,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 
 import bpy
 
@@ -29,7 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 import paradise_assets
 from paradise_assets.document import project
 from paradise_assets.materialize import store
-from paradise_assets.play import host
+from paradise_assets.play import host, session
 from paradise_assets.play import ops as play_ops
 
 failures: list[str] = []
@@ -43,7 +45,7 @@ def check(condition: bool, label: str) -> bool:
 
 
 # --------------------------------------------------------------------------------------
-# A project, and two fake tools
+# A project, and a fake CLI
 # --------------------------------------------------------------------------------------
 
 PREFAB = """schema_version = 1
@@ -57,16 +59,24 @@ Guid = "33333333-4444-4555-8666-777777777777"
 Name = "Level"
 """
 
-#: Records argv and the bits of the environment under test, then exits with EXIT_CODE.
-TOOL = """import json, os, sys
+#: Records argv and the bits of the environment under test, then exits with EXIT_CODE; with
+#: LINGER set it stays alive like a running game until terminated.
+TOOL = """import json, os, sys, time
 with open(os.environ["RECORD_TO"], "w", encoding="utf-8") as handle:
     json.dump({
         "argv": sys.argv[1:],
         "cwd": os.getcwd(),
         "ktx": os.environ.get("PARADISE_KTX_PATH"),
     }, handle)
-print("build: 0 asset(s) into nowhere")
-sys.exit(int(os.environ.get("EXIT_CODE", "0")))
+code = int(os.environ.get("EXIT_CODE", "0"))
+if code:
+    print("error: the launcher build failed: CS1002 ; expected")
+else:
+    print("build: 0 asset(s) into nowhere")
+sys.stdout.flush()
+if os.environ.get("LINGER"):
+    time.sleep(60)
+sys.exit(code)
 """
 
 
@@ -80,25 +90,11 @@ def make_project(root: str) -> str:
     assets = os.path.join(root, "assets", "levels")
     os.makedirs(assets)
     with open(os.path.join(root, "assets", "project.toml"), "w", encoding="utf-8") as handle:
-        handle.write('schema_version = 1\nname = "playtest"\n')
+        handle.write('schema_version = 1\nname = "playtest"\n\n[host]\nproject = "Game/Game.csproj"\n')
     document = os.path.join(assets, "arena.prefab")
     with open(document, "w", encoding="utf-8") as handle:
         handle.write(PREFAB)
     return document
-
-
-def make_play_tree(root: str, *, with_config: bool) -> None:
-    """What a successful build would have left behind."""
-    play = os.path.join(root, ".editor", "play")
-    os.makedirs(os.path.join(play, "levels"), exist_ok=True)
-    with open(os.path.join(play, "levels", "arena.prefab"), "w", encoding="utf-8") as handle:
-        handle.write("{}")
-    with open(os.path.join(play, "manifest.json"), "w", encoding="utf-8") as handle:
-        json.dump({"version": 1, "project": "playtest", "assets": []}, handle)
-    if with_config:
-        os.makedirs(os.path.join(play, "playtest"), exist_ok=True)
-        with open(os.path.join(play, "playtest", "config.toml"), "w", encoding="utf-8") as handle:
-            handle.write("schema_version = 1\n")
 
 
 def configure(ktx: str = "") -> None:
@@ -109,7 +105,7 @@ def configure(ktx: str = "") -> None:
     returns None for. `host._preference` is the single seam every preference read goes through, so
     replacing it exercises the real code paths without needing the extension installed.
     """
-    values = {"ktx_path": ktx, "runtime_arguments": "", "build_profile": "dev"}
+    values = {"ktx_path": ktx, "build_profile": "dev"}
     host._preference = lambda name, default="": values.get(name, default) or default
 
 
@@ -126,30 +122,39 @@ def open_document(document: str) -> None:
     store.write_state(bpy.context.scene, document)
 
 
-# --------------------------------------------------------------------------------------
-# The fakes are driven through host.run_cli / host.launch_runtime, with the interpreter
-# in front: `cli` and `runtime_host` hold a .py path, so the argv prefix has to be
-# python + script. Patching the resolvers is what lets the operators stay untouched.
-# --------------------------------------------------------------------------------------
-
-
-def patch_resolvers(cli_script: str, runtime_script: str) -> None:
-    host.resolve_cli_command = lambda: [sys.executable, cli_script]
-    host.resolve_runtime_command = lambda: [sys.executable, runtime_script]
+def patch_cli(cli_script: str | None) -> None:
+    """The fake is driven through host.resolve_cli_command with the interpreter in front."""
+    command = None if cli_script is None else [sys.executable, cli_script]
+    host.resolve_cli_command = lambda: command
     play_ops.resolve_cli_command = host.resolve_cli_command
-    play_ops.resolve_runtime_command = host.resolve_runtime_command
 
 
-def patch_missing_cli(runtime_script: str) -> None:
-    host.resolve_cli_command = lambda: None
-    host.resolve_runtime_command = lambda: [sys.executable, runtime_script]
-    play_ops.resolve_cli_command = host.resolve_cli_command
-    play_ops.resolve_runtime_command = host.resolve_runtime_command
+def call(operator, **properties):
+    try:
+        return operator(**properties)
+    except RuntimeError:
+        # An operator that reports ERROR and returns CANCELLED raises out of `bpy.ops`. That IS
+        # the cancellation, so report it as one rather than letting it abort the suite -- the
+        # failure cases below are the point of the test.
+        return {"CANCELLED"}
+
+
+def play(**properties):
+    return call(bpy.ops.paradise_assets.play, **properties)
+
+
+def wait_for(path: str, seconds: float = 10.0):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if (record := recorded(path)) is not None:
+            return record
+        time.sleep(0.1)
+    return None
 
 
 def main() -> int:
     paradise_assets.register()
-    original = (host.resolve_cli_command, host.resolve_runtime_command, host._preference)
+    original = (host.resolve_cli_command, host._preference)
 
     try:
         with tempfile.TemporaryDirectory() as work:
@@ -159,86 +164,74 @@ def main() -> int:
             layout = project.locate(document)
 
             cli_script = os.path.join(work, "fake_cli.py")
-            runtime_script = os.path.join(work, "fake_runtime.py")
             write_tool(cli_script)
-            write_tool(runtime_script)
             cli_log = os.path.join(work, "cli.json")
-            runtime_log = os.path.join(work, "runtime.json")
 
-            print("== a successful build launches the game ==")
-            make_play_tree(root, with_config=True)
+            print("== Play runs `host play` on the open document and waits for it ==")
             configure(ktx=os.path.join(work, "ktx"))
-            patch_resolvers(cli_script, runtime_script)
+            patch_cli(cli_script)
             open_document(document)
+            os.environ.update({"RECORD_TO": cli_log, "EXIT_CODE": "0", "LINGER": "1"})
 
-            os.environ.update({"RECORD_TO": cli_log, "EXIT_CODE": "0"})
-            # The runtime records into its own file; both tools read RECORD_TO, so the launch
-            # must see a different value than the build did.
-            result = _play_with_runtime_record(runtime_log)
+            result = play(watch=False)
             check(result == {"FINISHED"}, f"Play finished ({result})")
-
-            build = recorded(cli_log)
-            check(build is not None, "the CLI ran")
-            if build:
+            record = wait_for(cli_log)
+            check(record is not None, "the CLI ran")
+            if record:
+                argv = record["argv"]
+                check(argv[:2] == ["host", "play"], f"with the host play verb ({argv})")
                 check(
-                    build["argv"] == ["assets", "build", "--profile", "dev", "--editor"],
-                    f"with the editor build argv ({build['argv']})",
+                    argv[argv.index("--scene") + 1] == document,
+                    "--scene is the DOCUMENT (the CLI maps it to the play tree)",
                 )
                 check(
-                    os.path.realpath(build["cwd"]) == os.path.realpath(layout.root),
-                    "in the project root",
+                    os.path.realpath(argv[argv.index("--project") + 1]) == os.path.realpath(layout.root),
+                    "--project is the project root",
                 )
-                check(build["ktx"] == os.path.realpath(os.path.join(work, "ktx")),
-                      f"and with PARADISE_KTX_PATH set ({build['ktx']})")
+                check(argv[argv.index("--profile") + 1] == "dev", "with the preference's profile")
+                check("--watch" not in argv, "and no --watch unless asked")
+                check(os.path.realpath(record["cwd"]) == os.path.realpath(layout.root), "in the project root")
+                check(record["ktx"] == os.path.realpath(os.path.join(work, "ktx")),
+                      f"and with PARADISE_KTX_PATH set ({record['ktx']})")
+            check(session.is_running(root), "the session is running")
+            first = session.process_for(root)
 
-            launch = recorded(runtime_log)
-            check(launch is not None, "the runtime was launched")
-            if launch:
-                argv = launch["argv"]
-                scene = argv[argv.index("--scene") + 1] if "--scene" in argv else ""
-                check(
-                    os.path.normcase(scene)
-                    == os.path.normcase(os.path.join(root, ".editor", "play", "levels", "arena.prefab")),
-                    f"--scene points at the built document ({os.path.basename(scene)})",
-                )
-                check("--config" in argv, "--config is derived when the build produced one")
-                config = argv[argv.index("--config") + 1] if "--config" in argv else ""
-                check(
-                    os.path.normcase(config)
-                    == os.path.normcase(os.path.join(root, ".editor", "play", "playtest", "config.toml")),
-                    f"--config points at the play tree ({os.path.basename(config)})",
-                )
+            print("\n== a second Play replaces the first ==")
+            _reset(cli_log)
+            result = play(watch=True)
+            check(result == {"FINISHED"}, f"Play finished ({result})")
+            record = wait_for(cli_log)
+            check(record is not None and "--watch" in record["argv"], "--watch reaches the CLI")
+            second = session.process_for(root)
+            check(second is not None and second is not first, "a new session replaced the old")
+            check(first is not None and first.poll() is not None, "and the old one was stopped")
 
-            print("\n== a config the build did not produce is not invented ==")
-            os.remove(os.path.join(root, ".editor", "play", "playtest", "config.toml"))
-            _reset(cli_log, runtime_log)
-            _play_with_runtime_record(runtime_log)
-            launch = recorded(runtime_log)
-            check(
-                launch is not None and "--config" not in launch["argv"],
-                "no --config when there is no config file",
-            )
+            print("\n== Stop ends it ==")
+            bpy.ops.paradise_assets.stop_play()
+            check(not session.is_running(root), "nothing is running after Stop")
+            check(session.exit_reason(root) is None, "and a Stop is not reported as a failure")
 
-            print("\n== a FAILED build does not launch ==")
-            _reset(cli_log, runtime_log)
+            print("\n== a FAILED build is reported ==")
+            _reset(cli_log)
             os.environ["EXIT_CODE"] = "1"
-            result = _play_with_runtime_record(runtime_log)
-            check(result == {"CANCELLED"}, f"Play cancels on a failed build ({result})")
+            os.environ.pop("LINGER", None)
+            result = play(watch=False)
+            check(result == {"CANCELLED"}, f"Play cancels when the CLI fails early ({result})")
             check(recorded(cli_log) is not None, "the build was attempted")
-            check(recorded(runtime_log) is None, "and the runtime was NOT launched")
+            reason = session.exit_reason(root)
+            check(reason is not None and "CS1002" in reason, f"the panel gets the cause ({reason})")
             os.environ["EXIT_CODE"] = "0"
 
             print("\n== no CLI means no launch at all ==")
-            _reset(cli_log, runtime_log)
-            patch_missing_cli(runtime_script)
-            result = _play_with_runtime_record(runtime_log)
+            _reset(cli_log)
+            patch_cli(None)
+            result = play(watch=False)
             check(result == {"CANCELLED"}, f"Play cancels without a CLI ({result})")
-            check(recorded(runtime_log) is None, "nothing was launched")
-            patch_resolvers(cli_script, runtime_script)
+            check(recorded(cli_log) is None, "nothing was launched")
+            patch_cli(cli_script)
 
             print("\n== the other verbs ==")
-            _reset(cli_log, runtime_log)
-            os.environ["RECORD_TO"] = cli_log
+            _reset(cli_log)
             bpy.ops.paradise_assets.build()
             build = recorded(cli_log)
             check(
@@ -246,8 +239,18 @@ def main() -> int:
                 f"Build omits --editor ({build['argv'] if build else None})",
             )
 
-            _reset(cli_log, runtime_log)
-            os.environ["RECORD_TO"] = cli_log
+            _reset(cli_log)
+            # The fake writes no schema file, so the operator reports that and cancels; the
+            # verb it ran is what is under test.
+            result = call(bpy.ops.paradise_assets.build_schema)
+            schema = recorded(cli_log)
+            check(
+                schema is not None and schema["argv"] == ["host", "build"],
+                f"Build Game Schema is `host build` ({schema['argv'] if schema else None})",
+            )
+            check(result == {"CANCELLED"}, "and a build that dumped no schema is refused")
+
+            _reset(cli_log)
             bpy.ops.paradise_assets.clean()
             clean = recorded(cli_log)
             check(
@@ -255,8 +258,7 @@ def main() -> int:
                 f"Clean keeps .editor by default ({clean['argv'] if clean else None})",
             )
 
-            _reset(cli_log, runtime_log)
-            os.environ["RECORD_TO"] = cli_log
+            _reset(cli_log)
             bpy.ops.paradise_assets.clean(editor_too=True)
             clean = recorded(cli_log)
             check(
@@ -264,8 +266,7 @@ def main() -> int:
                 f"and drops the flag only when asked ({clean['argv'] if clean else None})",
             )
 
-            _reset(cli_log, runtime_log)
-            os.environ["RECORD_TO"] = cli_log
+            _reset(cli_log)
             bpy.ops.paradise_assets.verify()
             verify = recorded(cli_log)
             check(
@@ -273,8 +274,9 @@ def main() -> int:
                 f"Verify runs the verify verb ({verify['argv'] if verify else None})",
             )
     finally:
-        host.resolve_cli_command, host.resolve_runtime_command, host._preference = original
-        for key in ("RECORD_TO", "EXIT_CODE", "RUNTIME_RECORD_TO"):
+        session.stop_all()
+        host.resolve_cli_command, host._preference = original
+        for key in ("RECORD_TO", "EXIT_CODE", "LINGER"):
             os.environ.pop(key, None)
         paradise_assets.unregister()
 
@@ -288,40 +290,6 @@ def _reset(*logs: str) -> None:
     for path in logs:
         if os.path.isfile(path):
             os.remove(path)
-
-
-def _play_with_runtime_record(runtime_log: str):
-    """Run Play, arranging for the launched fake to record somewhere of its own.
-
-    The two fakes share one RECORD_TO, so the launch is given its own value by swapping the
-    variable between the build (synchronous, already finished) and the launch. Detached or not,
-    the child inherits the environment as it stands when Popen is called.
-    """
-    build_record = os.environ.get("RECORD_TO")
-
-    real_launch = host.launch_runtime
-
-    def launching(arguments, cwd):
-        os.environ["RECORD_TO"] = runtime_log
-        try:
-            process, error = real_launch(arguments, cwd=cwd)
-            if process is not None:
-                process.wait(timeout=60)   # so the recording exists before we read it
-            return process, error
-        finally:
-            if build_record is not None:
-                os.environ["RECORD_TO"] = build_record
-
-    play_ops.launch_runtime = launching
-    try:
-        return bpy.ops.paradise_assets.play()
-    except RuntimeError:
-        # An operator that reports ERROR and returns CANCELLED raises out of `bpy.ops`. That IS
-        # the cancellation, so report it as one rather than letting it abort the suite -- the
-        # failure cases below are the point of the test.
-        return {"CANCELLED"}
-    finally:
-        play_ops.launch_runtime = real_launch
 
 
 if __name__ == "__main__":

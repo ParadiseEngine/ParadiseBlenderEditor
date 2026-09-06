@@ -85,16 +85,25 @@ class PARADISE_ASSETS_PT_play(_AssetsPanel, Panel):
         layout = self.layout
 
         # Every redraw: `status` must not log or a warning fires per frame.
+        from .play import session
         from .play.ops import status
 
-        problems = status()
+        state = store.read_state(context.scene)
+        layout_ = project.locate(state.path) if state is not None else None
+
+        problems = status(layout_)
         if problems:
             box = layout.box()
             box.alert = True
             for icon, message in problems:
                 box.label(text=message, icon=icon)
 
-        layout.operator("paradise_assets.play", icon="PLAY")
+        row = layout.row(align=True)
+        row.operator("paradise_assets.play", text="Build & Play", icon="PLAY").watch = False
+        row.operator("paradise_assets.play", text="Watch & Play", icon="FILE_REFRESH").watch = True
+
+        if layout_ is not None:
+            _draw_session(layout, session, layout_.root)
 
         # The only place a failed rebuild surfaces until the tray (ParadiseEngine#192).
         _draw_watch(layout, context)
@@ -103,6 +112,23 @@ class PARADISE_ASSETS_PT_play(_AssetsPanel, Panel):
         row.operator("paradise_assets.build", icon="MOD_BUILD")
         row.operator("paradise_assets.verify", icon="CHECKMARK")
         layout.operator("paradise_assets.clean", icon="TRASH")
+
+
+def _draw_session(layout, session, root: str) -> None:
+    """Whether the game is running, and why it stopped if it stopped on its own."""
+    process = session.process_for(root)
+    if process is not None:
+        row = layout.row(align=True)
+        row.label(text=f"Playing (pid {process.pid})", icon="RADIOBUT_ON")
+        row.operator("paradise_assets.stop_play", text="Stop", icon="PAUSE")
+        return
+
+    if (reason := session.exit_reason(root)) is not None:
+        box = layout.box()
+        box.alert = True
+        box.label(text="The game stopped on its own.", icon="ERROR")
+        for line in _wrap(reason, 44)[:3]:
+            box.label(text=line)
 
 
 def _draw_watch(layout, context) -> None:

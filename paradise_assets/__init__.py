@@ -56,10 +56,12 @@ def unregister() -> None:
 
     from . import browser, dropped, field_widgets, watch
     from .materialize import sync
+    from .play import session as play_session
     browser.unregister_menu()
     dropped.unregister_handler()
     sync.unregister_handler()
     watch.unregister_handler()
+    play_session.stop_all()
     field_widgets.detach()
 
     # Reverse order, or Blender warns about an unregistered parent panel.

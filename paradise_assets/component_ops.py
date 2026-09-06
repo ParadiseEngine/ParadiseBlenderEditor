@@ -15,7 +15,7 @@ from bpy.types import Operator
 
 from . import edits
 from .document import component_schema, project
-from .materialize import store
+from .materialize import shapes, store
 
 __all__ = ["classes", "components_of", "merged_data", "schema_for", "vocabulary_for"]
 
@@ -130,6 +130,82 @@ class PARADISE_ASSETS_OT_remove_array_row(Operator):
         del rows[self.index]
         edits.set_field(obj, self.component_id, self.field_name, rows)
         return {"FINISHED"}
+
+
+class PARADISE_ASSETS_OT_add_shape(Operator):
+    """Add a collision shape: an Empty under this object you move, rotate and scale."""
+
+    bl_idname = "paradise_assets.add_shape"
+    bl_label = "Add Shape"
+    bl_options = {"REGISTER", "UNDO", "INTERNAL"}
+
+    component_id: StringProperty(name="Component")
+    field_name: StringProperty(name="Field")
+    shape_type: StringProperty(name="Shape", default="Box")
+
+    def execute(self, context):
+        obj = context.active_object
+        if obj is None or store.guid_of(obj) is None:
+            self.report({"ERROR"}, "Select a document object first")
+            return {"CANCELLED"}
+        empty = shapes.add_shape(obj, self.component_id, self.field_name, self.shape_type)
+        for other in context.selected_objects:
+            other.select_set(False)
+        empty.select_set(True)
+        context.view_layer.objects.active = empty
+        self.report({"INFO"}, f"{self.shape_type} shape added under {obj.name} — save to write it")
+        return {"FINISHED"}
+
+
+class PARADISE_ASSETS_OT_remove_shape(Operator):
+    """Remove one collision shape, which is deleting its Empty."""
+
+    bl_idname = "paradise_assets.remove_shape"
+    bl_label = "Remove Shape"
+    bl_options = {"REGISTER", "UNDO", "INTERNAL"}
+
+    component_id: StringProperty(name="Component")
+    field_name: StringProperty(name="Field")
+    index: IntProperty(name="Index", min=0)
+
+    def execute(self, context):
+        empty = _shape_at(context.active_object, self.component_id, self.field_name, self.index)
+        if empty is None:
+            self.report({"ERROR"}, f"{self.field_name} has no shape {self.index} in the scene")
+            return {"CANCELLED"}
+        bpy.data.objects.remove(empty, do_unlink=True)
+        return {"FINISHED"}
+
+
+class PARADISE_ASSETS_OT_select_shape(Operator):
+    """Select a collision shape's Empty, so the gizmo edits it."""
+
+    bl_idname = "paradise_assets.select_shape"
+    bl_label = "Select Shape"
+    bl_options = {"REGISTER", "UNDO", "INTERNAL"}
+
+    component_id: StringProperty(name="Component")
+    field_name: StringProperty(name="Field")
+    index: IntProperty(name="Index", min=0)
+
+    def execute(self, context):
+        empty = _shape_at(context.active_object, self.component_id, self.field_name, self.index)
+        if empty is None:
+            self.report({"ERROR"}, f"{self.field_name} has no shape {self.index} in the scene")
+            return {"CANCELLED"}
+        for other in context.selected_objects:
+            other.select_set(False)
+        empty.hide_set(False)
+        empty.select_set(True)
+        context.view_layer.objects.active = empty
+        return {"FINISHED"}
+
+
+def _shape_at(obj, component_id: str, field_name: str, index: int):
+    if obj is None:
+        return None
+    empties = shapes.shape_empties(obj, component_id, field_name)
+    return empties[index] if 0 <= index < len(empties) else None
 
 
 class PARADISE_ASSETS_OT_reveal_object(Operator):
@@ -283,6 +359,9 @@ classes = (
     PARADISE_ASSETS_OT_add_array_row,
     PARADISE_ASSETS_OT_remove_array_row,
     PARADISE_ASSETS_OT_reveal_object,
+    PARADISE_ASSETS_OT_add_shape,
+    PARADISE_ASSETS_OT_remove_shape,
+    PARADISE_ASSETS_OT_select_shape,
     PARADISE_ASSETS_OT_add_component,
     PARADISE_ASSETS_OT_remove_component,
 )

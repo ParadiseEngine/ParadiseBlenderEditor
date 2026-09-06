@@ -116,7 +116,7 @@ def test_nested_records_flatten_to_editable_paths():
     assert schema.resolve("Slots/0").type == "string"
 
 
-def test_a_host_authored_list_stays_locked():
+def test_a_host_shape_list_is_rows_of_empties_with_only_the_game_members_typed():
     root = _project([{
         "id": "44444444-4444-4444-8444-444444444444",
         "type": "Game.Collider",
@@ -124,17 +124,38 @@ def test_a_host_authored_list_stays_locked():
             "name": "Shapes",
             "type": "array",
             "items": {"type": "object", "authoredBy": "shape", "fields": [
+                {"name": "IsTrigger", "type": "bool"},
+                {"name": "ShapeType", "type": "enum", "values": ["Box", "Sphere"]},
                 {"name": "Size", "type": "vector3"},
             ]},
         }],
     }])
 
     schema = component_schema.load(root).get("44444444-4444-4444-8444-444444444444")
-    plan = schema.plan({"Shapes": [{"Size": [1, 1, 1]}]})
+    plan = schema.plan({"Shapes": [{"Size": [1, 1, 1], "IsTrigger": False}]})
 
-    assert len(plan) == 1
-    assert plan[0].role == component_schema.ROLE_LOCKED
+    assert [(item.path, item.role) for item in plan] == [
+        ("Shapes", component_schema.ROLE_SHAPES),
+        ("Shapes/0", component_schema.ROLE_ROW),
+        ("Shapes/0/IsTrigger", component_schema.ROLE_LEAF),
+    ]
+    # No Add-row button over a host list: adding a shape is adding an Empty.
     assert not plan[0].field.editable
+
+
+def test_another_host_kind_list_stays_locked():
+    root = _project([{
+        "id": "45444444-4444-4444-8444-444444444444",
+        "type": "Game.Lights",
+        "fields": [{
+            "name": "Lights", "type": "array",
+            "items": {"type": "object", "authoredBy": "light", "fields": [
+                {"name": "Intensity", "type": "float"}]},
+        }],
+    }])
+    schema = component_schema.load(root).get("45444444-4444-4444-8444-444444444444")
+    plan = schema.plan({"Lights": [{"Intensity": 1}]})
+    assert [item.role for item in plan] == [component_schema.ROLE_LOCKED]
 
 
 def test_the_formats_own_components_are_refused_even_if_dumped():

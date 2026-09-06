@@ -11,10 +11,10 @@ import tomllib
 import bpy
 from mathutils import Quaternion, Vector
 
-from ..document import axes, mesh_document, project, resolve, schema, well_known
+from ..document import axes, component_schema, mesh_document, project, resolve, schema, well_known
 from ..document.prefab import PrefabDocument, PrefabObject
 from ..document.prefab import loads as parse_document
-from . import store
+from . import shapes, store
 from .meshes import LIBRARY_COLLECTION, MeshLibrary
 
 __all__ = ["LoadResult", "load_document"]
@@ -102,6 +102,13 @@ def load_document(
             store.tag_prefab(obj, reference.guid, reference.path)
         created[entry.guid] = obj
         result.objects += 1
+
+    # Shapes only for what this document owns: an instance's collider is its prefab's, edited
+    # there, and a resolved child is not an object at all.
+    vocabulary = component_schema.load(layout.root)
+    for entry in expansion.document.objects:
+        if entry.guid in authored and entry.guid not in instanced:
+            shapes.materialize(created[entry.guid], _components_payload(entry), vocabulary)
 
     result.instances = expansion.expanded
     document = expansion.document
@@ -321,7 +328,10 @@ def _clear_previous(scene: bpy.types.Scene) -> None:
     """Remove a previous load's objects (by GUID marker, so the user's own survive), keeping
     the mesh library so reload does not re-import every GLB. Drops pending edits too, which is
     why ``workfile.refresh_from_document`` refuses to run this over unsaved work."""
-    doomed = [obj for obj in scene.collection.all_objects if store.guid_of(obj) is not None]
+    doomed = [
+        obj for obj in scene.collection.all_objects
+        if store.guid_of(obj) is not None or shapes.is_shape(obj)
+    ]
     for obj in doomed:
         bpy.data.objects.remove(obj, do_unlink=True)
 

@@ -184,6 +184,20 @@ the document has no field for. The save folds such an inverse into the channels 
 (`save._fold_parent_inverses`) so hand parenting is safe too; before it, an object parented by
 Ctrl+P loaded back somewhere else.
 
+**A collision shape is an Empty under its object, and the Empty is the editor.** The schema
+marks a collider's `Shapes` list `authoredBy: shape`: the HOST draws and bakes it, the panel
+does not type its geometry. `materialize/shapes.py` makes one child Empty per row on load
+(box: CUBE display, scale = Size; sphere: SPHERE display of size Radius; capsule: a CUBE
+envelope scaled `(2r, h, 2r)`, Y-aligned in the document so rotate the Empty to orient it) and
+bakes each Empty's LOCAL transform back into its row on save (`document/collider_shapes.py`
+holds the numbers, tested without Blender). Deleting the Empty deletes the row; the panel's
+Box / Sphere / Capsule buttons add one; the row's game members (Id, IsTrigger, Layer…) stay
+typed in the panel and land on the same row as the moved Empty. A shape Empty carries NO
+document identity, so nothing that walks document objects sees it — except
+`load._clear_previous`, which must remove them or a reload shows two documents' shapes. Shapes
+are made only for objects the document owns: an instance's collider is its prefab's and is
+edited there.
+
 **An instance loaded from a document carries no prefab reference of its own** — the expansion
 in `resolve.py` replaces the instance entry with the prefab's resolved root, consuming it. So
 `load.py` tags the object with `store.tag_prefab` as it materializes, which is the only reason

@@ -22,6 +22,7 @@ __all__ = [
     "ROLE_ARRAY",
     "ROLE_LEAF",
     "ROLE_LOCKED",
+    "ROLE_SHAPES",
     "ROLE_ROW",
     "ComponentSchema",
     "FieldSchema",
@@ -58,6 +59,9 @@ ROLE_LEAF = "leaf"
 ROLE_ARRAY = "array"
 ROLE_ROW = "row"
 ROLE_LOCKED = "locked"
+#: A list of host shapes: rows are Empties in the scene, and only their non-geometry members
+#: are typed here.
+ROLE_SHAPES = "shapes"
 
 
 class FieldSchema:
@@ -224,6 +228,24 @@ def _walk(
         _walk_field(field, path, value, items, node if isinstance(node, dict) else {})
 
 
+_SHAPE_KIND = "shape"
+_SHAPE_GEOMETRY = frozenset({"ShapeType", "LocalCenter", "LocalRotation", "Size", "Radius", "Height"})
+
+
+def _walk_shapes(field: FieldSchema, path: str, value, items: list[PlanItem]) -> None:
+    """A host-shape list: one header, then per row the members the Empty does not decide."""
+    items.append(PlanItem(path, field, ROLE_SHAPES))
+    rows = value if isinstance(value, list) else []
+    for index, row in enumerate(rows):
+        row_path = join_path(path, str(index))
+        items.append(PlanItem(row_path, field.items, ROLE_ROW, index=index))
+        node = row if isinstance(row, dict) else {}
+        for child in field.items.fields:
+            if child.name in _SHAPE_GEOMETRY:
+                continue
+            _walk_field(child, join_path(row_path, child.name), node.get(child.name), items, node)
+
+
 def _walk_field(
     field: FieldSchema, path: str, value, items: list[PlanItem], siblings: dict
 ) -> None:
@@ -234,6 +256,9 @@ def _walk_field(
         return
     # Arrays before the asset check, or ``assetKinds`` on the list makes it one picker.
     if field.type == "array":
+        if field.items is not None and field.items.authored_by == _SHAPE_KIND:
+            _walk_shapes(field, path, value, items)
+            return
         if field.items is None or is_host_locked(field.items):
             items.append(PlanItem(path, field, ROLE_LOCKED))
             return

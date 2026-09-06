@@ -27,11 +27,11 @@ import bpy
 from mathutils import Matrix, Quaternion
 
 from .. import edits as component_edits
-from ..document import atomic, axes, canonical_toml, well_known
+from ..document import atomic, axes, canonical_toml, component_schema, project, well_known
 from ..document import prefab as prefab_document
 from ..document.asset_reference import AssetReference
 from ..document.prefab import PrefabComponent, PrefabDocument, PrefabDocumentError, PrefabObject
-from . import store
+from . import shapes, store
 
 __all__ = ["SaveError", "SaveResult", "document_trs", "save_prefab"]
 
@@ -82,7 +82,11 @@ def save_prefab(scene: bpy.types.Scene) -> SaveResult:
     _refuse_moved_derived(scene)
 
     result = SaveResult()
-    merged = _merge(scene, base, result)
+    layout = project.locate(state.path)
+    vocabulary = (
+        component_schema.load(layout.root) if layout is not None
+        else component_schema.Vocabulary({}, None))
+    merged = _merge(scene, base, result, vocabulary)
 
     # What the reader will check, checked here: deleting the root (Blender unparents its
     # children) otherwise wrote a multi-root document that reported success and never loaded.
@@ -187,7 +191,9 @@ def _refuse_moved_derived(scene: bpy.types.Scene) -> None:
     )
 
 
-def _merge(scene: bpy.types.Scene, base: PrefabDocument, result: SaveResult) -> PrefabDocument:
+def _merge(
+    scene: bpy.types.Scene, base: PrefabDocument, result: SaveResult, vocabulary
+) -> PrefabDocument:
     """The document as Blender now has it, over the document as the file now has it. File order
     is kept: Blender guarantees no iteration order, and following it would reshuffle the file on
     every save. New objects follow, in name order."""
@@ -207,11 +213,11 @@ def _merge(scene: bpy.types.Scene, base: PrefabDocument, result: SaveResult) -> 
         if obj is None:
             result.removed += 1
             continue
-        merged.objects.append(_object_entry(obj, entry, result))
+        merged.objects.append(_object_entry(obj, entry, result, vocabulary))
 
     for obj in sorted(objects.values(), key=lambda o: o.name):
         result.added += 1
-        merged.objects.append(_object_entry(obj, None, result))
+        merged.objects.append(_object_entry(obj, None, result, vocabulary))
 
     return merged
 
@@ -283,7 +289,9 @@ def _root_object(scene: bpy.types.Scene):
     return found[0] if len(found) == 1 else None
 
 
-def _object_entry(obj: bpy.types.Object, original: PrefabObject | None, result: SaveResult) -> PrefabObject:
+def _object_entry(
+    obj: bpy.types.Object, original: PrefabObject | None, result: SaveResult, vocabulary
+) -> PrefabObject:
     """One Blender object as a document object: the file's entry with only what Blender owns
     overwritten, which is what keeps an instance an instance rather than the plain objects it
     displays as."""
@@ -302,7 +310,16 @@ def _object_entry(obj: bpy.types.Object, original: PrefabObject | None, result: 
 
     # Last, so an overlay edit could never win against the meta/transform writes above.
     _apply_edits(obj, entry, result)
+    # After the overlay: a typed IsTrigger and a moved Empty land on the same row.
+    if store.prefab_of(obj) is None:
+        result.edited += shapes.bake(obj, entry, vocabulary, _default_row)
     return entry
+
+
+def _default_row(field) -> dict:
+    """A new host-shape row: every member at its schema default, so the game reads a complete
+    record rather than one whose omitted keys it has to guess."""
+    return {child.name: child.default_value() for child in field.items.fields}
 
 
 def _apply_edits(obj: bpy.types.Object, entry: PrefabObject, result: SaveResult) -> None:

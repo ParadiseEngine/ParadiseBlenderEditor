@@ -77,6 +77,10 @@ if command -v "$BLENDER" >/dev/null 2>&1; then
   integration "groups as empties" \
     tests/integration/test_groups.py "$DEFAULT_NOISE"
 
+  # Collision shapes: a host-authored Shapes list shown as Empties, baked back on save.
+  integration "collision shapes as empties" \
+    tests/integration/test_shapes.py "$DEFAULT_NOISE"
+
   # The byte-exact round trip through Blender needs a real asset project; it skips cleanly when
   # PARADISE_ASSETS_PROJECT names nothing.
   integration "open and save an asset-project scene" \

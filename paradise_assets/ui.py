@@ -392,6 +392,33 @@ def _draw_schema_fields(box, context, obj, component: dict, schema, edited: dict
             )
             continue
 
+        if item.role == component_schema.ROLE_SHAPES:
+            row = box.row(align=True)
+            count = len(value) if isinstance(value, list) else 0
+            row.label(text=f"{item.path} ({count})  — Empties under this object", icon="MESH_CUBE")
+            for shape_type, icon in (("Box", "CUBE"), ("Sphere", "SPHERE"), ("Capsule", "META_CAPSULE")):
+                add = row.operator("paradise_assets.add_shape", text="", icon=icon)
+                add.component_id = component_id
+                add.field_name = item.path
+                add.shape_type = shape_type
+            continue
+
+        if item.role == component_schema.ROLE_ROW and item.field.authored_by == "shape":
+            row = box.row(align=True)
+            shape_type = value.get("ShapeType") if isinstance(value, dict) else None
+            label = value.get("Id") if isinstance(value, dict) and value.get("Id") else None
+            select = row.operator(
+                "paradise_assets.select_shape",
+                text=f"{item.index}  {label or shape_type or 'shape'}", icon="RESTRICT_SELECT_OFF")
+            select.component_id = component_id
+            select.field_name, _, _ = item.path.rpartition("/")
+            select.index = item.index if item.index is not None else 0
+            drop = row.operator("paradise_assets.remove_shape", text="", icon="X")
+            drop.component_id = component_id
+            drop.field_name = select.field_name
+            drop.index = select.index
+            continue
+
         if item.role == component_schema.ROLE_ARRAY:
             row = box.row(align=True)
             count = len(value) if isinstance(value, list) else 0

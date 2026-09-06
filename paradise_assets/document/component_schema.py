@@ -237,22 +237,34 @@ _SHAPE_KIND = "shape"
 
 
 def _shape_member(field: FieldSchema) -> FieldSchema | None:
-    """The row member typed as the host shape, when *field* is a list of such rows."""
-    if field.type != "array" or field.items is None:
+    """The row member typed as the host shape, when *field* is a list of such rows (the member
+    is on the row type) or ONE such row (it is on the field itself -- a marker's Volume)."""
+    if field.type == "array":
+        row = field.items
+    elif field.type == "object":
+        row = field
+    else:
         return None
-    return next((c for c in field.items.fields if c.authored_by == _SHAPE_KIND), None)
+    if row is None:
+        return None
+    return next((c for c in row.fields if c.authored_by == _SHAPE_KIND), None)
 
 
 def _walk_shapes(field: FieldSchema, path: str, value, items: list[PlanItem]) -> None:
-    """A shape list: one header, then per row the members the Empty does not decide."""
+    """A shape list, or one shape: a header, then per row the members the Empty does not decide.
+    A single row keeps the field's own path, so its members are ``Volume/IsTrigger``."""
     member = _shape_member(field)
     items.append(PlanItem(path, field, ROLE_SHAPES))
-    rows = value if isinstance(value, list) else []
-    for index, row in enumerate(rows):
-        row_path = join_path(path, str(index))
-        items.append(PlanItem(row_path, field.items, ROLE_ROW, index=index))
+    if field.type == "array":
+        row_type = field.items
+        rows = [(join_path(path, str(i)), r) for i, r in enumerate(value)] if isinstance(value, list) else []
+    else:
+        row_type = field
+        rows = [(path, value)] if isinstance(value, dict) else []
+    for index, (row_path, row) in enumerate(rows):
+        items.append(PlanItem(row_path, row_type, ROLE_ROW, index=index))
         node = row if isinstance(row, dict) else {}
-        for child in field.items.fields:
+        for child in row_type.fields:
             if child is member:
                 continue
             _walk_field(child, join_path(row_path, child.name), node.get(child.name), items, node)
@@ -292,6 +304,10 @@ def _walk_field(
 
     if is_asset_field(field, value):
         items.append(PlanItem(path, field, ROLE_LEAF if field.editable else ROLE_LOCKED))
+        return
+
+    if _shape_member(field) is not None:
+        _walk_shapes(field, path, value, items)
         return
 
     if field.fields:

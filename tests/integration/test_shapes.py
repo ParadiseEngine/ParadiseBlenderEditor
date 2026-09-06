@@ -42,10 +42,29 @@ def check(condition: bool, label: str) -> bool:
 META = "0f1d4b3a-8c27-4a55-9b6e-2f7c1d40a913"
 TRS = "7e55c210-3d41-4b8a-8f26-9c0a5e71b4d2"
 COLLIDER = "a5cac2a4-bd53-4598-9a10-28d2039e6b99"
+MARKER = "e164ec51-2fa5-4faa-aaa7-f36d1f34c620"
 ROOT = "aaaaaaaa-1111-4111-8111-111111111111"
 CAR = "cccccccc-3333-4333-8333-333333333333"
 
+SHAPE_FIELDS = [
+    {"name": "ShapeType", "type": "enum", "values": ["Box", "Sphere", "Capsule"]},
+    {"name": "LocalCenter", "type": "vector3"},
+    {"name": "LocalRotation", "type": "quaternion"},
+    {"name": "Size", "type": "vector3"},
+    {"name": "Radius", "type": "float"},
+    {"name": "Height", "type": "float"},
+]
+
 SCHEMA = {"components": [{
+    "id": MARKER, "type": "Game.CameraTriggerMarker", "displayName": "Camera Trigger",
+    "fields": [
+        {"name": "Yaw", "type": "float"},
+        {"name": "Volume", "type": "object", "fields": [
+            {"name": "Shape", "type": "object", "authoredBy": "shape", "fields": SHAPE_FIELDS},
+            {"name": "IsTrigger", "type": "bool"},
+        ]},
+    ],
+}, {
     "id": COLLIDER, "type": "Game.AuthoredColliders", "displayName": "Colliders",
     "fields": [{"name": "Shapes", "type": "array", "items": {
         "name": "Shapes", "type": "object", "fields": [
@@ -296,6 +315,57 @@ def main() -> int:
                   "and moving it writes the instance's own row")
             untouched = next(e for e in placed.objects if e.name == "PrefabCollider")
             check(untouched.component(COLLIDER) is None, "without inventing a collider on the other")
+            open_document(path, layout)
+
+            print("\n== a marker's Volume is ONE shape: its own Empty, absent when deleted ==")
+            marked = path.replace("arena.prefab", "marked.prefab")
+            GUIDE = "dddddddd-9999-4999-8999-999999999999"
+            with open(marked, "w", encoding="utf-8") as handle:
+                handle.write(
+                    DOCUMENT.split("[[objects]]", 2)[0] + "[[objects]]" + DOCUMENT.split("[[objects]]", 2)[1]
+                    + f'[[objects]]\n\n[[objects.components]]\nid = "{META}"\ntype = "meta"\n'
+                    f'Guid = "{GUIDE}"\nName = "Guide"\nParent = "{ROOT}"\n\n'
+                    f'[[objects.components]]\nid = "{MARKER}"\ntype = "Game.CameraTriggerMarker"\n'
+                    'Yaw = 40.0\n\n[objects.components.Volume]\nIsTrigger = true\n\n'
+                    '[objects.components.Volume.Shape]\nShapeType = "Sphere"\nLocalCenter = [0, 0, 0]\n'
+                    'LocalRotation = [0, 0, 0, 1]\nSize = [0, 0, 0]\nRadius = 8.0\nHeight = 0.0\n')
+            with open(marked + ".meta", "w", encoding="utf-8") as handle:
+                handle.write('schema_version = 1\nguid = "eeeeeeee-8888-4888-8888-888888888888"\n')
+            untouched = read(marked)
+            open_document(marked, layout)
+            guide = object_named("Guide")
+            volume = shapes.shape_empties(guide, MARKER, "Volume")
+            check(len(volume) == 1 and volume[0].empty_display_type == "SPHERE"
+                  and abs(volume[0].empty_display_size - 8.0) < 1e-6,
+                  "the Volume is a sphere Empty of the authored radius")
+            save.save_prefab(bpy.context.scene)
+            check(read(marked) == untouched, "an untouched Volume saves byte-identical")
+            volume[0].empty_display_size = 5.0
+            save.save_prefab(bpy.context.scene)
+            written = prefab_document.loads(read(marked), marked)
+            marker = next(e for e in written.objects if e.name == "Guide").component(MARKER)
+            check(marker.data["Volume"]["Shape"]["Radius"] == 5.0
+                  and marker.data["Volume"]["IsTrigger"] is True,
+                  f"resizing it writes Volume.Shape and keeps IsTrigger ({marker.data['Volume']})")
+            try:
+                shapes.add_shape(guide, MARKER, "Volume", "Box", single=True)
+                check(False, "a second Volume is refused")
+            except ValueError:
+                check(True, "a second Volume is refused")
+            bpy.data.objects.remove(volume[0], do_unlink=True)
+            save.save_prefab(bpy.context.scene)
+            written = prefab_document.loads(read(marked), marked)
+            marker = next(e for e in written.objects if e.name == "Guide").component(MARKER)
+            check("Volume" not in marker.data and marker.data["Yaw"] == 40.0,
+                  f"deleting the Empty removes Volume and nothing else ({marker.data})")
+            made = shapes.add_shape(guide, MARKER, "Volume", "Box", single=True)
+            made.scale = (2.0, 2.0, 2.0)
+            save.save_prefab(bpy.context.scene)
+            written = prefab_document.loads(read(marked), marked)
+            marker = next(e for e in written.objects if e.name == "Guide").component(MARKER)
+            check(marker.data.get("Volume", {}).get("Shape", {}).get("ShapeType") == "Box"
+                  and marker.data["Volume"]["IsTrigger"] is False,
+                  f"adding one back writes a complete row ({marker.data.get('Volume')})")
             open_document(path, layout)
 
             print("\n== a reload rebuilds the Empties from the document ==")

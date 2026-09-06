@@ -400,13 +400,20 @@ def _draw_schema_fields(box, context, obj, component: dict, schema, edited: dict
 
         if item.role == component_schema.ROLE_SHAPES:
             row = box.row(align=True)
-            count = len(value) if isinstance(value, list) else 0
-            row.label(text=f"{item.path} ({count})  — Empties under this object", icon="MESH_CUBE")
-            for shape_type, icon in (("Box", "CUBE"), ("Sphere", "SPHERE"), ("Capsule", "META_CAPSULE")):
-                add = row.operator("paradise_assets.add_shape", text="", icon=icon)
-                add.component_id = component_id
-                add.field_name = item.path
-                add.shape_type = shape_type
+            single = item.field.type != "array"
+            count = (1 if isinstance(value, dict) else 0) if single else (
+                len(value) if isinstance(value, list) else 0)
+            caption = "an Empty under this object" if single else "Empties under this object"
+            row.label(text=f"{item.path} ({count})  — {caption}", icon="MESH_CUBE")
+            if not single or count == 0:
+                for shape_type, icon in (
+                    ("Box", "CUBE"), ("Sphere", "SPHERE"), ("Capsule", "META_CAPSULE")
+                ):
+                    add = row.operator("paradise_assets.add_shape", text="", icon=icon)
+                    add.component_id = component_id
+                    add.field_name = item.path
+                    add.shape_type = shape_type
+                    add.single = single
             continue
 
         if item.role == component_schema.ROLE_ROW and _is_shape_row(item):
@@ -416,7 +423,7 @@ def _draw_schema_fields(box, context, obj, component: dict, schema, edited: dict
                 "paradise_assets.select_shape",
                 text=f"{item.index}  {shape_type or 'shape'}", icon="RESTRICT_SELECT_OFF")
             select.component_id = component_id
-            select.field_name, _, _ = item.path.rpartition("/")
+            select.field_name = _shape_field_of(item)
             select.index = item.index if item.index is not None else 0
             drop = row.operator("paradise_assets.remove_shape", text="", icon="X")
             drop.component_id = component_id
@@ -455,6 +462,12 @@ def _draw_schema_fields(box, context, obj, component: dict, schema, edited: dict
 
 def _is_shape_row(item) -> bool:
     return any(child.authored_by == "shape" for child in item.field.fields)
+
+
+def _shape_field_of(item) -> str:
+    """The shape field a row belongs to: ``Value/0`` is a row of ``Value``; ``Volume`` is its own."""
+    head, _, tail = item.path.rpartition("/")
+    return head if tail.isdigit() else item.path
 
 
 def _shape_type_of(item, value) -> str | None:

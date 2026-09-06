@@ -187,7 +187,10 @@ Ctrl+P loaded back somewhere else.
 **A collision shape is an Empty under its object, and the Empty is the editor.** A collider's
 list holds the game's rows, each with one member typed as the host shape (`authoredBy: shape`,
 the six geometry members nested under it — ShiningPie's `Shape`) beside the game's own members
-(`IsTrigger`). The HOST draws and bakes the nested member; the panel types the rest. `materialize/shapes.py` makes one child Empty per row on load
+(`IsTrigger`). The HOST draws and bakes the nested member; the panel types the rest. A trigger
+marker's `Volume` is the same row as ONE field rather than a list: one Empty, its row kept at the
+field's own path (`Volume/IsTrigger`), the key removed when the Empty is deleted so the game
+refuses the marker rather than sensing with nothing. `materialize/shapes.py` makes one child Empty per row on load
 (box: CUBE display, scale = Size; sphere: SPHERE display of size Radius; capsule: a CUBE
 envelope scaled `(2r, h, 2r)`, Y-aligned in the document so rotate the Empty to orient it) and
 bakes each Empty's LOCAL transform back into its row on save (`document/collider_shapes.py`

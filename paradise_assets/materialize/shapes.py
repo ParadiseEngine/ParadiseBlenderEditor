@@ -48,14 +48,9 @@ def materialize(obj, components: list, vocabulary: component_schema.Vocabulary) 
             continue
         data = component.get("data") if isinstance(component.get("data"), dict) else {}
         component_id = str(component.get("id", ""))
-        for field in schema.fields:
-            if not collider_shapes.is_shape_array(field):
-                continue
-            rows = data.get(field.name)
+        for field in collider_shapes.shape_fields(schema):
             member = collider_shapes.host_member(field).name
-            if not isinstance(rows, list):
-                continue
-            for index, row in enumerate(rows):
+            for index, row in enumerate(_stored_rows(field, data.get(field.name))):
                 if isinstance(row, dict):
                     geometry = row.get(member)
                     _create(obj, component_id, field.name, index,
@@ -64,9 +59,12 @@ def materialize(obj, components: list, vocabulary: component_schema.Vocabulary) 
     return made
 
 
-def add_shape(obj, component_id: str, field_name: str, shape_type: str):
-    """A new shape Empty at the object's origin, numbered after the last one."""
+def add_shape(obj, component_id: str, field_name: str, shape_type: str, *, single: bool = False):
+    """A new shape Empty at the object's origin, numbered after the last one. A SINGLE field
+    (a marker's Volume) holds one: a second is refused rather than silently dropped on save."""
     existing = shape_empties(obj, component_id, field_name)
+    if single and existing:
+        raise ValueError(f"{field_name} is one shape, and it already has one")
     index = max((_tag(e)["index"] for e in existing), default=-1) + 1
     defaults = {"Box": {"Size": [1.0, 1.0, 1.0]},
                 "Sphere": {"Radius": 0.5},
@@ -97,11 +95,8 @@ def bake(obj, entry, vocabulary: component_schema.Vocabulary, item_default) -> i
         schema = vocabulary.describe(payload)
         if schema is None:
             continue
-        for field in schema.fields:
-            if not collider_shapes.is_shape_array(field):
-                continue
-            stored = component.data.get(field.name)
-            stored_rows = stored if isinstance(stored, list) else []
+        for field in collider_shapes.shape_fields(schema):
+            stored_rows = _stored_rows(field, component.data.get(field.name))
             live = _live_rows(obj, component.id, field, stored_rows, item_default)
             rows = []
             for position, (empty, tag, row, moved) in enumerate(live):
@@ -111,8 +106,7 @@ def bake(obj, entry, vocabulary: component_schema.Vocabulary, item_default) -> i
                 empty[SHAPE_KEY] = json.dumps(tag)
             if len(rows) != len(stored_rows):
                 changed += abs(len(rows) - len(stored_rows))
-            if rows or field.name in component.data:
-                component.data[field.name] = rows
+            _store_rows(field, component.data, rows)
     return changed
 
 
@@ -120,15 +114,34 @@ def overlay_live(obj, component_id: str, schema, data: dict, item_default) -> di
     """``data`` with every shape list replaced by what the Empties say NOW -- the rows the save
     would write. The panel plans from this, or it keeps showing the rows of the last save while
     an author adds and deletes Empties."""
-    for field in schema.fields:
-        if not collider_shapes.is_shape_array(field):
-            continue
-        stored = data.get(field.name)
-        stored_rows = stored if isinstance(stored, list) else []
-        data[field.name] = [
+    for field in collider_shapes.shape_fields(schema):
+        stored_rows = _stored_rows(field, data.get(field.name))
+        _store_rows(field, data, [
             row for _, _, row, _ in _live_rows(obj, component_id, field, stored_rows, item_default)
-        ]
+        ])
     return data
+
+
+def _stored_rows(field, value) -> list:
+    """The document's rows for a shape field: the list itself, or a single row as a list of one.
+    A single field nobody filled is absent, and reads as no rows."""
+    if field.type == "array":
+        return value if isinstance(value, list) else []
+    return [value] if isinstance(value, dict) else []
+
+
+def _store_rows(field, data: dict, rows: list) -> None:
+    """The inverse: a list is written whole; a single field takes its one row, or is REMOVED
+    when there is none -- the game reads an absent Volume as null and refuses the marker, which
+    is the right answer for a trigger nobody drew."""
+    if field.type == "array":
+        if rows or field.name in data:
+            data[field.name] = rows
+        return
+    if rows:
+        data[field.name] = rows[0]
+    else:
+        data.pop(field.name, None)
 
 
 def _live_rows(obj, component_id: str, field, stored_rows: list, item_default) -> list:
@@ -156,7 +169,8 @@ def _live_rows(obj, component_id: str, field, stored_rows: list, item_default) -
 def default_row(field) -> dict:
     """A new shape row: every member at its schema default, so the game reads a complete record
     rather than one whose omitted keys it has to guess."""
-    return {child.name: child.default_value() for child in field.items.fields}
+    row = field.items if field.type == "array" else field
+    return {child.name: child.default_value() for child in row.fields}
 
 
 def remove_all(scene) -> None:

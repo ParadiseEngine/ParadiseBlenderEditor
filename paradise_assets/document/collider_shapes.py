@@ -23,7 +23,8 @@ from . import axes
 
 __all__ = [
     "GEOMETRY_FIELDS", "HOST_KIND", "SHAPE_TYPES",
-    "from_gizmo", "host_member", "is_shape_array", "keep_unchanged", "to_gizmo",
+    "from_gizmo", "host_member", "is_shape_array", "is_shape_field", "is_shape_single",
+    "keep_unchanged", "shape_fields", "to_gizmo",
 ]
 
 #: The ``authoredBy`` the schema dump puts on a ``HostShape`` member.
@@ -40,16 +41,31 @@ _EPSILON = 1e-5
 
 
 def is_shape_array(field) -> bool:
-    """Whether a schema field is a list of shape rows: rows with a host-shape member."""
+    """Whether a schema field is a LIST of shape rows: rows with a host-shape member."""
     return field.type == "array" and host_member(field) is not None
 
 
+def is_shape_single(field) -> bool:
+    """Whether a schema field is ONE shape row -- a trigger marker's ``Volume``."""
+    return field.type == "object" and host_member(field) is not None
+
+
+def is_shape_field(field) -> bool:
+    return is_shape_array(field) or is_shape_single(field)
+
+
+def shape_fields(schema):
+    """Every shape field a component schema declares, list or single."""
+    return [field for field in schema.fields if is_shape_field(field)]
+
+
 def host_member(field):
-    """The row member the Empty decides -- the one typed as the host shape -- or ``None``."""
-    items = getattr(field, "items", None)
-    if items is None:
+    """The row member the Empty decides -- the one typed as the host shape -- or ``None``.
+    For a list that member is on the row type; for a single row it is on the field itself."""
+    row = getattr(field, "items", None) if field.type == "array" else field
+    if row is None:
         return None
-    for child in getattr(items, "fields", ()):
+    for child in getattr(row, "fields", ()):
         if child.authored_by == HOST_KIND:
             return child
     return None

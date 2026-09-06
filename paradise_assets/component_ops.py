@@ -10,7 +10,7 @@ from __future__ import annotations
 import copy
 
 import bpy
-from bpy.props import EnumProperty, IntProperty, StringProperty
+from bpy.props import BoolProperty, EnumProperty, IntProperty, StringProperty
 from bpy.types import Operator
 
 from . import edits
@@ -142,13 +142,19 @@ class PARADISE_ASSETS_OT_add_shape(Operator):
     component_id: StringProperty(name="Component")
     field_name: StringProperty(name="Field")
     shape_type: StringProperty(name="Shape", default="Box")
+    single: BoolProperty(name="Single", default=False)
 
     def execute(self, context):
         obj = context.active_object
         if obj is None or store.guid_of(obj) is None:
             self.report({"ERROR"}, "Select a document object first")
             return {"CANCELLED"}
-        empty = shapes.add_shape(obj, self.component_id, self.field_name, self.shape_type)
+        try:
+            empty = shapes.add_shape(
+                obj, self.component_id, self.field_name, self.shape_type, single=self.single)
+        except ValueError as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
         for other in context.selected_objects:
             other.select_set(False)
         empty.select_set(True)

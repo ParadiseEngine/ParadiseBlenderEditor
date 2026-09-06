@@ -145,6 +145,32 @@ def test_a_host_shape_list_is_rows_of_empties_with_only_the_game_members_typed()
     assert not plan[0].field.editable
 
 
+def test_one_shape_row_is_a_shapes_header_and_a_row_at_the_fields_own_path():
+    root = _project([{
+        "id": "46444444-4444-4444-8444-444444444444",
+        "type": "Game.CameraTriggerMarker",
+        "fields": [
+            {"name": "Yaw", "type": "float"},
+            {"name": "Volume", "type": "object", "fields": [
+                {"name": "Shape", "type": "object", "authoredBy": "shape", "fields": [
+                    {"name": "Radius", "type": "float"}]},
+                {"name": "IsTrigger", "type": "bool"},
+            ]},
+        ],
+    }])
+    schema = component_schema.load(root).get("46444444-4444-4444-8444-444444444444")
+    plan = schema.plan({"Yaw": 40, "Volume": {"Shape": {"Radius": 8}, "IsTrigger": True}})
+    assert [(item.path, item.role) for item in plan] == [
+        ("Yaw", component_schema.ROLE_LEAF),
+        ("Volume", component_schema.ROLE_SHAPES),
+        ("Volume", component_schema.ROLE_ROW),
+        ("Volume/IsTrigger", component_schema.ROLE_LEAF),
+    ]
+    # An unfilled Volume is the header alone: the shape is drawn, not typed.
+    assert [(i.path, i.role) for i in schema.plan({"Yaw": 40})] == [
+        ("Yaw", component_schema.ROLE_LEAF), ("Volume", component_schema.ROLE_SHAPES)]
+
+
 def test_another_host_kind_list_stays_locked():
     root = _project([{
         "id": "45444444-4444-4444-8444-444444444444",

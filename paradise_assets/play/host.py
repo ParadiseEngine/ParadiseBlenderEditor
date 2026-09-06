@@ -1,7 +1,6 @@
 """Finding and running the ``paradise`` CLI.
 
-Duplicated in spirit from ``paradise_blender/pipeline/dotnet.py`` because extensions cannot import
-each other (#35). The CLI is the only program this extension runs: building, verifying, watching
+The CLI is the only program this extension runs: building, verifying, watching
 AND playing are all its verbs, so the game's launcher is the CLI's business (``[host]`` in
 ``assets/project.toml``), never a preference here. A verb runs to completion and captured, except
 the long-lived ones (:mod:`..watch`, :mod:`.session`), which are supervised children.

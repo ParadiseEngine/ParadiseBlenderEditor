@@ -21,6 +21,7 @@ The edit they cannot express -- moving a derived child -- is refused rather than
 from __future__ import annotations
 
 import os
+import uuid
 
 import bpy
 from mathutils import Quaternion
@@ -30,7 +31,8 @@ from ..document import atomic, axes, canonical_toml, well_known
 from ..document import prefab as prefab_document
 from ..document.asset_reference import AssetReference
 from ..document.prefab import PrefabComponent, PrefabDocument, PrefabDocumentError, PrefabObject
-from . import store
+from . import groups, store
+from .meshes import LIBRARY_COLLECTION
 
 __all__ = ["SaveError", "SaveResult", "document_trs", "save_prefab"]
 
@@ -189,7 +191,10 @@ def _merge(scene: bpy.types.Scene, base: PrefabDocument, result: SaveResult) -> 
     is kept: Blender guarantees no iteration order, and following it would reshuffle the file on
     every save. New objects follow, in name order."""
     objects = {store.guid_of(obj): obj for obj in _document_objects(scene)}
-    present = frozenset(objects)
+    # A group is a document object Blender happens to show as a collection (groups.py), so it
+    # merges exactly like one -- same identity, same place in file order, same removal rule.
+    collections = {groups.guid_of(found): found for found in _document_groups(scene)}
+    present = frozenset(objects) | frozenset(collections)
 
     merged = PrefabDocument()
     for entry in base.objects:
@@ -199,6 +204,9 @@ def _merge(scene: bpy.types.Scene, base: PrefabDocument, result: SaveResult) -> 
                 merged.objects.append(entry)
             else:
                 result.removed += 1
+            continue
+        if (collection := collections.pop(entry.guid, None)) is not None:
+            merged.objects.append(_group_entry(collection, entry, scene))
             continue
         obj = objects.pop(entry.guid, None)
         if obj is None:
@@ -210,7 +218,114 @@ def _merge(scene: bpy.types.Scene, base: PrefabDocument, result: SaveResult) -> 
         result.added += 1
         merged.objects.append(_object_entry(obj, None, result))
 
+    for collection in sorted(collections.values(), key=lambda c: c.name):
+        result.added += 1
+        merged.objects.append(_group_entry(collection, None, scene))
+
     return merged
+
+
+def _document_groups(scene: bpy.types.Scene) -> list:
+    """Group collections under the scene, minting an identity for one the author just made.
+
+    A new collection is given a ``uuid4`` rather than waited for: sidecars mint identities for
+    FILES under ``assets/``, and an object inside a document has never been one of those --
+    ``instancing.add_instance`` mints the same way for a placed instance.
+    """
+    found = []
+    for collection in _walk_collections(scene.collection):
+        if collection.name == LIBRARY_COLLECTION:
+            continue
+        if groups.guid_of(collection) is None:
+            if not collection.objects and not collection.children:
+                # Blender's own empty collection, or one the author has not put anything in:
+                # a group with no children is not a group (groups.py).
+                continue
+            groups.tag(collection, str(uuid.uuid4()), collection.name)
+        found.append(collection)
+    return found
+
+
+def _walk_collections(root: bpy.types.Collection):
+    """Every collection under ``root``, excluding the mesh library and anything inside it."""
+    for child in root.children:
+        if child.name == LIBRARY_COLLECTION:
+            continue
+        yield child
+        yield from _walk_collections(child)
+
+
+def _holder_guid(collection: bpy.types.Collection, scene: bpy.types.Scene) -> str | None:
+    """The document parent of a group: the group it sits inside, else the document ROOT.
+
+    Not ``None`` at the top level, which is the whole point: a document has exactly one root, so
+    a group linked straight into the scene collection hangs off the root exactly as an object
+    dropped there does (``instancing._parent_to_document_root``). Returning nothing here wrote a
+    second root and the save refused itself.
+    """
+    for candidate in _walk_collections(scene.collection):
+        if collection.name in candidate.children:
+            return groups.guid_of(candidate)
+    return _root_guid(scene)
+
+
+def _root_guid(scene: bpy.types.Scene) -> str | None:
+    """The document root: the one object with no parent and no group around it. ``None`` when
+    that is not unique -- the root rule then refuses the save and names the objects, which is a
+    better error than anything this could invent."""
+    found = [
+        obj for obj in _document_objects(scene)
+        if obj.parent is None
+        and not any(groups.guid_of(c) is not None for c in obj.users_collection)
+    ]
+    return store.guid_of(found[0]) if len(found) == 1 else None
+
+
+def _parent_guid(obj: bpy.types.Object, scene: bpy.types.Scene) -> tuple[str | None, str | None]:
+    """The document parent of ``obj``, and a warning when Blender says two things at once.
+
+    Parenting wins over membership, because a parent is a TRANSFORM relationship the document
+    must keep and a collection is not. An object that is both parented and dropped into a group
+    is therefore saved under its parent and its membership is lost on the next load -- said out
+    loud rather than discovered, since the document has one parent link and cannot hold both.
+    """
+    if obj.parent is not None:
+        parent = store.guid_of(obj.parent)
+        held = next(
+            (groups.guid_of(c) for c in obj.users_collection if groups.guid_of(c) is not None),
+            None,
+        )
+        if held is not None and parent is not None:
+            return parent, (
+                f"{obj.name} is parented to '{obj.parent.name}' AND inside a group; the document "
+                "keeps the parent, so its place in the group is not saved."
+            )
+        return parent, None
+
+    for collection in obj.users_collection:
+        if (guid := groups.guid_of(collection)) is not None:
+            return guid, None
+    return None, None
+
+
+def _group_entry(
+    collection: bpy.types.Collection, original: PrefabObject | None, scene: bpy.types.Scene
+) -> PrefabObject:
+    """One group collection as a document object: meta, an identity transform, nothing else."""
+    entry = PrefabObject() if original is None else original
+    _write_meta(
+        entry, groups.guid_of(collection), groups.name_of(collection),
+        _holder_guid(collection, scene))
+    if entry.component(well_known.TRANSFORM_ID) is None:
+        # Spelled out rather than omitted, so the object reads as placed at the origin rather
+        # than as one whose placement nobody wrote.
+        entry.components.append(PrefabComponent(
+            well_known.TRANSFORM_ID, well_known.TRANSFORM_TYPE, {
+                well_known.POSITION: [0.0, 0.0, 0.0],
+                well_known.ROTATION: [0.0, 0.0, 0.0, 1.0],
+                well_known.SCALE: [1.0, 1.0, 1.0],
+            }))
+    return entry
 
 
 def _object_entry(obj: bpy.types.Object, original: PrefabObject | None, result: SaveResult) -> PrefabObject:
@@ -226,7 +341,9 @@ def _object_entry(obj: bpy.types.Object, original: PrefabObject | None, result: 
         reference_guid, reference_path = store.prefab_of(obj)
         entry.prefab = AssetReference(reference_guid, reference_path)
 
-    parent_guid = store.guid_of(obj.parent) if obj.parent is not None else None
+    parent_guid, conflict = _parent_guid(obj, obj.users_scene[0] if obj.users_scene else bpy.context.scene)
+    if conflict is not None:
+        result.warnings.append(conflict)
 
     _write_meta(entry, guid, store.document_name(obj), parent_guid)
     _write_transform(entry, obj, original, result)

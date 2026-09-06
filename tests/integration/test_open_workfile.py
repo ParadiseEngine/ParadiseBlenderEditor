@@ -1,4 +1,5 @@
-"""Opening a cached ``.editor/blend/*.blend`` refreshes from assets and starts the watcher.
+"""Opening a cached ``.editor/blend/*.blend`` refreshes from assets and starts the watcher, and
+a document opened into a FRESH Blender does not land beside the startup file's cube.
 
     blender --background --factory-startup --python tests/integration/test_open_workfile.py
 
@@ -146,6 +147,65 @@ def main() -> int:
             check(
                 started == [os.path.normcase(layout.root)],
                 f"and started the watcher for the project ({started})",
+            )
+
+            print("\n== the startup file's content goes, and only the startup file's ==")
+            # `read_homefile`, not `read_factory_settings(use_empty=True)`: the cube, the camera,
+            # the light and the `Collection` holding them are exactly what this has to remove,
+            # and an empty scene would prove nothing.
+            bpy.ops.wm.read_homefile(use_factory_startup=True)
+            before = {obj.name for obj in bpy.context.scene.collection.all_objects}
+            check(
+                "Cube" in before,
+                f"the startup file put something in the way ({sorted(before)})",
+            )
+            with open(document, encoding="utf-8") as handle:
+                load.load_document(
+                    bpy.context.scene, parse_document(handle.read(), document), document, layout,
+                    clear_startup=True)
+            check(
+                {obj.name for obj in bpy.context.scene.collection.all_objects} == names_in_scene(),
+                "after the load the scene holds the document and nothing else "
+                f"({sorted(obj.name for obj in bpy.context.scene.collection.all_objects)})",
+            )
+            check(
+                [child.name for child in bpy.context.scene.collection.children] == [
+                    "ParadiseAssets/Library"],
+                "and the default Collection is gone, the mesh library kept "
+                f"({[c.name for c in bpy.context.scene.collection.children]})",
+            )
+
+            print("\n== and a load that did not ask keeps it ==")
+            # The opt-in is the whole safety of this: `thumbnail.py` starts an empty file, links
+            # its own camera and key light, and materializes -- a load that cleared regardless
+            # would delete the camera and render every prefab black.
+            bpy.ops.wm.read_homefile(use_factory_startup=True)
+            with open(document, encoding="utf-8") as handle:
+                load.load_document(
+                    bpy.context.scene, parse_document(handle.read(), document), document, layout)
+            kept = {obj.name for obj in bpy.context.scene.collection.all_objects}
+            check(
+                {"Camera", "Cube", "Light"} <= kept,
+                f"a caller that arranged its own scene keeps it ({sorted(kept)})",
+            )
+
+            print("\n== but a session someone has worked in is left alone ==")
+            bpy.ops.wm.read_homefile(use_factory_startup=True)
+            mine = bpy.data.objects.new("MyWorkInProgress", None)
+            bpy.context.scene.collection.objects.link(mine)
+            # `is_dirty` follows UNDO PUSHES, not data changes: the link above does not set it,
+            # and every operator a person runs in the UI does. Pushing one here is what makes
+            # this the session a human would have, rather than the one a script has.
+            bpy.ops.ed.undo_push(message="the author models something")
+            check(bpy.data.is_dirty, "the session reads as dirty, as a person's would")
+            with open(document, encoding="utf-8") as handle:
+                load.load_document(
+                    bpy.context.scene, parse_document(handle.read(), document), document, layout,
+                    clear_startup=True)
+            survivors = {obj.name for obj in bpy.context.scene.collection.all_objects}
+            check(
+                {"MyWorkInProgress", "Cube"} <= survivors,
+                f"unsaved work and the startup content both survive ({sorted(survivors)})",
             )
 
             print("\n== Open Prefab into an existing workfile starts the watcher too ==")

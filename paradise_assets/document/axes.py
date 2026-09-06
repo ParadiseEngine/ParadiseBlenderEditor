@@ -5,8 +5,8 @@
 Conjugation, never left-multiplication, or local axes stay in the old basis and composition
 (any parent/child) breaks. Convert the MATRIX and decompose second: the basis change permutes
 axes, so document scale (1, 2, 3) is Blender scale (1, 3, 2), and converting channels separately
-silently gets that wrong. Duplicates ``paradise_blender/contract/axes.py`` because extensions
-cannot import each other (#35). No ``bpy``/``mathutils``; row-major ``m[row][col]`` tuples.
+silently gets that wrong. No ``bpy``/``mathutils``; row-major ``m[row][col]`` tuples, so this is
+importable -- and therefore testable -- outside Blender.
 """
 
 from __future__ import annotations

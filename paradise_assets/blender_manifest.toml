@@ -20,8 +20,8 @@ blender_version_min = "5.2.0"
 license = ["SPDX:MIT"]
 
 # Inside the package, beside __init__.py, because that is what an extension is: a
-# `blender_manifest.toml` next to the Python package root. See the sibling addon's manifest for
-# the full reasoning -- `extension build` refuses a repo root outright.
+# `blender_manifest.toml` next to the Python package root. `extension build --source-dir` pointed
+# at the repository root refuses outright -- there is no __init__.py there.
 #
 # Declared for disclosure. Nothing enforces them; they are here because they are true.
 #

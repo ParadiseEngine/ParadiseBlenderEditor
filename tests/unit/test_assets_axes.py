@@ -3,9 +3,9 @@
 A regression here does not crash anything: it rotates every object in every scene the addon
 opens by 90 degrees, and saves that back over the source of truth.
 
-Named ``test_assets_axes`` rather than ``test_axes`` because the sibling addon already has one
-and pytest imports test modules by basename -- two files called ``test_axes.py`` in the same run
-collide, and the second is silently skipped.
+These check the conversion against ITSELF and would pass just as happily with the basis
+inverted; ``tests/integration/test_axis_parity.py`` is what pins it against Blender's own glTF
+exporter.
 """
 
 from __future__ import annotations
@@ -29,11 +29,10 @@ class TestBasis:
 
     def test_document_forward_maps_to_blender_plus_y(self):
         # C is a rotation of -90 degrees about X, so document -Z lands on Blender +Y -- NOT on
-        # Blender's -Y "forward". The two hosts' forward directions are not the same ray, and
-        # paradise_blender's own pinned test agrees from the other side (Blender -Y -> document
-        # +Z). Its CONVENTIONS.md table says "-Y (forward) | -Z", which contradicts both the
-        # code and the test beside it; the code is right, being pinned against Blender's own
-        # glTF exporter.
+        # Blender's -Y "forward". The two hosts' forward directions are not the same ray, which
+        # is why CONVENTIONS.md's table lists up, position and scale and deliberately does not
+        # list "forward": the code is right, being pinned against Blender's own glTF exporter,
+        # and a table row claiming -Y maps to -Z would contradict it.
         m = axes.to_blender(axes.trs_to_matrix((0.0, 0.0, -1.0), (0.0, 0.0, 0.0, 1.0), (1.0, 1.0, 1.0)))
         approx((m[0][3], m[1][3], m[2][3]), (0.0, 1.0, 0.0))
 

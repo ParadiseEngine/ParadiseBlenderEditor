@@ -3,8 +3,7 @@
 ``save_pre``, NOT ``save_post``: the save refreshes the scene's stamp, and running before Blender
 writes is what lands the fresh stamp IN the .blend. On ``save_post`` the workfile would carry a
 stale stamp, be judged a miss on the next open, and be rebuilt (every GLB re-imported, camera and
-selection lost). ``paradise_blender`` uses ``save_post`` only because its paths resolve against
-``bpy.data.filepath``, which does not apply here.
+selection lost).
 """
 
 from __future__ import annotations

@@ -49,6 +49,12 @@ class PARADISE_ASSETS_OT_open_prefab(Operator):
     filter_glob: StringProperty(default="*.prefab", options={"HIDDEN"})  # type: ignore[valid-type]
 
     def invoke(self, context, event):
+        # A panel row for a specific prefab sets ``filepath`` and means "open THAT" -- putting a
+        # file browser in front of it would ask the author to pick the file they just clicked.
+        # Panel buttons get fresh property defaults per draw, so the plain Open… button (which
+        # sets nothing) still browses.
+        if self.filepath:
+            return self.execute(context)
         context.window_manager.fileselect_add(self)
         return {"RUNNING_MODAL"}
 
@@ -88,8 +94,11 @@ class PARADISE_ASSETS_OT_open_prefab(Operator):
             self.report({"ERROR"}, f"Could not read {path}: {error}")
             return {"CANCELLED"}
 
-        # try_open may have replaced the session; use the scene we have NOW.
-        result = load.load_document(bpy.context.scene, document, path, layout)
+        # try_open may have replaced the session; use the scene we have NOW. clear_startup:
+        # this is the one path a person takes to open a document into a Blender that has nothing
+        # else in it, and the startup file's cube is not part of their level.
+        result = load.load_document(
+            bpy.context.scene, document, path, layout, clear_startup=True)
         for warning in result.warnings[:5]:
             self.report({"WARNING"}, warning)
 
@@ -184,20 +193,19 @@ class PARADISE_ASSETS_OT_save_prefab(Operator):
 
 
 class PARADISE_ASSETS_OT_toggle_watch(Operator):
-    """Start or stop the asset watcher for this document's project"""
+    """Start or stop the asset watcher for this project"""
 
     bl_idname = "paradise_assets.toggle_watch"
     bl_label = "Toggle Asset Watch"
 
     @classmethod
     def poll(cls, context):
-        return store.read_state(context.scene) is not None
+        return store.project_of(context.scene) is not None
 
     def execute(self, context):
-        state = store.read_state(context.scene)
-        layout = project.locate(state.path)
+        layout = store.project_of(context.scene)
         if layout is None:
-            self.report({"ERROR"}, "No asset project for the open document")
+            self.report({"ERROR"}, "No asset project for this file")
             return {"CANCELLED"}
 
         if watch.is_running(layout.root):
@@ -429,13 +437,12 @@ class PARADISE_ASSETS_OT_refresh_catalogue(Operator):
 
     @classmethod
     def poll(cls, context):
-        return store.read_state(context.scene) is not None
+        return store.project_of(context.scene) is not None
 
     def execute(self, context):
-        state = store.read_state(context.scene)
-        layout = project.locate(state.path)
+        layout = store.project_of(context.scene)
         if layout is None:
-            self.report({"ERROR"}, "No asset project found for the open document")
+            self.report({"ERROR"}, "No asset project found for this file")
             return {"CANCELLED"}
         self._root = layout.root
 

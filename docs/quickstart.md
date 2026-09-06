@@ -1,16 +1,16 @@
-# Quickstart — first entity to first render
+# Quickstart — from a checkout to a document you can play
+
+This walks a real game project (ShiningPie is the one it was written against) from "Blender does
+not know about Paradise" to "the game is running on the level I just edited".
 
 ## 1. Prerequisites
 
-```bash
-dotnet tool install --global Paradise.Sample.Runtime   # provides `paradise-runtime`
-```
-
-Blender 4.2 or newer. Optional but recommended:
-
-- **KTX-Software** (`toktx`) — the engine's glTF reader rejects PNG/JPEG, so textured meshes
-  need KTX2 sidecars. Without it, exports still succeed; meshes just render untextured.
-- **.NET SDK 10+** — only for navmesh baking and the contract conformance check.
+- **Blender 5.2+.** Below that the extension refuses to enable rather than degrading.
+- **The `paradise` CLI.** Either `Paradise.Cli.csproj` from a ParadiseEngine checkout, or the
+  installed dotnet tool. This is not optional: the CLI's watcher is what mints identities for
+  new files, and without an identity a new prefab cannot be created at all.
+- **KTX-Software (`ktx`)** — optional, but the engine's glTF reader rejects PNG/JPEG, so a build
+  without it gives you untextured meshes.
 
 ## 2. Install the addon
 
@@ -18,167 +18,129 @@ Blender 4.2 or newer. Optional but recommended:
 python3 tools/install_addon.py
 ```
 
-Restart Blender, then enable **Paradise Engine Tools** in Preferences > Add-ons. Point the
-optional tool paths (`toktx`, the bridge project) at your installs in the addon preferences.
+Restart Blender — a running session will not pick up a first-time enable — then enable
+**Paradise Assets** in Preferences > Add-ons.
 
-## 3. Set up the project
+In its preferences, set:
 
-Save your .blend first — the default data directory is `//data`, relative to the .blend file,
-and an unsaved file has nothing to be relative to (the addon falls back to a temp directory and
-says so in the Scene panel).
+| | |
+|---|---|
+| **Paradise CLI** | the `paradise` executable, or `src/Paradise.Cli/Paradise.Cli.csproj` |
+| **Build Profile** | which `[build.profiles.*]` in `assets/project.toml` a Play build uses (`dev`) |
+| **KTX Executable** | the `ktx` binary **itself**, not the directory holding it |
+| **Watch While a Document Is Open** | leave on |
 
-Open the **Paradise** tab in the 3D viewport sidebar (`N`) and check the Scene panel:
+Absolute paths, even for things `which` finds: Blender launched from the Dock or Finder does not
+inherit your shell `PATH`, and a preference that points at a directory looks configured and
+behaves exactly like a blank one.
 
-```
-Data Directory:  //data
-Output: scenes/<your-blend-name>.json
-Export On Save:  ✓
-```
+## 3. Open a document
 
-## 4. Author an entity
-
-1. Add a mesh — a cube will do.
-2. With it selected, press **Make Paradise Entity**.
-
-That is the whole requirement. Only marked objects export; everything else in the scene is
-ignored, so you can keep reference geometry, rigs, and layout helpers around freely.
-
-Give it a material if you like: an ordinary Principled BSDF is read directly (base colour,
-metallic, roughness, emission, normal map).
-
-## 5. Give it collision
-
-The engine needs explicit collider shapes — mesh geometry is for rendering.
-
-1. Add an Empty (`Add > Empty > Cube`) and size it to cover the object.
-2. Press **Make Paradise Collider** in the Collider panel, and pick a shape.
-3. Parent it to your entity.
-4. Select the collider, then ctrl-click the entity to make it active, and press **+** next to
-   *Physics Colliders* in the entity's Physics panel.
-
-An entity with colliders becomes a static body by default; tick **Dynamic Body** for something
-the simulation should push around.
-
-## 6. Add a camera and a light
-
-An ordinary Blender camera and a sun lamp. The scene's active camera is the one exported.
-
-## 7. Export and play
-
-Save the .blend — that exports automatically. Or press **Export Paradise Scene**.
-
-You should see:
+Open the **Paradise** tab in the 3D viewport sidebar (`N`). With nothing open you get:
 
 ```
-data/
-  scenes/<name>.json
-  scenes/<name>.navmesh.bin      (if you have walkable geometry and the .NET bridge)
-  materials/*.json
-  Models/*.glb
-  ProjectSettings.json
+▾ Prefab Document
+    No document open.
+    [ Open Prefab… ]
+    Recently opened here:
+      shiningpie
+      triggers
+
+▾ Project
+    ShiningPie   /…/paradise-workspace/ShiningPie
+    ○ not watching                      [ Start ]
+    [ Build ] [ Verify ]
+    [ Clean ] [ Catalogue ]
 ```
 
-Now press **Play in Paradise**. The runtime opens in an SDL window with the engine's PBR
-renderer.
+The Project panel appears whenever this `.blend` sits inside a project — the working files under
+`.editor/blend/` do, so it is there before you open anything.
 
-If the window does not appear, the launch log is at `$TMPDIR/paradise_play.log`.
+**Open Prefab…** and pick `assets/levels/shiningpie.prefab`. Three things happen:
 
-## 7b. Tune the game
+1. If a working `.blend` exists under `.editor/blend/levels/shiningpie.blend`, it is opened first
+   — that is where your camera and selection live. Its objects are then rematerialized from the
+   document regardless, so an edit made by another tool is never shown stale.
+2. The document's objects appear, meshes instanced from the GLBs the document references.
+3. `paradise assets watch` starts for the project.
 
-Authored components live in two places, both drawn from the same `data/authoring-schema.json`
-your game's build dumps:
+## 4. Place something
 
-| Where | What it is | Where you edit it |
-|---|---|---|
-| On an entity | the object's own `Components.Custom` | **Components** panel |
-| In a file | a JSON document of authored payloads | **Config** panel |
+**Add Prefab…** picks a prefab from the project and instances it. To drag with thumbnails
+instead, hit **Catalogue** once (it renders every prefab in a background Blender — minutes on a
+cold cache, seconds afterwards), then open an Asset Browser and choose the project's library from
+the dropdown.
 
-If your game keeps tunables in a JSON document — a `Components` array of `{"Id", "Data"}`
-payloads, the same shape components travel in on an entity — press **+** in the **Config** panel
-and pick it. The picker lists the config documents it finds under your data directory, so there is
-no path to type and no way to name a file the runtime could not reach; scene exports, material
-documents and the authoring schema are not offered. A group holding a LIST draws each row in its
-own box with **+**, **X** and up/down buttons — including a list nested inside a row, such as the
-weighted entries of a drop table. The panel then draws every group with the
-units, ranges and tooltips the game declared in C#.
+Move, rotate and scale with Blender's own gizmos. The document is Y-up and Blender is Z-up; you
+never see that, because `document/axes.py` rebases on the way in and out.
 
-The list takes as many documents as you like: a game's tunables and a level's settings are two
-rows, not two features. Each row keeps its own edited values, so two documents declaring the same
-component id never collide.
+An instance's *children* are the prefab's, not yours: moving one is refused on save, because the
+document has no way to say it. Move the instance, or edit the prefab it came from.
 
-Load and Save are buttons rather than automatic, deliberately: those files are the game's source
-of truth and are edited by hand as well, so nothing writes to them behind you. A save merges into
-the document rather than rebuilding it, so comments and any sections the addon does not understand
-are left exactly as they were.
+## 5. Edit components
 
-## 8. Live preview
+Select an object. The **Components** panel shows what the document says about it:
 
-Press **Start Live Preview** instead of Play. The runtime launches and then follows your edits
-as you make them.
+- `meta` and `transform` are drawn **locked**. Blender's name field and transform gizmo are their
+  editor, and a second way to type an identity is a second thing that can disagree.
+- The game's own components are editable where the game's schema says they are. A field marked
+  `[AuthoredByHost]` is shown locked too — its value comes from the object it points at.
+- **Add Component** offers what the schema describes.
 
-**This needs an engine-side listener that does not exist yet** — see
-[`live-preview.md`](live-preview.md). The Blender half is complete; you can exercise it against
-`tools/mock_runtime.py` today.
+If the panel says *"No game schema — build the launcher to edit game fields"*, that is a fresh
+clone or a `clean` that took `.editor/` with it. The button beside it is the build that fixes it
+(`paradise host build`, which dumps `.editor/authoring-schema.json`).
 
-## Troubleshooting
+Edits are held as an overlay until you save, so a component nobody edited is written back
+byte-for-byte — including ones this addon has no schema for.
 
-**"No Paradise entities were found"** — nothing is marked. Select objects and press
-*Make Paradise Entity*. Entity-ness is a flag, not a node type, so it is invisible in the
-outliner; use **Select Paradise Entities** to see what is marked.
+## 6. Save
 
-**Meshes render untextured** — `toktx` is not installed or not configured. The engine's glTF
-reader requires KTX2. Install KTX-Software, set its path in preferences, and press
-**Convert Textures To KTX2**.
+**Ctrl+S** writes the document first and the working `.blend` second. The **Save** button in the
+Prefab Document panel writes only the document.
 
-**"references … outside the data directory"** — the runtime resolves every contract path under
-`data/`, so an asset anywhere else is unreachable. Move it under the data directory.
+A save is refused if the document changed on disk since it was opened; the panel says so, and
+your work stays in the working file. Reload, then redo the edit.
 
-**Objects appear rotated 90°** — this should be impossible; the axis conversion is pinned
-against Blender's own glTF exporter by `tests/integration/test_axis_parity.py`. If you see it,
-run that test and file the output.
+## 7. Play
 
-**Live preview lags, or reports dropped messages** — lower the update rate in preferences. The
-send queue is bounded on purpose, so a runtime that cannot keep up loses old messages rather
-than growing Blender's memory without limit.
+**Build & Play** runs `paradise host play`: the CLI compiles `assets/` into `build/`, brings the
+game's launcher up to date, and runs it on the open document. A failed build therefore stops the
+launch rather than running the last good one.
 
-## 9. Creating prefabs (the Paradise Assets tab)
+**Watch & Play** does the same under `dotnet watch`, so a C# edit is hot-patched into the running
+game. Slower to start; no rebuild afterwards.
 
-Everything above belongs to `paradise_blender`, which exports a `.blend` to `data/`. The
-**Paradise Assets** tab is the other addon: it opens an `assets/**/*.prefab` document and writes
-that document back. Two of its buttons create prefabs rather than edit one.
+If the panel says *"No `[host]` project in assets/project.toml"*, the project has not declared
+which launcher is its game — that is the project's business, not a preference, so that a script
+and CI run the same game the same way.
 
-Both need the asset watcher running, and will start it for you. A new file has no identity until
-`paradise assets watch` writes its `.meta`, and until it has one nothing can reference it — so a
-creation without a watcher is refused rather than half-done. If the `paradise` CLI is not on
-PATH or set in the addon preferences, neither button can work.
+## 8. New models
 
-**Extract…** (Prefab Document panel, beside *Add Prefab…*) turns the active object and
-everything parented under it into a new `.prefab`, and leaves an instance of it where the
-subtree was. The instance keeps the object's identity, its name and where it stands, so
-anything that referenced that object still does; the prefab holds the shape, with its root at
-the origin. Two consequences worth knowing before pressing it:
+Drop a `.glb` under `assets/` and run:
 
-- A reference from elsewhere in the level to a **child** of what you extracted breaks. A
-  resolved child's identity is minted per instance, so the authored one stops naming anything.
-  The operator warns, once per reference, and extracts anyway.
-- The document root cannot be extracted (that would be "make an instance of the whole level"),
-  and the operator refuses a path that already holds a prefab or a stray `.meta`.
+```bash
+paradise assets extract
+```
 
-Save your placement changes first: the extraction works on the file, so it refuses to run while
-the scene holds edits the document does not have.
+It writes a prefab for any model that has none, so the model is placeable straight away. Where
+that prefab lands is `[glb] extract` in the model's own sidecar, else `[extract] directory` in
+`project.toml`, else beside the model — so "is there a prefab beside the model" is the wrong
+question on a project that configures either of the first two.
 
-**Model Prefabs** (a panel of its own) lists the models this project holds. It is read-only —
-prefabs are `paradise assets extract`'s to write, and nothing in the addon generates, updates or
-deletes one.
+A generated prefab is a **seed, not a projection**: from the moment it is written it is an
+ordinary document you own. Nothing records which model it came from, nothing updates it, and
+nothing deletes it.
 
-Which component a generated prefab authors its mesh into is the project's choice, not the
-addon's: `extract` reads `[extract] static_mesh_component` and `skinned_mesh_component` from
-`project.toml`, falling back to the game's authoring schema. A rigged model authored as a static
-one is a prefab that loads, shows the mesh, and is the wrong kind of thing in the game, so it is
-never guessed — `extract` warns and writes a prefab with no mesh rather than pick for you.
+## Where things live
 
-A prefab is written only when the model has nowhere to be placed from yet. If anything already
-references its mesh — the prefab written last time, one moved elsewhere since, or a document that
-adopted the mesh by hand — `extract` leaves it alone and says so. Nothing tracks the pair
-afterwards: a prefab you edit is yours, and deleting a model leaves its prefab behind for
-`assets verify` to report as a dangling reference.
+| | |
+|---|---|
+| `assets/` | the source of truth — documents, models, textures, and a `.meta` beside each |
+| `.editor/blend/` | working `.blend` files, one per document. Disposable |
+| `.editor/asset-library/` | the Asset Browser catalogue and its thumbnails. Disposable |
+| `.editor/authoring-schema.json` | the game's component schema, dumped by its launcher build |
+| `build/` | what the CLI compiles and the game loads. Disposable |
+
+Everything under `.editor/` and `build/` is regenerable, and `Clean` deletes `build/` (and
+`.editor/` too, if you tick the box).

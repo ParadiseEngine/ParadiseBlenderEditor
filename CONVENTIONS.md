@@ -1,18 +1,19 @@
-# Conventions — Blender ↔ the Paradise export contract
+# Conventions — Blender ↔ the Paradise document format
 
-The contract is defined by C# `Paradise.Export` and pinned by `ParadiseEngine/CONVENTIONS.md`
-and the golden fixtures in `Paradise.Export.Test`. This document covers only what is *specific
-to the Blender host*: where Blender's conventions differ from the contract's, and what this
-addon does about it.
+The format is defined by C# (`Paradise.Assets.Documents`, `Paradise.Export`) and pinned by
+`ParadiseEngine/CONVENTIONS.md` and the fixtures in `Paradise.Assets.Documents.Test`. This
+document covers only what is *specific to the Blender host*: where Blender's conventions differ
+from the document's, and what this addon does about it.
 
-The Godot host has an easy job here — Godot's conventions **are** the contract's, so it writes
-values verbatim. Blender's are not, in four places.
+The Godot host has an easy job here — Godot's conventions **are** the format's, so it reads and
+writes values verbatim. Blender's are not, in four places, and every one of them fails silently
+rather than loudly.
 
 ---
 
-## 1. Handedness — the contract is Y-up, Blender is Z-up
+## 1. Handedness — the document is Y-up, Blender is Z-up
 
-Both are right-handed. The contract is **Y-up, −Z forward, +X right** (glTF/Godot); Blender is
+Both are right-handed. The document is **Y-up, −Z forward, +X right** (glTF/Godot); Blender is
 **Z-up, −Y forward, +X right**. The conversion is a rotation of −90° about X:
 
 ```
@@ -22,7 +23,7 @@ C = Rotation(-90°, X)        C·(x, y, z) = (x, z, -y)
 Transforms are rebased by **conjugation**, not left-multiplication:
 
 ```
-M_contract = C · M_blender · C⁻¹
+M_document = C · M_blender · C⁻¹
 ```
 
 Left-multiplying alone moves an object correctly but leaves its local axes in the old basis, so
@@ -30,206 +31,103 @@ it breaks the moment transforms compose — i.e. any parent/child hierarchy. Con
 similarity transform and distributes over multiplication, which is exactly the property a
 hierarchy needs.
 
-Implementation: `paradise_blender/contract/axes.py`. Validation:
+Implementation: `paradise_assets/document/axes.py`. Validation:
 
-- `tests/unit/test_axes.py` proves the algebraic properties (composition, determinant, that the
-  quaternion and matrix paths agree).
+- `tests/unit/test_assets_axes.py` proves the algebraic properties (composition distributes over
+  conjugation, the two directions are inverses, a half turn decomposes precisely).
 - `tests/integration/test_axis_parity.py` proves the conversion **matches Blender's own glTF
-  exporter** with `export_yup=True`, across six transforms including non-uniform scale.
+  exporter** with `export_yup=True`, across seven transforms including non-uniform scale.
 
-That second test is the one that matters. `RenderableComponentData.Mesh` points at a GLB the
-glTF exporter wrote; if our node transforms disagreed with its vertex data, every mesh in every
-scene would be rotated 90°, and the unit tests would still pass because they only check our
-conversion against itself.
+That second test is the one that matters. A document's `transform` places a mesh that lives in a
+GLB somebody's glTF exporter wrote; if the two disagreed, every mesh in every document would be
+rotated 90°, and the unit tests would still pass because they only check our conversion against
+itself.
 
 **Consequences worth internalising:**
 
-| Blender | contract |
+| Blender | document |
 |---|---|
 | `+Z` (up) | `+Y` |
-| `−Y` (forward) | `−Z` |
 | position `(x, y, z)` | `(x, z, −y)` |
 | scale `(x, y, z)` | `(x, z, y)` — magnitudes, so no sign flip |
 | triangle winding | **unchanged** — `C` is a proper rotation (det +1), so it cannot mirror |
 
 Scale is the trap. It is tempting to decompose a Blender matrix and convert position, rotation,
 and scale separately; that gets scale wrong, because the basis change permutes the axes. So
-`export/transform.py` **converts the matrix first and decomposes second**, always.
+`axes.py` **converts the matrix first and decomposes second**, always.
 
-## 2. Colour space — Blender is already linear
+Two smaller traps live in the same file, both paid for on ShiningPie:
 
-The contract stores **linear** colour, packed to 8 bits per channel (`Color32`).
+- **Normalize a document quaternion before composing it.** They are float32-quantized, so none is
+  exactly unit; the length error leaks through the rotation matrix and comes back out of the
+  decompose as SCALE. A stored `20.0` became `19.999998` on the skyline props.
+- **Decompose with Shepperd's method.** The naive w-first formula divides by `sqrt(1 + trace)`,
+  which is zero for a 180° rotation — and an axis-aligned scene is full of them.
 
-The Godot host calls `Color.SrgbToLinear()` on every authored colour, because Godot stores
-authored colours as sRGB. **Blender does not, and this addon must not.** Blender's socket
-`default_value` colours are linear scene-referred floats — the colour picker only *displays*
-them through a view transform. Applying the transfer function here would darken every material
-in the scene by roughly the gamma curve, and it would look like a plausible lighting difference
-rather than a bug.
+## 2. Numbers — the document is float32, the text is `repr`
 
-The exception is anything authored through a widget that means sRGB by convention: the
-procedural-recipe tints and fog colour in `authoring/material_props.py` and
-`authoring/world_props.py`, which mirror Godot metadata and are documented as sRGB. Those are
-linearized explicitly, and each call site says so.
+The document's floats are C# `float`. The canonical writer emits the shortest digits that
+round-trip, formatted by **Python's `repr` rules** — the C# `CanonicalTomlWriter` adopted those
+rules so this side could be one call to `repr`. Do not reimplement it, and do not "improve" the
+formatting: `paradise assets prefab-check` compares BYTES, so a formatting difference is a failing
+check on every document this addon has touched, not a style nit.
 
-## 3. Numbers — the contract is float32
+`document/canonical_toml.py` is that writer, and `tests/unit/test_parity_corpus.py` re-emits a
+corpus the C# writer produced and demands byte equality.
 
-The contract's floats are C# `float`, rendered by System.Text.Json with shortest-round-trip
-precision **for 32 bits**. A Python double renders `8/255` as `0.03137254901960784`; the
-contract renders `0.03137255`.
+**An object nobody moved must keep its authored numbers verbatim.** Documents store values that
+came from C# `float`, Blender stores float32, and the axis rebase runs a square root — the round
+trip is accurate to about 4e-8 relative, which is fine as a position and fatal as text, because
+`repr` of a value that moved in its last bit is a completely different string. `save._unchanged`
+compares against `_EPSILON = 1e-6`, relative to the stored magnitude (400 m and 0.01 scale do not
+deserve the same slack) and by dot product for rotations (q and −q are one rotation). Its epsilon
+is not tuning: below it, merely loading a document would churn it.
 
-`contract/writer.py`'s `f32_repr` quantizes through `struct.pack('f', …)` and picks the
-shortest `%.{p}g` that round-trips as float32. With it, exported documents are **byte-identical**
-to what the C# writer produces (verified by `contract-check`, which reports no textual
-difference).
+## 3. Identity — read from a sidecar, never minted here
 
-Note the contract is formally **value-based, not byte-based** — `5` and `5.0` are the same
-value — so `contract-check` compares semantically and treats byte parity as a bonus.
+Every file under `assets/` has an identity in `<file>.meta`, and **this addon does not write
+one**. `paradise assets watch` runs the C# `SidecarMaintainer`, which mints a sidecar for any
+file lacking one; two minters race and the loser's guid is dropped with a `Conflicted` log line.
+So `document/sidecar.py` has `read` and `wait_for` and deliberately no `write`, and creating a
+prefab has a *prerequisite* rather than an ordering rule: no watcher, no identity, no new prefab.
 
-## 4. Entity identity — derived from the name, never stored
+Object identity inside a document is the document's own `meta.Guid`, carried on the Blender
+object as an ID property (`materialize/store.py`). It is stored, not derived — which is the
+opposite of what the `.blend`-is-truth exporter did, and the reason renaming an object here is
+free.
 
-An object's identity on the wire (`meta.Guid`, and every `HostId` / `HostEntity` / `HostParent`
-reference that must equal it) is `export/placement.py:identity(name)`: `uuid5` over a fixed
-namespace and the object's name. There is ONE function, and every bake calls it; a second
-minting anywhere is a reference no object answers to (#27).
+## 4. Names — Blender's namespace is not the document's
 
-Derived rather than stored because a stored GUID makes exporting MUTATE the `.blend` — and those
-files are Git LFS-locked in the game repos, so a read-only checkout could not export and every
-export would dirty an unmergeable binary. The cost is stated plainly: **renaming an object
-re-mints its identity**, the same exposure v5 had, where the name was the handle. Blender
-guarantees names are unique within a file, so the derivation is injective per scene, and
-duplicates (`Shift+D` gives `Cube.001`) get their own identity for free.
+Blender guarantees object names are unique within a file and silently uniquifies to get there
+(`Wall` → `Wall.001`), truncating at 63 bytes, in one namespace shared with every node of every
+imported GLB. A document allows two objects one name and has no length limit.
 
-## Deliberate deviations from the Godot host
-
-These are cases where matching Godot exactly would have been worse.
-
-### Local transforms are relative to the parent *entity*
-
-Godot writes a node's own `Position` while reporting the nearest `EntityExport` ancestor as
-`Parent` — so when a plain `Node3D` sits between two entities, the local transform and the
-declared parent disagree. Blender scenes routinely have such intermediates (empties used for
-grouping or rigging), so `export/entity.py` computes the local transform relative to the
-declared parent entity. For the common case where the parent entity *is* the immediate parent,
-the two agree exactly.
-
-### Entity order is sorted by name
-
-Godot walks its scene tree depth-first, giving a stable order for free. Blender guarantees no
-iteration order for `scene.objects`, so entities are emitted sorted by name. Without that, two
-exports of an unchanged scene could differ, making every diff and every live-preview patch noisy.
-
-### Blender's own physics and rigid-body settings are not read
-
-They describe a different solver. Its collision shapes (`CONVEX_HULL`, `MESH`) mostly have no
-contract equivalent, and an object can carry Blender physics purely for animation baking without
-being a runtime dynamic body. Colliders and body type are authored explicitly instead.
-
-### Spot cone angle is not doubled
-
-Godot's `SpotAngle` is a half-angle, so its exporter doubles it. Blender's `spot_size` is
-already the full cone angle. Same contract value, different arithmetic — an easy thing to
-"fix" into a bug while porting.
+So `obj.name` alone cannot say whether the AUTHOR renamed anything. `store.tag_name` records both
+the document's `meta.Name` and the name Blender showed at load; `store.document_name` returns the
+author's rename when the shown name still matches, and the authored name untouched otherwise
+(#32). Without that, opening and saving a level renamed half of it to Blender's spellings.
 
 ---
 
-## Approximations, stated plainly
+## What this host does NOT do
 
-Two conversions have no correct answer, only a defensible one. Both are constants with the
-reasoning at their definition.
+Worth stating, because the sibling exporter that did all of it was in this repository until
+recently and its habits are easy to reintroduce.
 
-**Light intensity** (`export/light.py`). Blender measures point/spot/area output in watts;
-the contract carries a unitless multiplier in Godot's convention. There is no physically
-correct conversion without also fixing an exposure model, so `WATTS_PER_INTENSITY_UNIT = 100`
-maps Blender's default lamp to the contract's default light — defaults match, and scaling from
-there is predictable.
+**It does not rebuild components.** `save.py` takes payloads from the RE-READ document, not from
+Blender. That single decision is what lets a document full of components this addon has never
+heard of be opened and saved without corruption. Editing a field does not change it: `edits.py`
+holds an overlay of only the members someone actually touched, applied over the file's version at
+merge time.
 
-**Sun intensity is divided by π**, and only the sun's. Blender's sun strength is irradiance in
-W/m², rendered as `albedo·(S/π)·NdotL`; the contract multiplier is Godot energy, which Godot
-premultiplies by π so a diffuse surface renders `albedo·E·NdotL`. Exporting `S` verbatim
-therefore makes every Blender-authored sun π× brighter in the engine than in the viewport
-(it presented as a whole-scene blowout through the glow pass). `E = S/π` in `export/light.py`
-is the exact conversion; point/spot lights use the 100 W calibration above instead.
+**It does not read Blender's materials, lights, cameras or physics.** Those belong to the
+document, which the CLI compiles; the `.blend` is a cache and anything read out of it would be a
+second source for a value that already has one. The one exception is display: `load.py` reads a
+material document's `BaseColorFactor` into `obj.color` so an untextured instance is not grey.
 
-**Area lights.** Neither the contract nor Godot has an area light type. They export as point
-lights with their dimensions recorded in `AreaSize`, and the exporter warns. Dropping them
-would make a scene go dark with no explanation.
+**It does not convert colour.** The exporter had a whole rule here (Blender's socket colours are
+already linear; do not `srgb_to_linear` them). This addon authors no colour at all.
 
----
-
-## What Blender cannot express, and is authored instead
-
-`EnvironmentData` is shaped around Godot's `Environment`: a two-part procedural sky gradient,
-SSAO, glow, fog. Blender's world is an arbitrary shader node tree that cannot be evaluated from
-Python without rendering, and its AO/bloom settings moved between EEVEE versions.
-
-So `authoring/world_props.py` authors those explicitly, mirroring Godot's `ProceduralSkyMaterial`
-field for field — which is what makes cross-host parity achievable. The parts Blender *does*
-express reliably are read from it and are deliberately absent from that group:
-
-| contract field | Blender source |
-|---|---|
-| `TonemapMode` | `scene.view_settings.view_transform` (Standard→Linear, Filmic→Filmic, AgX→Agx, ACES→Aces) |
-| `TonemapExposure` | `2 ^ scene.view_settings.exposure` (Blender's is in stops) |
-| `BackgroundColor` | the world's Background node colour × strength |
-| sun direction/colour/energy | the scene's first visible sun lamp |
-
-Ambient is **computed, not copied**: `contract/sky.py` integrates the chosen sky over the
-hemisphere to produce the three zone colours and the L2 spherical-harmonic coefficients, using
-the same math the Godot host uses. The integral returns `E/π` — the cosine-weighted average
-radiance, which is what the engine consumes directly. An extra π makes every scene π times too
-bright, which is why `tests/unit/test_sky.py` pins it.
-
-## 5. Host-object references — authored as a reference, exported as a value
-
-Some `[Authored]` fields are not typed in: they point at one of Blender's own objects, and the
-exporter bakes what that object IS into the field's own numbers. The engine calls this
-`[AuthoredByHost(kind)]`, and the kinds are a closed set (`Paradise.Authoring`'s
-`AuthoredBySources`): shape, mesh, sprite, light, camera, asset, entity, parent, id, name,
-local TRS, **transform**.
-
-This host implements all of them except `node` (not an engine kind). Record kinds (transform,
-shape, light, camera) are an object slot; leaf kinds (mesh, entity, sprite, asset) write a
-scalar; self kinds (id, name, parent, local TRS) have no picker — they are read off the entity
-being exported. Engine components this host already writes by other paths (renderable, light,
-meta, transform, materials) stay off the Add menu.
-
-A `transform` reference is an **object slot**: you pick an object, and you place it with Blender's
-own move/rotate gizmo. That is the entire point — a destination you can see is a destination you
-can place correctly, where three floats in a panel are numbers nobody can check without running
-the game.
-
-Three rules, each of which is silent when broken:
-
-- **The store holds a NAME, the wire holds a POSE.** `obj["paradise:<id>/<Path>"]` is the
-  referenced object's name; nothing mirrors its transform into the panel, because a second copy of
-  the numbers is a copy that can disagree with the object. The pose is read at export, so *moving
-  the target is the whole edit*.
-- **Baked BY FIELD NAME**, filling whichever of `Position` (vector3), `Rotation` (quaternion),
-  `Yaw` (float) and `Scale` (vector3) the record declares, ignoring everything else. That keeps
-  this host general: it never learns what any particular record means by a pose. `Yaw` is
-  `atan2` over the rotated +Z — the same convention the runtime reads a heading with, so a Z
-  rotation in Blender and an actor's heading are the same number rather than two that look alike.
-- **The rebase is §1's, reused.** `export.transform.decompose_contract` does the Z-up → Y-up
-  conversion for this exactly as it does for every other transform; a second copy of the basis
-  change is how the two silently disagree about which way is up.
-
-A reference resolves against the FILE, not the scene (`bpy.data.objects`), so an object living
-only in another scene of the same .blend still bakes. That is deliberate — what a pose reference
-points at is a place, not something the document has to contain — but it does mean a target you
-cannot see in the current scene is not an error.
-
-An unassigned, dangling or self-referencing slot bakes **nothing**, so the payload carries the
-record's own defaults and the runtime sees the field unauthored. Warned, never guessed: the world
-origin is a real place, and a silently-zeroed destination is indistinguishable from one somebody
-meant. Whether that is acceptable is the *game's* decision — ShiningPie's trigger volumes refuse an
-unset destination at load — and it can only make it if the export is honest.
-
-A reference may be **nested inside an ordinary composed field** — the engine reads `authoredBy` at
-every depth — so its path is multi-segment (`Container/Destination`). The leaf schemas therefore
-travel ON the `HostRef`, captured during the walk; re-deriving them afterwards from the path is
-what dropped a nested reference's whole payload once.
-
-`tests/unit/test_authoring.py::TestTransformReferences` pins the schema and payload halves,
-nesting included; `tests/integration/test_authored_components.py` pins the bake, the rebase and
-the three refusals.
+**It does not derive identity from names** — see §3. That was the exporter's bargain, made because
+writing a guid into the `.blend` would have dirtied a Git-LFS-locked binary on every export. There
+is no export, so there is no bargain.

@@ -13,6 +13,7 @@ import os
 import bpy
 
 from ..document import guid as document_guid
+from ..document import project
 
 __all__ = [
     "DocumentState",
@@ -22,6 +23,7 @@ __all__ = [
     "guid_of",
     "object_with_guid",
     "prefab_of",
+    "project_of",
     "read_state",
     "stamp_of",
     "tag_name",
@@ -99,6 +101,21 @@ def read_state(scene: bpy.types.Scene) -> DocumentState | None:
         return None
     stamp = _STAMPS.get(os.path.normcase(os.path.abspath(path)), scene.get(STAMP_KEY, ""))
     return DocumentState(path, stamp)
+
+
+def project_of(scene: bpy.types.Scene) -> project.ProjectLayout | None:
+    """The asset project this session belongs to: the open document's, else the one containing
+    the ``.blend`` itself.
+
+    The fallback is what makes the project-level actions (build, verify, watch) reachable before
+    any document is open -- a workfile under ``.editor/blend/`` is already inside its project,
+    and so is a ``.blend`` an author keeps beside their game. Without it those buttons could only
+    be offered from inside a document, which is the one place they are least needed.
+    """
+    state = read_state(scene)
+    if state is not None:
+        return project.locate(state.path)
+    return project.locate(bpy.data.filepath) if bpy.data.filepath else None
 
 
 def tag_object(obj: bpy.types.Object, guid: str, components: list) -> None:

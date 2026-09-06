@@ -4,195 +4,130 @@ Guidance for Claude Code when working in this repository.
 
 ## What this is
 
-**Two** Blender addons, which point in opposite directions. Know which one you are in before
-changing anything — they disagree about what the source of truth is, and that is the whole
-difference between them.
+One Blender extension, `paradise_assets`. **`assets/` in the game repo is the source of truth**;
+the `.blend` is a disposable cache of one `*.prefab`. The addon opens a prefab document,
+materializes it as Blender objects, lets an author place things and edit components, and writes
+the document back. The `paradise` CLI compiles `assets/` into `build/`; the game loads that.
 
-| | `paradise_blender` | `paradise_assets` |
-|---|---|---|
-| source of truth | the `.blend` | `assets/` in the game repo |
-| the other thing | `data/`, exported | the `.blend`, a disposable cache of one scene |
-| format | the JSON export contract | `*.prefab`, canonical TOML |
-| does | author, export, play, live-preview | open a prefab document, place things, save it back |
+| | |
+|---|---|
+| source of truth | `assets/` in the game repo |
+| the other thing | the `.blend` under `.editor/blend/`, a cache of one document |
+| format | `*.prefab`, canonical TOML |
+| does | open a prefab document, place things, edit components, save it back, play it |
 
-`paradise_blender` is the older and much larger of the two: the **second** implementation of a
-contract whose reference implementation is C# `Paradise.Export` (used by `ParadiseGodotEditor`).
-That framing matters for almost every decision in it: when this repo and the contract disagree,
-the contract is right.
+This repo shipped a **second** addon until recently: `paradise_blender`, in which the `.blend`
+was the source of truth and `data/` was exported from it — a Python reimplementation of the C#
+`Paradise.Export` contract. ShiningPie finished migrating off it, nothing else used it, and it
+was removed along with its `.NET` bridge (#35). Two consequences worth knowing when reading old
+commits or issues:
 
-`paradise_assets` is the inversion (the asset-management plan's §2.7). It reads `assets/` — the
-committed source tree the `paradise-assets` CLI compiles — and writes only prefab documents. Both
-can be installed and enabled at once, which is what made the migration possible. ShiningPie has
-finished that migration and no longer exports through `paradise_blender`; what that addon is for
-now (deprecated, or the JSON exporter for games without an `assets/` tree) is undecided — #35.
+- There is **no .NET in this repo at all** any more, and no contract-conformance gate. That gate
+  existed to catch a second implementation of the contract drifting from the first; the only
+  implementation left is the engine's own.
+- Anything describing an export to `data/scenes/*.json`, live preview, navmesh baking, KTX
+  transcoding in Python, or entity identity derived from an object's name is describing that
+  addon and does not apply here.
 
 ## Commands
 
 ```bash
-./tools/run_tests.sh                          # everything
-.venv/bin/python -m pytest tests/unit -q       # fast: contract math, no Blender
+./tools/run_tests.sh                           # everything
+.venv/bin/python -m pytest tests/unit -q       # fast: document format, no Blender
 
 blender --background --factory-startup --python tests/integration/test_axis_parity.py
-blender --background --factory-startup --python tests/integration/test_export_scene.py
-blender --background --factory-startup --python tests/integration/test_live_preview.py
 
-dotnet build tools/ParadiseBlenderBridge
-dotnet run --project tools/ParadiseBlenderBridge -- contract-check <document.json> --verbose
-
-python3 tools/install_addon.py                # symlink into Blender's extensions dir
+python3 tools/install_addon.py                 # symlink into Blender's extensions dir
 ```
 
-The .NET bridge builds against the published `Paradise.Export` package by default. To compile
-it against the engine sources in this workspace: `dotnet build -p:ParadiseUseEngineSource=true`.
+Integration tests that need a real asset project take one via `PARADISE_ASSETS_PROJECT` and skip
+cleanly when it names nothing.
 
 ## Layout
 
 ```
-paradise_blender/
-  contract/     ★ pure Python, imports no bpy — the contract implementation
-  authoring/      property groups: how a scene declares what to export
-  export/         scene walk → contract documents
-  pipeline/       KTX2 transcoding, .NET bridge invocation, artifact cache, data/ cleanup
-  play/           runtime resolution and detached launch
-  live/           live-preview protocol, transport, session, sync
-  ui/             the Paradise sidebar tab
 paradise_assets/
-  document/     ★ pure Python, imports no bpy — the *.prefab format and the canonical TOML writer
-  materialize/    document <-> Blender objects: load, save, mesh instancing, ID-property store
+  document/     ★ pure Python, imports no bpy — the *.prefab format, the canonical TOML writer,
+                  the axis rebase, sidecar reading, the game's component schema
+  materialize/    document <-> Blender objects: load, save, mesh instancing, ID-property store,
+                  the working .blend, save-on-save, groups (collections)
+  play/           the CLI: resolution, Build / Verify / Clean / Play, the running session
   ops.py          open_prefab / save_prefab / reload_prefab, add_prefab_instance,
-                  extract_prefab, refresh_catalogue
-  ui.py           the Paradise Assets sidebar tab
+                  extract_prefab, toggle_watch, refresh_catalogue
+  ui.py           the Paradise sidebar tab
+  edits.py      ★ the component-edit overlay — no bpy, unit-tested against a plain dict
+  browser.py      the Asset Browser context menu
+  context_menu.py the Outliner's and viewport's object context menus
+  catalogue.py    the Asset Browser library and its thumbnails
+  watch.py        `paradise assets watch` as a per-project background process
 tools/
-  ParadiseBlenderBridge/   .NET CLI: navmesh bake + contract conformance check
-  mock_runtime.py          reference live-preview listener (the protocol's executable spec)
+  install_addon.py   symlink the package into Blender's extensions directory
+  run_tests.sh       unit + integration
 ```
+
+## The panel
+
+Four SIBLING panels in the **Paradise** tab, one per scope, not one tree:
+
+| panel | poll | scope |
+|---|---|---|
+| Prefab Document | always | the open document; a landing state when there is none |
+| Project | a project is locatable | the watcher, Build / Verify / Clean, the catalogue |
+| Play | a document is open | running the game on it |
+| Components | a document is open and something is selected | the active object |
+
+They are siblings because **project actions do not need a document**. `store.project_of` finds
+the project from the open document, else from `bpy.data.filepath` — a workfile under
+`.editor/blend/` is already inside its project. Nesting Build and the watcher under the document
+panel made them unreachable in the one session that most needs them: the one that just started.
+
+Two entries also hang off the object context menus (`context_menu.py`) — the Outliner's and the
+viewport's, one `_draw` for both — gated on the active object being a DOCUMENT object, since a
+menu that grows two greyed rows on every cube is worse than one that says nothing. "Open Prefab
+in New Blender" starts a second Blender rather than replacing the session: a level and the prop
+it instances are two documents, and making people close one to edit the other is what stops them
+editing it.
+
+Two rules for anything drawn here:
+
+- **A draw runs at redraw rate.** Nothing in it may log (a warning would fire per frame), walk
+  the asset tree (use `ui._cached`, 2 s TTL), or write an ID property (Blender forbids it — that
+  is why new schema fields appear behind a sync button).
+- **Say a problem once.** `play.ops.tool_problems` (machine: CLI, ktx) is the Project panel's;
+  `play.ops.play_problems` (this project: `[host]`) is Play's. Reporting a missing CLI in both
+  reads as two faults.
 
 ## Things that will bite you
 
-**Read `CONVENTIONS.md` before touching transforms, colours, or numbers.** It documents the
-four places Blender's conventions differ from the contract's, and each one fails silently
-rather than loudly.
-
-**`paradise_blender/__init__.py` must not import `bpy` at module scope.** Python executes a
-package's `__init__` before any submodule, so a top-level `import bpy` makes
-`paradise_blender.contract` unimportable outside Blender — which kills the unit tests, the main
-defence against contract drift. Blender-dependent imports live inside `register()`.
+**Read `CONVENTIONS.md` before touching transforms or numbers.** It documents the four places
+Blender's conventions differ from the document's, and each one fails silently rather than loudly.
 
 **Convert the matrix, then decompose.** Never decompose a Blender transform and convert
-position/rotation/scale separately: the basis change permutes axes, so Blender scale
-`(1, 2, 3)` is contract scale `(1, 3, 2)`. `export/transform.py` is the only correct path.
+position/rotation/scale separately: the basis change permutes axes, so Blender scale `(1, 2, 3)`
+is document scale `(1, 3, 2)`. `document/axes.py` is the only correct path, and
+`tests/integration/test_axis_parity.py` is what pins it against Blender's own glTF exporter.
 
-**Blender colours are already linear.** Do not call `srgb_to_linear` on a socket
-`default_value` — that is the Godot host's job, not this one's. The exception is values
-authored through widgets documented as sRGB (recipe tints, fog); those call sites say so.
+**`paradise_assets/__init__.py` must not import `bpy` at module scope**, and neither may
+`document/` or `edits.py`. Python executes a package's `__init__` before any submodule, so a
+top-level `import bpy` makes them unimportable outside Blender — which kills the unit tests, the
+only defence keeping the canonical TOML writer byte-identical to the C# one. Blender-dependent
+imports live inside `register()`.
 
 **Blender handlers need `@bpy.app.handlers.persistent`.** Without it Blender drops them on file
-load, and the failure is invisible: export-on-save and the schema watcher simply stop working
-after the user opens another .blend.
+load, and the failure is invisible: save-on-save and the watcher adoption simply stop working
+after the author opens another `.blend`.
 
-**Never block the main thread in `live/`.** Blender's UI is single-threaded and the peer is a
-game runtime that stalls for frames at a time. Sends go through a bounded queue drained by a
-background thread.
-
-**An export reuses unchanged artifacts, and the rule for what may be cached is strict.**
-`pipeline/cache.py` stores KTX2 transcodes and navmesh bakes under `<project>/.editor/cache/`
-(the engine's `ArtifactCache` directory, digest and layout, so either tool's artifacts serve the other),
-keyed on a digest of the step's *complete* input — image bytes plus the encode's argv, or the
-geometry-and-settings payload plus the bridge's build output. On ShiningPie that takes a
-re-export from 44 s to 3.6 s. **Do not extend this to the mesh GLBs.** Their inputs are a
-transitive closure over the depsgraph (modifier stacks, geometry nodes, materials, armature
-actions, the exporter's own argv); a key that misses one does not fail, it ships last week's
-asset and reports success — and the only hash that would not miss costs as much as the 3.9 s of
-exporting it would skip. Reach for the panel's rebuild button (`paradise.export_scene(force=True)`)
-after changing the exporter itself, since no input hash can see that.
-
-**An export can also DELETE, and the rules that keep that safe are not optional.**
-`pipeline/prune.py` removes artifacts no exported scene references any more — what a renamed mesh
-leaves behind. It is **off by default** (`paradise_project.prune_data`) and stays off for a scene
-with no property group attached: it is the only destructive step in an export, so it is a
-deliberate per-project choice rather than something an addon update switches on under an author
-who never asked for it.
-
-When it does run, five rules keep it safe and none is decoration:
-
-- Only the directories the exporter **writes** and only the extensions it writes there (`OWNED`) —
-  so `data/audio` (Wwise), the game's own config, and an author's stray file are never candidates.
-  Note `primitives/` is *not* owned: it is in the shared layout (`paths.py`) because the **Godot**
-  host generates it, and owning what you cannot regenerate is how a cleanup loses an asset.
-- **Every** `scenes/*.json` is a root, so a `data/` shared by two .blends is safe.
-- Reachability is computed from string *values* rather than known keys, because a key whitelist
-  goes stale the day a component gains an asset field, and the cost of going stale is deleting a
-  live asset. Documents are followed transitively (scene → material → texture).
-- A `.ktx2` with a source image beside it is kept, because `ktx.convert_data_directory` transcodes
-  `sprites/x.png` → `sprites/x.ktx2` in place and the `.png` is not ours — deleting one half of
-  that pair cleans nothing up and would eat a spritesheet in the window between dropping it in and
-  wiring it to an entity.
-- It refuses to run at all on an unreadable scene document, or when no scene declares any entity —
-  that second one is an export that found nothing, against which the whole directory looks
-  unreachable.
-
-**Never restore an object's transform by assigning `matrix_world`.** The assignment decomposes
-into location/rotation/scale, and the rotation half of that round trip is lossy at ~1e-6, so
-save/restore leaves the object microns from where it started — 25 of ShiningPie's 321 objects
-moved on every export, which churned the exported transforms and defeated any content-keyed
-reuse. `export/mesh.py:_capture_transform` saves the channels instead.
-
-**The entity property group holds HOST data only.** `ParadiseEntityProperties` is
-deliberately four members (`is_entity`, `model_path`, the two collider lists);
-every component — the engine's identity/agent/rigidbody/audio/particles included — is authored
-through the schema in the Components panel and routed to its typed slot by
-`contract/authoring_router.py`. Do not add fixed fields back: the ~40-field mirror this
-replaced is exactly the thing a schema change silently drifts away from.
-
-**There is ONE schema, and it is the game's.** This host used to vendor a copy of the engine's
-own schema and merge it underneath — it can no longer read the C# constant, and the game's dump
-described only the game. It does not have to any more: a launcher built with
-`ParadiseAuthoringScanReferences` merges every assembly it references into the document it dumps,
-so the engine's components arrive inside `<data>/authoring-schema.json`, described by the engine
-that game is actually built against. The vendored copy was not merely redundant but a hazard —
-merges are first-wins, so a checked-in copy that had drifted would have won against the truth.
-
-Two consequences. A data directory with no dumped schema now has **no components at all**, not
-just no game components, so the panel says so loudly and the fix is "build the launcher". And
-`component_ids.engine_type_name` reads the CLR name out of that same document at export — see
-`check_engine_ids`, which replaced the unit test that used to police the vendored copy.
-
-**Authored components live in ID properties, not a PropertyGroup.** The game's own components
-(`<data>/authoring-schema.json` → `Components.Custom`) are schema-driven data that changes on
-every game rebuild, and property-group fields are class-level and registered once. So
-`authoring/authored_components.py` stores them as per-object ID properties
-(`obj["paradise:<id>/<Field/Path>"]`) and the panel draws them from the schema at draw time.
-A LIST extends the same key grammar with an index segment (`Tables/0/Entries/1/Weight`), plus one
-`#`-suffixed sentinel per list holding its row count (`Tables#`, `Tables/0/Entries#`) — the schema
-says a member *is* a list and can say nothing about how long it is, so the count is data. That is
-why `contract/authoring.py`'s `outline()` takes counts and `flatten()` is a facade over it, and why
-adding, removing or reordering a row is a key-renumbering operation (`config_store._rewrite_rows`)
-rather than a list mutation. The one-character suffix is not style: a key is
-`prefix + 22-char token + "/" + path` under Blender's 63-character cap, and `/__count` would spend
-eight of the ~36 characters a path has to live in. Editing rows is CONFIG-DOCUMENT only for now;
-an entity's key budget is five characters tighter and exporting rows would change every scene.
-Two consequences: never write ID data inside a `draw()` (Blender forbids it — that is why new
-schema fields appear behind a sync button), and the wire format is pinned by the Godot host's
-`AuthoredEntityCore.ValueOf`, mirrored in `contract/authoring.py` and its unit tests.
-Colliders are the one component whose body is OBJECT REFERENCES rather than form fields
-(`HOST_LIST_IDS`): the panel draws the entity's pointer collections as the Collider /
-Interactable components, presence is "marker or a non-empty list" (build scripts fill lists
-without markers), and removing the component clears the references — while renderable and
-light stay read-only derived rows.
-
-**Blender rejects empty enum identifiers.** An `EnumProperty` item with `""` as its identifier
-warns "current value '0' matches no enum" and becomes unreadable. Where the contract's value is
-`""` (e.g. `MaterialKind`), use a `NONE` sentinel and map it back at export — see
-`authoring/material_props.py`.
-
-## Things that will bite you in `paradise_assets`
+**A `register()` that raises must unwind itself.** Blender keeps whatever had already been
+registered, and every enable after that dies on "already registered as a subclass" — the addon
+cannot be turned back on without restarting Blender. `__init__.register` wraps the whole thing
+and calls `unregister()` on failure.
 
 **The canonical TOML writer is a CROSS-LANGUAGE contract, and it is checked by bytes.**
 `document/canonical_toml.py` and C# `CanonicalTomlWriter` must produce identical output;
 `paradise assets prefab-check` compares bytes, so a formatting difference is a failing CI check
-on every document the addon has touched, not a style nit. Floats are specified as *Python's `repr`
-rules* on purpose — the C# side adopted them so this side could be one call. Do not "improve"
-the formatting.
+on every document the addon has touched, not a style nit. Floats are specified as *Python's
+`repr` rules* on purpose — the C# side adopted them so this side could be one call. Do not
+"improve" the formatting.
 
 **An object nobody moved must keep its authored numbers verbatim.** Documents store values that
 came from C# `float`, Blender stores float32, and the axis rebase runs a square root — the round
@@ -204,6 +139,43 @@ tuning: below it, the load itself would churn the document.
 **Normalize a document quaternion before composing it.** They are float32-quantized, so none is
 exactly unit, and the length error leaks through the rotation matrix and comes back out of the
 decompose as SCALE — it turned a stored `20.0` into `19.999998` on ShiningPie's skyline props.
+
+**A load leaves the scene holding the document and nothing else, but only when asked.**
+`load_document(..., clear_startup=True)` removes Blender's startup content — the cube, the
+camera, the light and the `Collection` around them — and only `open_prefab` passes it, because
+that is the one path a PERSON takes into an otherwise empty Blender. It is opt-in rather than
+automatic, and the reason is in the tree: `thumbnail.py` starts an empty file, links its own
+camera and key light, then materializes. A gate that trusted `bpy.data.is_dirty` alone (which
+follows undo pushes, so a script's edits do not set it) deleted that camera and rendered every
+prefab black. Within the opt-in, `is_dirty` still protects a session someone has worked in.
+
+The glTF importer's own leftovers are handled where they are made: `meshes.py` diffs
+`bpy.data.collections` across the import the same way it diffs objects, and drops the ones its
+move left empty — `glTF_not_exported` otherwise sits in the Outliner beside the library for the
+life of the session.
+
+**A COLLECTION in Blender is an ordinary document object, and the format knows nothing about it.**
+A group is an object carrying only `meta` and `transform` whose members are its children;
+`materialize/groups.py` is the single definition of which objects those are, because load and
+save disagreeing would not error — it would move objects between the scene and a collection on
+every round trip and rewrite the document each time. Four rules the shape alone does not settle,
+each with a reason it cannot go the other way: never the root (the root IS the document — what an
+instance places, what `instancing` parents under, what extraction refuses), never an instance,
+identity transform only (a Blender collection cannot be moved, so a placed group would lose its
+placement on the first save), and at least one child (or every marker empty silently becomes an
+empty collection). A group linked straight into the scene collection hangs off the ROOT, not off
+nothing — returning nothing there wrote a second root and the save refused itself.
+
+Parenting beats membership. An object that is both parented and dropped into a group is saved
+under its parent and warned about, because `meta.Parent` is one link and a parent is a TRANSFORM
+relationship the document must keep.
+
+**An instance loaded from a document carries no prefab reference of its own** — the expansion
+in `resolve.py` replaces the instance entry with the prefab's resolved root, consuming it. So
+`load.py` tags the object with `store.tag_prefab` as it materializes, which is the only reason
+"open the prefab this came from" works for anything but an instance added in this session. The
+tag is display data: `save.py` reads `store.prefab_of` only for an object the re-read document
+has no entry for, so tagging an existing one changes nothing it writes.
 
 **Components are passed through, never rebuilt.** `save.py` takes payloads from the RE-READ
 document, not from Blender. That one decision is what lets a scene full of components this addon
@@ -219,13 +191,21 @@ from it.
 
 A field is offered as editable only when the GAME's schema describes it *and* nothing else
 authors it: `[AuthoredByHost]` fields are shown locked, because their value comes from the object
-they point at and typing one in would be authoring in the place the export overwrites. `meta` and
+they point at and typing one in would be authoring in the place the build overwrites. `meta` and
 `transform` are refused by the vocabulary outright — Blender's name field and transform gizmo are
 their editor, and a second way to type an identity is a second thing that can disagree.
 
 `edits.py` imports no `bpy`, and that is load-bearing rather than tidy: it is the only new logic
 on the save path, and being importable outside Blender is what lets it be unit-tested against a
 plain dict. Keep it that way.
+
+**There is ONE schema, and it is the game's.** A launcher built with
+`ParadiseAuthoringScanReferences` merges every assembly it references into the document it dumps,
+so the engine's components arrive inside `.editor/authoring-schema.json`, described by the engine
+that game is actually built against. A vendored copy would not merely be redundant but a hazard —
+merges are first-wins, so a checked-in copy that had drifted would win against the truth. A data
+directory with no dumped schema therefore has **no components at all**, not just no game
+components, so the panel says so loudly and the fix is "build the launcher".
 
 **This addon does not mint identities — it writes a file and WAITS for one.** Identity lives
 only in `<asset>.meta`, and `paradise assets watch` runs the C# `SidecarMaintainer`, which writes
@@ -273,25 +253,25 @@ reference does not exist until the watcher has identified the prefab, and making
 version unobtainable without it is what stops a caller writing back a plain object where its
 instance should be.
 
-**`document/` must not import `bpy`** — same rule and same reason as `paradise_blender`'s
-`contract/`: the unit tests are the only defence against the writer drifting from the C# one.
+**Blender's name namespace is not the document's.** Blender uniquifies (`Wall` → `Wall.001`) and
+truncates in one namespace shared with every imported GLB node, so `obj.name` alone cannot say
+whether the AUTHOR renamed anything (#32). `store.tag_name` records both the authored name and
+the one Blender showed; `store.document_name` compares them.
 
-## When the contract changes
+**Blender rejects empty enum identifiers.** An `EnumProperty` item with `""` as its identifier
+warns "current value '0' matches no enum" and becomes unreadable. Use a `NONE` sentinel and map
+it back where the format's value is `""`.
 
-The engine's `Paradise.Export.Data.LevelDocument` is the source of truth. On a schema change:
+## When the document format changes
 
-1. Update `contract/schema.py` — same field order (System.Text.Json writes declaration order)
-   and the same defaults.
-2. Bump `SCHEMA_VERSION` only in lockstep with `LevelData.CurrentSchemaVersion`.
-3. Run `contract-check` against a real export. It round-trips the document through the engine's
-   own reader and writer and reports anything the reader dropped or the writer added — which is
-   exactly what a missed field looks like.
-4. Update `docs/parity.md` if the feature matrix moved.
+C# is the source of truth — `Paradise.Assets.Documents` for the prefab format and its canonical
+writer, `Paradise.Export.Data.LevelDocument` for what a build compiles it into. On a change:
 
-Note the contract is **value-based, not byte-based** (the engine's own CONVENTIONS.md says so),
-so `contract-check` compares semantically. Byte-identical output is a bonus that
-`writer.f32_repr` currently achieves; do not break it casually, but do not treat a formatting
-difference as a correctness failure either.
+1. Update `document/prefab.py` and `document/well_known.py` to match, same field spellings.
+2. Update `document/canonical_toml.py` only in lockstep with `CanonicalTomlWriter`, and refresh
+   `tests/fixtures/parity/` from `Paradise.Assets.Documents.Test/Fixtures/parity/` — never by
+   hand. A hand edit that still parses makes the test pin a form the writer does not produce.
+3. Run `paradise assets prefab-check` over a real project. It compares bytes.
 
 ## Cross-repo boundary
 
@@ -299,10 +279,6 @@ This is an independent git repository, like its siblings in the workspace. **Nev
 commit spanning repos.** PRs are assigned to quabug; a PR that fixes an issue carries
 `Closes #NNN` (one line per issue) at the top of its body and in the commit message so merging
 closes it, with `Towards #NNN` only for deliberately partial work.
-
-The live-preview engine listener (`--live <port>` in `Paradise.Sample.Runtime`) belongs to
-`ParadiseGodotEditor` and is a separate change there. `docs/live-preview.md` specifies what it
-needs to do; `tools/mock_runtime.py` is the executable specification.
 
 ## Style
 
@@ -314,4 +290,4 @@ needs to do; `tools/mock_runtime.py` is the executable specification.
   cross-language contract. Delete comments that narrate control flow or restate the next line;
   private helpers whose name says what they do get no docstring.
 - Warnings to the author should say what will go wrong at runtime and how to fix it, not just
-  what was skipped. The Godot host's messages are the tone to match.
+  what was skipped.

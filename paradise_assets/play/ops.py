@@ -35,9 +35,26 @@ CLI_MISSING = (
     "executable or to Paradise.Cli.csproj, or install it with `dotnet tool install -g`."
 )
 
+NO_PROJECT = (
+    "No asset project: open a prefab document, or save this .blend inside a project "
+    "(one with an assets/project.toml above it)."
+)
 
-def _project(operator) -> tuple[project.ProjectLayout, str] | None:
-    """The open document's project and path, reporting why not when there is none."""
+
+def _project(operator) -> project.ProjectLayout | None:
+    """This session's project, reporting why not when there is none. The verbs below act on the
+    PROJECT, so none of them needs a document open -- ``store.project_of`` finds one from the
+    .blend when no document is."""
+    layout = store.project_of(bpy.context.scene)
+    if layout is None:
+        operator.report({"ERROR"}, NO_PROJECT)
+        return None
+    return layout
+
+
+def _playable(operator) -> tuple[project.ProjectLayout, str] | None:
+    """The project and the document to play. Play is the one verb that needs a document: it
+    runs the game on one."""
     state = store.read_state(bpy.context.scene)
     if state is None:
         operator.report({"ERROR"}, "No prefab document is open")
@@ -82,10 +99,9 @@ class _CliOperator:
         raise NotImplementedError
 
     def execute(self, context):
-        found = _project(self)
-        if found is None:
+        self._layout = _project(self)
+        if self._layout is None:
             return {"CANCELLED"}
-        self._layout, self._document_path = found
 
         if resolve_cli_command() is None:
             self.report({"ERROR"}, CLI_MISSING)
@@ -159,7 +175,7 @@ class PARADISE_ASSETS_OT_play(Operator):
         return store.read_state(context.scene) is not None
 
     def execute(self, context):
-        found = _project(self)
+        found = _playable(self)
         if found is None:
             return {"CANCELLED"}
         layout, document_path = found
@@ -246,7 +262,7 @@ class PARADISE_ASSETS_OT_stop_play(Operator):
         return layout is not None and session.is_running(layout.root)
 
     def execute(self, context):
-        found = _project(self)
+        found = _playable(self)
         if found is None:
             return {"CANCELLED"}
         session.stop(found[0].root)
@@ -264,7 +280,7 @@ class PARADISE_ASSETS_OT_build(_CliOperator, Operator):
 
     @classmethod
     def poll(cls, context) -> bool:
-        return store.read_state(context.scene) is not None
+        return store.project_of(context.scene) is not None
 
     def cli_arguments(self) -> list[str]:
         return ["assets", "build", "--profile", _profile()]
@@ -287,7 +303,7 @@ class PARADISE_ASSETS_OT_verify(_CliOperator, Operator):
 
     @classmethod
     def poll(cls, context) -> bool:
-        return store.read_state(context.scene) is not None
+        return store.project_of(context.scene) is not None
 
     def cli_arguments(self) -> list[str]:
         return ["assets", "verify"]
@@ -330,7 +346,7 @@ class PARADISE_ASSETS_OT_clean(_CliOperator, Operator):
 
     @classmethod
     def poll(cls, context) -> bool:
-        return store.read_state(context.scene) is not None
+        return store.project_of(context.scene) is not None
 
     def invoke(self, context, event):
         return context.window_manager.invoke_props_dialog(self, width=380)
@@ -381,15 +397,14 @@ def declares_host(layout: project.ProjectLayout) -> bool:
     return answer
 
 
-def status(layout: project.ProjectLayout | None = None) -> list[tuple[str, str]]:
-    """``(icon, message)`` per unready tool. No logging: the panel asks on every redraw."""
+def tool_problems() -> list[tuple[str, str]]:
+    """``(icon, message)`` per misconfigured TOOL -- the machine's, not the project's. No
+    logging: the panel asks on every redraw."""
     from .host import _preference
 
     problems: list[tuple[str, str]] = []
     if resolve_cli_command() is None:
         problems.append(("ERROR", "No Paradise CLI — set it in preferences"))
-    if layout is not None and not declares_host(layout):
-        problems.append(("ERROR", "No [host] project in assets/project.toml — nothing to play"))
 
     # The pipeline resolves PARADISE_KTX_PATH with File.Exists, so a directory or typo is
     # silently discarded; a field that LOOKS filled in is worse than an empty one.
@@ -397,6 +412,14 @@ def status(layout: project.ProjectLayout | None = None) -> list[tuple[str, str]]
     if ktx and not os.path.isfile(os.path.expanduser(ktx)):
         problems.append(("ERROR", "KTX path is not a file — point it at ktx.exe itself"))
     return problems
+
+
+def play_problems(layout: project.ProjectLayout | None) -> list[tuple[str, str]]:
+    """What stops THIS project being played, over and above :func:`tool_problems`. Kept apart
+    so the two panels that ask do not both report a missing CLI."""
+    if layout is not None and not declares_host(layout):
+        return [("ERROR", "No [host] project in assets/project.toml — nothing to play")]
+    return []
 
 
 class PARADISE_ASSETS_OT_build_schema(_CliOperator, Operator):
@@ -409,7 +432,7 @@ class PARADISE_ASSETS_OT_build_schema(_CliOperator, Operator):
 
     @classmethod
     def poll(cls, context) -> bool:
-        return store.read_state(context.scene) is not None
+        return store.project_of(context.scene) is not None
 
     def cli_arguments(self) -> list[str]:
         # The schema is a function of the game's C# records and only the launcher's own build

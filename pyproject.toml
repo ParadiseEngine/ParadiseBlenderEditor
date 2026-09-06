@@ -1,11 +1,11 @@
 # Development tooling only. The addon itself ships as a Blender extension
-# (see paradise_blender/blender_manifest.toml) and is never pip-installed.
+# (see paradise_assets/blender_manifest.toml) and is never pip-installed.
 
 [project]
 name = "paradise-blender-editor"
 version = "0.1.0"
 description = "Blender authoring addon for Paradise Engine"
-requires-python = ">=3.11"          # Blender 4.2 ships 3.11; 5.x ships 3.11+.
+requires-python = ">=3.13"          # the extension's floor is Blender 5.2, which ships 3.13.
 
 [dependency-groups]
 dev = [
@@ -23,7 +23,7 @@ pythonpath = ["."]
 
 [tool.ruff]
 line-length = 110
-target-version = "py311"
+target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
@@ -36,6 +36,3 @@ ignore = [
   "RUF012",
 ]
 
-[tool.ruff.lint.per-file-ignores]
-# Blender registration modules legitimately use star-ish patterns and module-level side effects.
-"paradise_blender/__init__.py" = ["E402"]

@@ -67,8 +67,12 @@ class MeshLibrary:
             # Drop the stale collection, or the import lands on GLB/Foo.001 and leaks the old mesh.
             _discard_library_collection(existing)
 
-        # The importer cannot be redirected; diff the object table, since names get suffixed.
+        # The importer cannot be redirected; diff the tables, since names get suffixed. The
+        # COLLECTIONS are diffed too because the glTF importer makes its own -- `glTF_not_exported`
+        # on any file that has such nodes -- and links them to the scene, where they sat in the
+        # Outliner beside the library for the life of the session.
         before = set(bpy.data.objects)
+        collections_before = set(bpy.data.collections)
         try:
             bpy.ops.import_scene.gltf(filepath=path)
         except RuntimeError as error:
@@ -76,6 +80,9 @@ class MeshLibrary:
             return None
 
         created = [obj for obj in bpy.data.objects if obj not in before]
+        imported_collections = [
+            found for found in bpy.data.collections if found not in collections_before
+        ]
         if not created:
             self._warn(f"{os.path.basename(path)} imported nothing")
             return None
@@ -89,6 +96,12 @@ class MeshLibrary:
             for parent in list(obj.users_collection):
                 parent.objects.unlink(obj)
             collection.objects.link(obj)
+
+        # Only the ones the move left EMPTY: a collection still holding something is structure
+        # the GLB declared, and dropping it would take that something with it.
+        for found in imported_collections:
+            if not found.objects and not found.children:
+                bpy.data.collections.remove(found)
 
         tint_by_object_colour(created)
         return collection

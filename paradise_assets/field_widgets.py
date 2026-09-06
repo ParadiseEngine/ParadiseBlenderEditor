@@ -8,6 +8,7 @@ component list.
 from __future__ import annotations
 
 import json
+import os
 
 import bpy
 from bpy.props import (
@@ -296,23 +297,35 @@ def _bind_range(slot, field) -> None:
         slot.range_max = 1.0
 
 
+#: Extensions that name the same KIND of thing, so a picker offered one offers the other. Only
+#: glTF has such a pair; every other document kind is one suffix.
+_INTERCHANGEABLE = ((".glb", ".gltf"),)
+
+
 def _kinds_of(field, value) -> list:
+    """Which extensions the picker offers. The schema's ``assetKinds`` when the game declares
+    them, else the extension the value already carries -- and an EMPTY list, meaning every
+    identified asset, when neither says.
+
+    Guessing a suffix is worse than offering everything: a slot holding
+    ``materials/x.material`` under a schema with no ``assetKinds`` used to fall through to a
+    hardcoded ``.toml``, which listed every config in the project and not one material."""
     if field.values:
         return list(field.values)
     if field.asset_kinds:
         return list(field.asset_kinds)
-    path = ""
-    if isinstance(value, dict):
-        path = value.get("path") or ""
-    elif isinstance(value, str):
-        path = value
-    if isinstance(path, str) and path.endswith(".toml"):
-        return [".toml"]
-    if isinstance(path, str) and (path.endswith(".glb") or path.endswith(".gltf")):
-        return [".glb", ".gltf"]
-    if component_schema.is_asset_field(field, value):
-        return [".toml"]
-    return []
+
+    path = value.get("path") if isinstance(value, dict) else value
+    if not isinstance(path, str):
+        return []
+
+    suffix = os.path.splitext(path)[1].lower()
+    if not suffix:
+        return []
+    for pair in _INTERCHANGEABLE:
+        if suffix in pair:
+            return list(pair)
+    return [suffix]
 
 
 def _write_slot(slot, field, value, context) -> None:

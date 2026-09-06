@@ -14,8 +14,8 @@ from mathutils import Quaternion, Vector
 from ..document import axes, mesh_document, project, resolve, schema, well_known
 from ..document.prefab import PrefabDocument, PrefabObject
 from ..document.prefab import loads as parse_document
-from . import store
-from .meshes import MeshLibrary
+from . import groups, store
+from .meshes import LIBRARY_COLLECTION, MeshLibrary
 
 __all__ = ["LoadResult", "load_document"]
 
@@ -48,11 +48,23 @@ def load_document(
     document: PrefabDocument,
     scene_path: str,
     layout: project.ProjectLayout,
+    *,
+    clear_startup: bool = False,
 ) -> LoadResult:
-    """Materialize ``document`` into ``scene``, replacing anything already loaded there."""
+    """Materialize ``document`` into ``scene``, replacing anything already loaded there.
+
+    ``clear_startup`` asks for Blender's startup content to go with it (see
+    :func:`_startup_content`). Opt-in, and only the operator that opens a document FOR A PERSON
+    passes it: this function is also how a thumbnail is rendered, how a reload rebuilds, and how
+    an extraction re-materializes, and each of those has arranged the scene it hands over."""
     result = LoadResult()
     result.read(scene_path)
+    # Captured before anything changes, dropped after the clear and before anything is created:
+    # the clear owns the document objects, and doing it in this order means no captured
+    # reference can have been freed under us and no name is taken when the document wants it.
+    startup = _startup_content(scene) if clear_startup else None
     _clear_previous(scene)
+    _drop_startup_content(startup)
 
     mesh_fields = schema.load(layout.root)
     if not mesh_fields.from_schema:
@@ -69,14 +81,42 @@ def load_document(
 
     authored = {entry.guid for entry in document.objects if entry.guid is not None}
 
+    # Which prefab each instance instantiates. Read BEFORE the expansion, which replaces an
+    # instance entry with the prefab's resolved root and so consumes the reference: without this
+    # the only object that knows is one added in this session (instancing.add_instance), and
+    # "open the prefab this came from" would work for those alone.
+    instanced = {
+        entry.guid: entry.prefab for entry in document.objects
+        if entry.guid is not None and entry.prefab is not None
+    }
+
     library = MeshLibrary(scene, result.warn)
     created: dict[str, bpy.types.Object] = {}
+    grouped: dict[str, bpy.types.Collection] = {}
+
+    # A group is an object the format has no special case for; only Blender shows it differently
+    # (groups.py). Which entries those are depends on who has children, so it is decided once
+    # here rather than per entry.
+    root_guid = expansion.document.single_root()
+    root_guid = root_guid.guid if root_guid is not None else None
+    parents = {entry.parent for entry in expansion.document.objects if entry.parent is not None}
 
     for entry in expansion.document.objects:
+        # Only an AUTHORED entry can be a group: a resolved child is the prefab's, locked, and
+        # showing a prefab's internals as collections would multiply them per instance.
+        if entry.guid in authored and groups.is_group_entry(
+            entry, is_root=entry.guid == root_guid, has_children=entry.guid in parents
+        ):
+            grouped[entry.guid] = _create_group(entry)
+            result.objects += 1
+            continue
+
         obj = _create_object(entry, scene, layout, library, mesh_fields, result)
         if entry.guid not in authored:
             store.mark_derived(obj)
             result.derived += 1
+        if (reference := instanced.get(entry.guid)) is not None:
+            store.tag_prefab(obj, reference.guid, reference.path)
         created[entry.guid] = obj
         result.objects += 1
 
@@ -88,8 +128,21 @@ def load_document(
     # resolver's warning already saying why.
     for entry in document.objects:
         if entry.parent is None:
+            _link(scene.collection, created.get(entry.guid) or grouped.get(entry.guid))
             continue
-        child = created[entry.guid]
+
+        # A group holds its children by COLLECTION membership, since a Blender collection has no
+        # transform to parent to; an ordinary parent is a parent.
+        if (holder := grouped.get(entry.parent)) is not None:
+            _link(holder, created.get(entry.guid) or grouped.get(entry.guid))
+            continue
+
+        child = created.get(entry.guid)
+        if child is None:
+            # A group under an ordinary object: link the collection beside that object instead.
+            _link(_collection_of(scene, created.get(entry.parent)), grouped.get(entry.guid))
+            continue
+
         parent = created.get(entry.parent)
         if parent is None:
             result.warn(
@@ -106,6 +159,38 @@ def load_document(
     result.sources |= library.sources
     store.write_state(scene, scene_path)
     return result
+
+
+def _create_group(entry: PrefabObject) -> bpy.types.Collection:
+    """One group entry as a Blender collection. Not linked here: where it hangs is the parent
+    pass's business, exactly as an object's parenting is."""
+    collection = bpy.data.collections.new(entry.name or "group")
+    groups.tag(collection, entry.guid, entry.name)
+    return collection
+
+
+def _link(target, child) -> None:
+    """Put ``child`` (an object or a collection) in ``target``, and nowhere else."""
+    if child is None or target is None:
+        return
+    if isinstance(child, bpy.types.Collection):
+        for holder in bpy.data.collections:
+            if child.name in holder.children:
+                holder.children.unlink(child)
+        if child.name not in target.children:
+            target.children.link(child)
+        return
+
+    for holder in list(child.users_collection):
+        holder.objects.unlink(child)
+    target.objects.link(child)
+
+
+def _collection_of(scene: bpy.types.Scene, obj) -> bpy.types.Collection:
+    """The collection an object lives in, so a group hung under it lands beside it."""
+    if obj is None:
+        return scene.collection
+    return next(iter(obj.users_collection), scene.collection)
 
 
 def _create_object(
@@ -246,6 +331,54 @@ def _mesh_reference(entry: PrefabObject, mesh_fields: schema.MeshFields) -> str 
     return None
 
 
+def _startup_content(scene: bpy.types.Scene):
+    """Blender's startup file, when that is all this session is; ``None`` otherwise.
+
+    A fresh Blender opens on the startup file, so a document materialized into it lands beside a
+    Cube, a Camera, a Light and the ``Collection`` holding them -- clutter in the Outliner, and
+    three objects the author has to learn are not part of the level (they are not document
+    objects, so a save ignores them, which makes it worse rather than better: they persist,
+    invisibly meaningless, into the working file).
+
+    The gate is "never saved AND never touched". ``is_dirty`` is what separates the startup file
+    from a session someone has done unsaved work in, and it is the same signal the Asset
+    Browser's open entry asks about before replacing a session. Anything else -- a saved .blend,
+    a workfile reopened, an author who modelled something first -- is content this addon has no
+    business deleting, so it is left entirely alone.
+
+    It is NOT enough on its own, which is why the caller has to ask as well. ``is_dirty`` follows
+    UNDO PUSHES, not data changes: every operator a person runs makes one, and a script that
+    links an object makes none. ``thumbnail.py`` is exactly that script -- it starts an empty
+    file and links its own camera and key light before materializing -- so a gate that trusted
+    ``is_dirty`` alone deleted the camera and rendered every prefab black.
+    """
+    if bpy.data.filepath or bpy.data.is_dirty:
+        return None
+    # Document objects are `_clear_previous`'s, not ours. A pristine GUI session holds none, but
+    # a scripted one loading twice does, and capturing those meant handing already-freed
+    # references to `objects.remove`.
+    return (
+        [obj for obj in scene.collection.all_objects if store.guid_of(obj) is None],
+        list(scene.collection.children),
+    )
+
+
+def _drop_startup_content(captured) -> None:
+    """Remove what :func:`_startup_content` found. Objects first, so a collection is empty by the
+    time it goes; a collection still holding something else -- the mesh library from an earlier
+    load in the same session -- is kept, because emptiness is the only claim we have on it."""
+    if captured is None:
+        return
+
+    objects, collections = captured
+    for obj in objects:
+        bpy.data.objects.remove(obj, do_unlink=True)
+    for collection in collections:
+        if collection.name == LIBRARY_COLLECTION or collection.all_objects or collection.children:
+            continue
+        bpy.data.collections.remove(collection)
+
+
 def _clear_previous(scene: bpy.types.Scene) -> None:
     """Remove a previous load's objects (by GUID marker, so the user's own survive), keeping
     the mesh library so reload does not re-import every GLB. Drops pending edits too, which is
@@ -253,6 +386,11 @@ def _clear_previous(scene: bpy.types.Scene) -> None:
     doomed = [obj for obj in scene.collection.all_objects if store.guid_of(obj) is not None]
     for obj in doomed:
         bpy.data.objects.remove(obj, do_unlink=True)
+
+    # Group collections go the same way and for the same reason: they stand for document objects,
+    # so a reload that kept them would show the previous document's grouping around this one's.
+    for collection in [c for c in bpy.data.collections if groups.guid_of(c) is not None]:
+        bpy.data.collections.remove(collection)
 
 
 def scene_document_path(scene: bpy.types.Scene) -> str | None:

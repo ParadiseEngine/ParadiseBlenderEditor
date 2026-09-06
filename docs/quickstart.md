@@ -167,17 +167,15 @@ the origin. Two consequences worth knowing before pressing it:
 Save your placement changes first: the extraction works on the file, so it refuses to run while
 the scene holds edits the document does not have.
 
-**Model Prefabs** (a panel of its own) keeps one prefab per model. *Generate Model Prefabs* runs
-one pass: every `.glb` under `assets/` that no generated prefab stands for gets one at
-`prefabs/models/<name>.prefab`, and a model that moved or was renamed has its prefab's mesh
-reference refreshed. The prefab itself is never renamed — its guid is what levels reference, and
-moving the file would break them to fix nothing.
+**Model Prefabs** (a panel of its own) lists the models this project holds. It is read-only —
+prefabs are `paradise assets extract`'s to write, and nothing in the addon generates, updates or
+deletes one.
 
-Pick two components in that panel, static and skinned. The mirror reads each `.glb` to see
-whether it carries a rig, and a rigged model authored as a static one is a prefab that loads,
-shows the mesh, and is the wrong kind of thing in the game — so it is never guessed. A project
-with no rigged models needs only the static one. With no schema at all, build the game's
-launcher once.
+Which component a generated prefab authors its mesh into is the project's choice, not the
+addon's: `extract` reads `[extract] static_mesh_component` and `skinned_mesh_component` from
+`project.toml`, falling back to the game's authoring schema. A rigged model authored as a static
+one is a prefab that loads, shows the mesh, and is the wrong kind of thing in the game, so it is
+never guessed — `extract` warns and writes a prefab with no mesh rather than pick for you.
 
 A prefab is written only when the model has nowhere to be placed from yet. If anything already
 references its mesh — the prefab written last time, one moved elsewhere since, or a document that

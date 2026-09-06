@@ -145,32 +145,24 @@ def _draw_watch(layout, context) -> None:
 #: that walks the tree at redraw rate is not.
 _MODELS_TTL = 2.0
 
-#: project root -> (taken at, [(model path, a prefab sits beside it)])
-_models_cache: dict[str, tuple[float, list[tuple[str, bool]]]] = {}
+#: project root -> (taken at, model paths)
+_models_cache: dict[str, tuple[float, list[str]]] = {}
 
 
-def _models(layout) -> list[tuple[str, bool]]:
-    """Each model in the project, and whether a prefab sits BESIDE it.
-
-    Beside, not "has one": `extract` skips a model anything already places, wherever that
-    document lives, so a prefab moved elsewhere reads as absent here while the extractor still
-    leaves the model alone. Saying the narrower thing is the only one a draw can afford.
-    """
+def _models(layout) -> list[str]:
+    """Every model in the project, by project-relative path."""
     cached = _models_cache.get(layout.root)
     now = time.monotonic()
     if cached is not None and now - cached[0] < _MODELS_TTL:
         return cached[1]
 
-    rows = [
-        (model.path, os.path.exists(os.path.splitext(layout.resolve(model.path))[0] + ".prefab"))
-        for model in asset_index.list_assets(layout, [".glb"])
-    ]
-    _models_cache[layout.root] = (now, rows)
-    return rows
+    paths = [model.path for model in asset_index.list_assets(layout, [".glb"])]
+    _models_cache[layout.root] = (now, paths)
+    return paths
 
 
 class PARADISE_ASSETS_PT_models(_AssetsPanel, Panel):
-    """Which models have a prefab beside them. Read-only: `paradise assets extract` writes them."""
+    """The models this project holds. Read-only: `paradise assets extract` writes their prefabs."""
 
     bl_label = "Model Prefabs"
     bl_idname = "PARADISE_ASSETS_PT_models"
@@ -188,19 +180,18 @@ class PARADISE_ASSETS_PT_models(_AssetsPanel, Panel):
         if located is None:
             return
 
-        rows = _models(located)
-        if not rows:
+        models = _models(located)
+        if not models:
             layout.label(text="No models in this project.", icon="INFO")
             return
 
-        for path, beside in rows:
-            row = layout.row(align=True)
-            row.label(
-                text=os.path.basename(path),
-                icon="OUTLINER_OB_MESH" if beside else "MESH_DATA",
-            )
-            row.label(text="prefab" if beside else "-")
+        for path in models:
+            layout.label(text=os.path.basename(path), icon="MESH_DATA")
 
+        # Deliberately says nothing about WHICH models have a prefab. Where one lands is
+        # `[glb] extract`, else project.toml's `[extract] directory`, else beside the model —
+        # so "is there one beside it" is the wrong question on a project that configures either,
+        # and answering the right one is more reading than a draw should do.
         for line in _wrap(
             "`paradise assets extract` writes a prefab for a model that has none, unless "
             "something already places its mesh. It is yours from then on.", 44

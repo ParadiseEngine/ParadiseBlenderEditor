@@ -21,16 +21,18 @@ The edit they cannot express -- moving a derived child -- is refused rather than
 from __future__ import annotations
 
 import os
+import uuid
 
 import bpy
-from mathutils import Quaternion
+from mathutils import Matrix, Quaternion
 
 from .. import edits as component_edits
-from ..document import atomic, axes, canonical_toml, well_known
+from ..document import atomic, axes, canonical_toml, component_schema, project, well_known
 from ..document import prefab as prefab_document
 from ..document.asset_reference import AssetReference
 from ..document.prefab import PrefabComponent, PrefabDocument, PrefabDocumentError, PrefabObject
-from . import store
+from . import shapes, store
+from .shapes import default_row as shapes_default_row
 
 __all__ = ["SaveError", "SaveResult", "document_trs", "save_prefab"]
 
@@ -74,12 +76,18 @@ def save_prefab(scene: bpy.types.Scene) -> SaveResult:
     with open(state.path, encoding="utf-8") as handle:
         base = prefab_document.loads(handle.read(), state.path)
 
+    _adopt_new_groups(scene)
+    _fold_parent_inverses(scene)
     _refuse_duplicate_identities(scene)
     _refuse_foreign_parents(scene)
     _refuse_moved_derived(scene)
 
     result = SaveResult()
-    merged = _merge(scene, base, result)
+    layout = project.locate(state.path)
+    vocabulary = (
+        component_schema.load(layout.root) if layout is not None
+        else component_schema.Vocabulary({}, None))
+    merged = _merge(scene, base, result, vocabulary)
 
     # What the reader will check, checked here: deleting the root (Blender unparents its
     # children) otherwise wrote a multi-root document that reported success and never loaded.
@@ -184,7 +192,9 @@ def _refuse_moved_derived(scene: bpy.types.Scene) -> None:
     )
 
 
-def _merge(scene: bpy.types.Scene, base: PrefabDocument, result: SaveResult) -> PrefabDocument:
+def _merge(
+    scene: bpy.types.Scene, base: PrefabDocument, result: SaveResult, vocabulary
+) -> PrefabDocument:
     """The document as Blender now has it, over the document as the file now has it. File order
     is kept: Blender guarantees no iteration order, and following it would reshuffle the file on
     every save. New objects follow, in name order."""
@@ -204,16 +214,89 @@ def _merge(scene: bpy.types.Scene, base: PrefabDocument, result: SaveResult) -> 
         if obj is None:
             result.removed += 1
             continue
-        merged.objects.append(_object_entry(obj, entry, result))
+        merged.objects.append(_object_entry(obj, entry, result, vocabulary))
 
     for obj in sorted(objects.values(), key=lambda o: o.name):
         result.added += 1
-        merged.objects.append(_object_entry(obj, None, result))
+        merged.objects.append(_object_entry(obj, None, result, vocabulary))
 
     return merged
 
 
-def _object_entry(obj: bpy.types.Object, original: PrefabObject | None, result: SaveResult) -> PrefabObject:
+def _adopt_new_groups(scene: bpy.types.Scene) -> None:
+    """Give an Empty the author made to group document objects under an identity of its own.
+
+    The gesture is "add an Empty, parent things to it": that Empty has no GUID, so without this
+    it is neither written nor a legal parent and the save refuses. Only an EMPTY holding at
+    least one document object qualifies -- a stray camera or light stays Blender's own, and an
+    Empty with nothing in it is a marker somebody has not finished. One left unparented hangs
+    off the document root, exactly as a placed instance does: a second root never loads.
+
+    Never over the ROOT: the root IS the document, and adopting an Empty it was dragged under
+    would mint a new root and write a document that is no longer the one that was opened. With
+    no unique parentless root there is nothing to adopt into, and the foreign-parent rule names
+    the Empty instead.
+
+    Minted as ``uuid4`` rather than waited for: sidecars mint identities for FILES under
+    ``assets/``, and an object inside a document has never been one of those.
+    """
+    root = _root_object(scene)
+    if root is None:
+        return
+    # World matrices are stale until the depsgraph runs; parenting from a stale one moved the
+    # Empty to the origin on the first save.
+    bpy.context.view_layer.update()
+    adopted = True
+    while adopted:
+        adopted = False
+        for obj in scene.collection.all_objects:
+            if obj.type != "EMPTY" or store.guid_of(obj) is not None or shapes.is_shape(obj):
+                # A collision-shape Empty is its owner's handle, never a group: adopted, it would
+                # be written twice, as a group object and as a shape row on the same Empty. Left
+                # alone, the foreign-parent rule names it.
+                continue
+            if not any(store.guid_of(child) is not None for child in obj.children):
+                continue
+            store.tag_object(obj, str(uuid.uuid4()), [])
+            store.tag_name(obj, obj.name)
+            adopted = True
+            if obj.parent is None:
+                world = obj.matrix_world.copy()
+                obj.parent = root
+                obj.matrix_parent_inverse.identity()
+                obj.matrix_world = world
+
+
+def _fold_parent_inverses(scene: bpy.types.Scene) -> None:
+    """Move a non-identity ``matrix_parent_inverse`` into the local channels.
+
+    Ctrl+P and the Outliner's drag-to-parent keep an object in place by storing the offset in
+    the parent inverse, and the document has no field for it: the channels alone would put the
+    object somewhere else on the next load. Folded here, once, rather than read through on every
+    save -- a decomposition is lossy, and the channels are what :func:`_unchanged` compares.
+    """
+    handles = [obj for obj in scene.collection.all_objects if shapes.is_shape(obj)]
+    for obj in _document_objects(scene) + handles:
+        if obj.parent is None or obj.matrix_parent_inverse == _IDENTITY:
+            continue
+        local = obj.matrix_parent_inverse @ obj.matrix_basis
+        obj.matrix_parent_inverse.identity()
+        obj.matrix_basis = local
+
+
+_IDENTITY = Matrix.Identity(4)
+
+
+def _root_object(scene: bpy.types.Scene):
+    """The document root, or ``None`` when it is not unique -- the root rule then refuses the
+    save and names the objects, which is a better error than anything this could invent."""
+    found = [obj for obj in _document_objects(scene) if obj.parent is None]
+    return found[0] if len(found) == 1 else None
+
+
+def _object_entry(
+    obj: bpy.types.Object, original: PrefabObject | None, result: SaveResult, vocabulary
+) -> PrefabObject:
     """One Blender object as a document object: the file's entry with only what Blender owns
     overwritten, which is what keeps an instance an instance rather than the plain objects it
     displays as."""
@@ -227,13 +310,19 @@ def _object_entry(obj: bpy.types.Object, original: PrefabObject | None, result: 
         entry.prefab = AssetReference(reference_guid, reference_path)
 
     parent_guid = store.guid_of(obj.parent) if obj.parent is not None else None
-
     _write_meta(entry, guid, store.document_name(obj), parent_guid)
     _write_transform(entry, obj, original, result)
 
     # Last, so an overlay edit could never win against the meta/transform writes above.
     _apply_edits(obj, entry, result)
+    # After the overlay: a typed IsTrigger and a moved Empty land on the same row. ``entry`` is
+    # the file's own entry, so for an instance only the lists IT authors are baked.
+    result.edited += shapes.bake(obj, entry, vocabulary, _default_row)
     return entry
+
+
+def _default_row(field) -> dict:
+    return shapes_default_row(field)
 
 
 def _apply_edits(obj: bpy.types.Object, entry: PrefabObject, result: SaveResult) -> None:

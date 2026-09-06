@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
-# Full test suite: unit tests, Blender integration tests, and the .NET conformance gate.
+# Full test suite: unit tests, then the Blender integration tests.
 #
-# The three layers check genuinely different things:
-#   unit         our contract math against itself (fast, no Blender)
-#   integration  our conversion against Blender's glTF exporter, and the live protocol
-#   conformance  our JSON against the engine's own C# reader/writer
+# The two layers check genuinely different things:
+#   unit         the document format and the axis math against themselves (fast, no Blender)
+#   integration  the axis conversion against Blender's OWN glTF exporter, and every operator
+#                that touches a real project: open, save, extract, thumbnails, play
 #
-# Only the third can catch contract drift, and only the second can catch a wrong axis
-# convention -- the unit tests would happily pass with both broken.
+# Only the second can catch a wrong axis convention -- the unit tests would happily pass with
+# the basis inverted, because they only check the conversion against itself.
+#
+# There is no .NET layer any more. It existed to round-trip a SECOND, Python implementation of
+# the export contract through the engine's own reader and writer; that implementation was the
+# `.blend`-is-truth addon, and it is gone (#35). What builds documents now is the engine's own
+# C# pipeline, so the check would read back what it had just written.
 
 set -uo pipefail
 
@@ -31,118 +36,91 @@ failures=0
 step() { printf '\n\033[1m== %s\033[0m\n' "$1"; }
 check() { if [ "$1" -ne 0 ]; then echo "FAILED: $2"; failures=$((failures + 1)); fi; }
 
-step "Unit tests (contract math, no Blender)"
+# One Blender integration test. Everything after the label is passed to the script after `--`.
+# The greps drop Blender's own startup chatter, which otherwise buries the result.
+integration() {
+  local label="$1" script="$2" noise="$3"
+  shift 3
+  # `${extra[@]+...}`, not `${extra[@]}`: macOS ships bash 3.2, where an empty array read under
+  # `set -u` is an unbound variable and would abort the run.
+  local extra=()
+  if [ "$#" -gt 0 ]; then extra=(-- "$@"); fi
+
+  step "Integration: $label"
+  "$BLENDER" --background --factory-startup --python-exit-code 1 --python "$script" \
+    ${extra[@]+"${extra[@]}"} 2>&1 | grep -vE "$noise" | tail -30
+  check "${PIPESTATUS[0]}" "$label"
+}
+
+DEFAULT_NOISE='^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2})'
+
+step "Unit tests (document format and axis math, no Blender)"
 "$PYTHON" -m pytest tests/unit -q
 check $? "unit tests"
 
 if command -v "$BLENDER" >/dev/null 2>&1; then
-  step "Integration: axis parity vs Blender's glTF exporter"
-  "$BLENDER" --background --factory-startup --python-exit-code 1 --python tests/integration/test_axis_parity.py 2>&1 \
-    | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2})' | tail -20
-  check "${PIPESTATUS[0]}" "axis parity"
+  # THE test: our conversion against Blender's own glTF exporter. A wrong basis rotates every
+  # mesh in every document by 90 degrees and nothing else here would notice.
+  integration "axis parity vs Blender's glTF exporter" \
+    tests/integration/test_axis_parity.py "$DEFAULT_NOISE"
 
-  step "Integration: live preview against the mock runtime"
-  "$BLENDER" --background --factory-startup --python-exit-code 1 --python tests/integration/test_live_preview.py 2>&1 \
-    | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2})' | tail -25
-  check "${PIPESTATUS[0]}" "live preview"
+  # The sidebar: which panels are available when, and that every operator they draw exists.
+  integration "the sidebar panels" \
+    tests/integration/test_panel.py \
+    '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2}|Info: Saved)'
 
-  step "Integration: GLB texture externalization (KTX2 sidecars)"
-  "$BLENDER" --background --factory-startup --python-exit-code 1 --python tests/integration/test_glb_textures.py 2>&1 \
-    | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2})' | tail -20
-  check "${PIPESTATUS[0]}" "glb textures"
+  # The Outliner and viewport right-click entries, and the load-time tag the first one needs.
+  integration "the object context menus" \
+    tests/integration/test_context_menu.py "$DEFAULT_NOISE"
 
-  step "Integration: KTX2 transcoder dialects"
-  "$BLENDER" --background --factory-startup --python-exit-code 1 --python tests/integration/test_ktx_pipeline.py 2>&1 \
-    | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2})' | tail -20
-  check "${PIPESTATUS[0]}" "ktx pipeline"
+  # Groups: a document object with only meta and transform, shown as an Empty its members parent to.
+  integration "groups as empties" \
+    tests/integration/test_groups.py "$DEFAULT_NOISE"
 
-  step "Integration: play failure diagnostics"
-  "$BLENDER" --background --factory-startup --python-exit-code 1 --python tests/integration/test_play_diagnostics.py 2>&1 \
-    | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2})' | tail -20
-  check "${PIPESTATUS[0]}" "play diagnostics"
+  # Collision shapes: a host-authored Shapes list shown as Empties, baked back on save.
+  integration "collision shapes as empties" \
+    tests/integration/test_shapes.py "$DEFAULT_NOISE"
 
-  step "Integration: authored components (schema-driven)"
-  "$BLENDER" --background --factory-startup --python-exit-code 1 --python tests/integration/test_authored_components.py 2>&1 \
-    | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2})' | tail -30
-  check "${PIPESTATUS[0]}" "authored components"
+  # The byte-exact round trip through Blender needs a real asset project; it skips cleanly when
+  # PARADISE_ASSETS_PROJECT names nothing.
+  integration "open and save an asset-project scene" \
+    tests/integration/test_open_scene.py "$DEFAULT_NOISE" \
+    "${PARADISE_ASSETS_PROJECT:-../shiningpie}"
 
-  step "Integration: config documents (file-backed authored components)"
-  "$BLENDER" --background --factory-startup --python-exit-code 1 --python tests/integration/test_config_documents.py 2>&1 \
-    | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2})' | tail -30
-  check "${PIPESTATUS[0]}" "config documents"
-
-  step "Integration: full scene export"
-  "$BLENDER" --background --factory-startup --python-exit-code 1 --python tests/integration/test_export_scene.py 2>&1 \
-    | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2})' | tail -30
-  check "${PIPESTATUS[0]}" "scene export"
-
-  # paradise_assets: the OTHER addon, which opens assets/**/*.prefab rather than exporting
-  # to data/. Its gate is a byte-exact round trip through Blender, so it needs a real asset
-  # project -- it skips cleanly when PARADISE_ASSETS_PROJECT names nothing.
-  step "Integration: open and save an asset-project scene"
-  "$BLENDER" --background --factory-startup --python-exit-code 1 --python tests/integration/test_open_scene.py -- \
-    "${PARADISE_ASSETS_PROJECT:-../shiningpie}" 2>&1 \
-    | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2})' | tail -30
-  check "${PIPESTATUS[0]}" "open scene"
-
-  # Creating prefabs: extraction, and the model prefab mirror. It COPIES the project first --
+  # Creating prefabs: extraction, and the model prefab seed. It COPIES the project first --
   # these operators write and delete, so the checkout must never be the thing under test.
-  step "Integration: extract to prefab, and the model prefab mirror"
-  "$BLENDER" --background --factory-startup --python-exit-code 1 --python tests/integration/test_create_prefab.py -- \
-    "${PARADISE_ASSETS_PROJECT:-../shiningpie}" 2>&1 \
-    | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2}|Info: |.*\| Saved:)' | tail -30
-  check "${PIPESTATUS[0]}" "create prefab"
+  integration "extract to prefab, and the model prefab seed" \
+    tests/integration/test_create_prefab.py \
+    '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2}|Info: |.*\| Saved:)' \
+    "${PARADISE_ASSETS_PROJECT:-../shiningpie}"
 
   # Asset Browser thumbnails. Renders, so it wants the same real project -- and its load-bearing
   # check is that the catalogue came out with no geometry in it.
-  step "Integration: prefab thumbnails and the catalogue's weight"
-  "$BLENDER" --background --factory-startup --python-exit-code 1 --python tests/integration/test_prefab_thumbnails.py -- \
-    "${PARADISE_ASSETS_PROJECT:-../shiningpie}" 2>&1 \
-    | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2}|.*\| Saved:)' | tail -30
-  check "${PIPESTATUS[0]}" "prefab thumbnails"
+  integration "prefab thumbnails and the catalogue's weight" \
+    tests/integration/test_prefab_thumbnails.py \
+    '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2}|.*\| Saved:)' \
+    "${PARADISE_ASSETS_PROJECT:-../shiningpie}"
 
-  step "Integration: the Asset Browser context menu and its sidecar"
-  "$BLENDER" --background --factory-startup --python-exit-code 1 --python tests/integration/test_asset_browser_menu.py -- \
-    "${PARADISE_ASSETS_PROJECT:-../shiningpie}" 2>&1 \
-    | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2}|.*\| (Saved|Read blend):)' | tail -30
-  check "${PIPESTATUS[0]}" "asset browser menu"
+  integration "the Asset Browser context menu and its sidecar" \
+    tests/integration/test_asset_browser_menu.py \
+    '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2}|.*\| (Saved|Read blend):)' \
+    "${PARADISE_ASSETS_PROJECT:-../shiningpie}"
 
   # Build & Play, against FAKE tools -- it needs no project, no CLI and no game.
-  step "Integration: build and play, up to the process"
-  "$BLENDER" --background --factory-startup --python-exit-code 1 --python tests/integration/test_play.py 2>&1 \
-    | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2})' | tail -30
-  check "${PIPESTATUS[0]}" "build and play"
+  integration "build and play, up to the process" \
+    tests/integration/test_play.py "$DEFAULT_NOISE"
 
   # Blender's own save writing the document. Its own throwaway project -- every check writes.
-  step "Integration: Ctrl+S writes the prefab document"
-  "$BLENDER" --background --factory-startup --python-exit-code 1 --python tests/integration/test_save_on_save.py 2>&1 \
-    | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2}|Info: Saved)' | tail -30
-  check "${PIPESTATUS[0]}" "save on save"
+  integration "Ctrl+S writes the prefab document" \
+    tests/integration/test_save_on_save.py \
+    '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2}|Info: Saved)'
 
   # Opening a cached .blend must rematerialize from assets/ and start the watcher. Own project.
-  step "Integration: opening a cached .blend refreshes from assets"
-  "$BLENDER" --background --factory-startup --python-exit-code 1 --python tests/integration/test_open_workfile.py 2>&1 \
-    | grep -vE '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2}|Info: Saved|.*Read blend)' | tail -30
-  check "${PIPESTATUS[0]}" "open workfile"
+  integration "opening a cached .blend refreshes from assets" \
+    tests/integration/test_open_workfile.py \
+    '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2}|Info: Saved|.*Read blend)'
 else
   echo "SKIPPED: Blender not found (set BLENDER=/path/to/blender) — integration tests not run."
-fi
-
-if command -v dotnet >/dev/null 2>&1; then
-  step "Conformance: round-trip exported documents through Paradise.Export"
-  # The export test above writes its documents here.
-  DATA="${TMPDIR:-/tmp}/paradise_export_test"
-  if [ -d "$DATA" ]; then
-    for document in "$DATA"/scenes/*.json "$DATA"/materials/*.json "$DATA"/ProjectSettings.json; do
-      [ -f "$document" ] || continue
-      dotnet run --project tools/ParadiseBlenderBridge -- contract-check "$document"
-      check $? "contract-check $(basename "$document")"
-    done
-  else
-    echo "SKIPPED: no exported documents at $DATA (the export test must run first)."
-  fi
-else
-  echo "SKIPPED: dotnet not found — the contract conformance gate was not run."
 fi
 
 printf '\n'

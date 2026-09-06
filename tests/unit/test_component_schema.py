@@ -116,25 +116,97 @@ def test_nested_records_flatten_to_editable_paths():
     assert schema.resolve("Slots/0").type == "string"
 
 
-def test_a_host_authored_list_stays_locked():
+def test_a_host_shape_list_is_rows_of_empties_with_only_the_game_members_typed():
     root = _project([{
         "id": "44444444-4444-4444-8444-444444444444",
         "type": "Game.Collider",
         "fields": [{
             "name": "Shapes",
             "type": "array",
-            "items": {"type": "object", "authoredBy": "shape", "fields": [
-                {"name": "Size", "type": "vector3"},
+            "items": {"type": "object", "fields": [
+                {"name": "Shape", "type": "object", "authoredBy": "shape", "fields": [
+                    {"name": "ShapeType", "type": "enum", "values": ["Box", "Sphere"]},
+                    {"name": "Size", "type": "vector3"},
+                ]},
+                {"name": "IsTrigger", "type": "bool"},
             ]},
         }],
     }])
 
     schema = component_schema.load(root).get("44444444-4444-4444-8444-444444444444")
-    plan = schema.plan({"Shapes": [{"Size": [1, 1, 1]}]})
+    plan = schema.plan({"Shapes": [{"Shape": {"Size": [1, 1, 1]}, "IsTrigger": False}]})
 
-    assert len(plan) == 1
-    assert plan[0].role == component_schema.ROLE_LOCKED
+    assert [(item.path, item.role) for item in plan] == [
+        ("Shapes", component_schema.ROLE_SHAPES),
+        ("Shapes/0", component_schema.ROLE_ROW),
+        ("Shapes/0/IsTrigger", component_schema.ROLE_LEAF),
+    ]
+    # No Add-row button over a host list: adding a shape is adding an Empty.
     assert not plan[0].field.editable
+
+
+def test_one_shape_row_is_a_shapes_header_and_a_row_at_the_fields_own_path():
+    root = _project([{
+        "id": "46444444-4444-4444-8444-444444444444",
+        "type": "Game.CameraTriggerMarker",
+        "fields": [
+            {"name": "Yaw", "type": "float"},
+            {"name": "Volume", "type": "object", "fields": [
+                {"name": "Shape", "type": "object", "authoredBy": "shape", "fields": [
+                    {"name": "Radius", "type": "float"}]},
+                {"name": "IsTrigger", "type": "bool"},
+            ]},
+        ],
+    }])
+    schema = component_schema.load(root).get("46444444-4444-4444-8444-444444444444")
+    plan = schema.plan({"Yaw": 40, "Volume": {"Shape": {"Radius": 8}, "IsTrigger": True}})
+    assert [(item.path, item.role) for item in plan] == [
+        ("Yaw", component_schema.ROLE_LEAF),
+        ("Volume", component_schema.ROLE_SHAPES),
+        ("Volume", component_schema.ROLE_ROW),
+        ("Volume/IsTrigger", component_schema.ROLE_LEAF),
+    ]
+    # An unfilled Volume is the header alone: the shape is drawn, not typed.
+    assert [(i.path, i.role) for i in schema.plan({"Yaw": 40})] == [
+        ("Yaw", component_schema.ROLE_LEAF), ("Volume", component_schema.ROLE_SHAPES)]
+
+
+def test_a_row_that_is_the_host_shape_is_a_row_with_nothing_to_type():
+    root = _project([{
+        "id": "47444444-4444-4444-8444-444444444444",
+        "type": "Game.Obstacle",
+        "fields": [
+            {"name": "Volume", "type": "object", "authoredBy": "shape", "fields": [
+                {"name": "ShapeType", "type": "enum", "values": ["Box"]},
+                {"name": "Size", "type": "vector3"}]},
+            {"name": "Bodies", "type": "array", "items": {
+                "type": "object", "authoredBy": "shape", "fields": [
+                    {"name": "Radius", "type": "float"}]}},
+        ],
+    }])
+    schema = component_schema.load(root).get("47444444-4444-4444-8444-444444444444")
+    plan = schema.plan({"Volume": {"ShapeType": "Box", "Size": [1, 1, 1]}, "Bodies": [{"Radius": 1}]})
+    assert [(i.path, i.role) for i in plan] == [
+        ("Volume", component_schema.ROLE_SHAPES),
+        ("Volume", component_schema.ROLE_ROW),
+        ("Bodies", component_schema.ROLE_SHAPES),
+        ("Bodies/0", component_schema.ROLE_ROW),
+    ]
+
+
+def test_another_host_kind_list_stays_locked():
+    root = _project([{
+        "id": "45444444-4444-4444-8444-444444444444",
+        "type": "Game.Lights",
+        "fields": [{
+            "name": "Lights", "type": "array",
+            "items": {"type": "object", "authoredBy": "light", "fields": [
+                {"name": "Intensity", "type": "float"}]},
+        }],
+    }])
+    schema = component_schema.load(root).get("45444444-4444-4444-8444-444444444444")
+    plan = schema.plan({"Lights": [{"Intensity": 1}]})
+    assert [item.role for item in plan] == [component_schema.ROLE_LOCKED]
 
 
 def test_the_formats_own_components_are_refused_even_if_dumped():

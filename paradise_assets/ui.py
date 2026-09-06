@@ -1,5 +1,12 @@
-"""The "Paradise Assets" sidebar tab. Edits go through the overlay in :mod:`edits`; ``meta``
-and ``transform`` stay live from Blender, host-baked fields stay locked."""
+"""The "Paradise" sidebar tab. Edits go through the overlay in :mod:`edits`; ``meta`` and
+``transform`` stay live from Blender, host-baked fields stay locked.
+
+Four sibling panels, one per scope, rather than one tree: the document, the PROJECT it lives in,
+playing it, and the selected object. Project actions are the reason they are siblings -- build,
+verify and the watcher belong to a project whether or not a document is open, and nesting them
+under the document made them unreachable in the one session where an author most needs them,
+the one that has just opened Blender.
+"""
 
 from __future__ import annotations
 
@@ -10,8 +17,8 @@ from bpy.types import Panel
 
 from . import component_ops, edits, field_widgets, watch
 from .document import assets as asset_index
-from .document import component_schema, project, well_known
-from .materialize import save, store, sync
+from .document import component_schema, well_known
+from .materialize import save, shapes, store, sync, workfile
 
 __all__ = ["classes"]
 
@@ -19,7 +26,7 @@ __all__ = ["classes"]
 class _AssetsPanel:
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
-    bl_category = "Paradise Assets"
+    bl_category = "Paradise"
 
 
 class PARADISE_ASSETS_PT_document(_AssetsPanel, Panel):
@@ -31,13 +38,16 @@ class PARADISE_ASSETS_PT_document(_AssetsPanel, Panel):
         state = store.read_state(context.scene)
 
         if state is None:
-            layout.label(text="No prefab document loaded.", icon="INFO")
-            layout.operator("paradise_assets.open_prefab", icon="FILE_FOLDER")
+            layout.label(text="No document open.", icon="INFO")
+            layout.operator("paradise_assets.open_prefab", text="Open Prefab…", icon="FILE_FOLDER")
+            _draw_openable(layout, context)
             return
+
+        located = store.project_of(context.scene)
 
         box = layout.box()
         box.label(text=os.path.basename(state.path), icon="FILE_TEXT")
-        box.label(text=os.path.dirname(state.path))
+        box.label(text=_where(state.path, located))
 
         count = sum(1 for obj in context.scene.collection.all_objects if store.guid_of(obj))
         box.label(text=f"{count} document object(s)")
@@ -60,88 +70,129 @@ class PARADISE_ASSETS_PT_document(_AssetsPanel, Panel):
             box.label(text=refused[:70])
 
         row = layout.row(align=True)
+        row.operator("paradise_assets.save_prefab", text="Save", icon="EXPORT")
+        row.operator("paradise_assets.reload_prefab", text="Reload", icon="FILE_REFRESH")
+        # Its own row, and spelled out: Reload keeps what the working file holds and this throws
+        # the file away, so the two must not read as a pair of near-synonyms side by side.
+        layout.operator("paradise_assets.recreate_workfile", icon="TRASH")
+
+        row = layout.row(align=True)
         row.operator("paradise_assets.add_prefab_instance", text="Add Prefab…", icon="ADD")
         row.operator("paradise_assets.extract_prefab", text="Extract…", icon="EXPORT")
-        layout.operator("paradise_assets.refresh_catalogue", icon="ASSET_MANAGER")
-
-        column = layout.column(align=True)
-        column.operator("paradise_assets.save_prefab", icon="EXPORT")
-        column.operator("paradise_assets.reload_prefab", icon="FILE_REFRESH")
         layout.operator("paradise_assets.open_prefab", text="Open Another…", icon="FILE_FOLDER")
 
 
-class PARADISE_ASSETS_PT_play(_AssetsPanel, Panel):
-    """Build the project and run the game on whatever document is open."""
+def _where(document_path: str, located) -> str:
+    """The document's directory, project-relative where there is a project: an author knows
+    which `levels/` this is, and the absolute path is mostly their home directory."""
+    directory = os.path.dirname(document_path)
+    if located is None:
+        return directory
+    return os.path.relpath(directory, located.root)
 
-    bl_label = "Play"
-    bl_idname = "PARADISE_ASSETS_PT_play"
-    bl_parent_id = "PARADISE_ASSETS_PT_document"
+
+#: Listing documents walks the project, which a draw must not do on every redraw. Cached per
+#: project and kind, refreshed no more often than this: a panel showing a two-second-old answer
+#: is fine, one that walks the tree at redraw rate is not.
+_LISTING_TTL = 2.0
+
+#: (project root, kind) -> (taken at, paths)
+_listings: dict[tuple[str, str], tuple[float, list[str]]] = {}
+
+
+def _cached(root: str, kind: str, produce) -> list[str]:
+    key = (root, kind)
+    cached = _listings.get(key)
+    now = time.monotonic()
+    if cached is not None and now - cached[0] < _LISTING_TTL:
+        return cached[1]
+
+    paths = produce()
+    _listings[key] = (now, paths)
+    return paths
+
+
+def _draw_openable(layout, context) -> None:
+    """What there is to open, when nothing is. A tab whose only content is one button cannot
+    say whether this .blend even sits in a project."""
+    located = store.project_of(context.scene)
+    if located is None:
+        return
+
+    recent = _cached(located.root, "recent", lambda: workfile.recent_documents(located))
+    if recent:
+        layout.label(text="Recently opened here:")
+        _draw_open_rows(layout, located, recent)
+        return
+
+    prefabs = _cached(
+        located.root, "prefabs",
+        lambda: [located.resolve(asset.path) for asset in asset_index.list_assets(located, [".prefab"])],
+    )
+    if prefabs:
+        layout.label(text=f"In this project ({len(prefabs)} prefab(s)):")
+        _draw_open_rows(layout, located, prefabs[:_OPEN_ROWS])
+
+
+#: How many documents the landing state offers before it stops and leaves the rest to Open….
+_OPEN_ROWS = 8
+
+
+def _draw_open_rows(layout, located, documents: list[str]) -> None:
+    column = layout.column(align=True)
+    for document in documents:
+        row = column.row(align=True)
+        # The operator skips its file browser when a filepath is already set (ops.py).
+        row.operator(
+            "paradise_assets.open_prefab",
+            text=os.path.splitext(os.path.basename(document))[0],
+            icon="FILE_TEXT",
+        ).filepath = document
+
+
+class PARADISE_ASSETS_PT_project(_AssetsPanel, Panel):
+    """The asset project: what builds it, what watches it, and what its tools are missing."""
+
+    bl_label = "Project"
+    bl_idname = "PARADISE_ASSETS_PT_project"
 
     @classmethod
     def poll(cls, context):
-        return store.read_state(context.scene) is not None
+        return store.project_of(context.scene) is not None
 
     def draw(self, context):
         layout = self.layout
+        located = store.project_of(context.scene)
+        if located is None:
+            return
 
-        # Every redraw: `status` must not log or a warning fires per frame.
-        from .play import session
-        from .play.ops import status
+        # Every redraw: these must not log or a warning fires per frame.
+        from .play.ops import tool_problems
 
-        state = store.read_state(context.scene)
-        layout_ = project.locate(state.path) if state is not None else None
+        box = layout.box()
+        box.label(text=os.path.basename(located.root.rstrip(os.sep)), icon="FILE_FOLDER")
+        box.label(text=located.root)
 
-        problems = status(layout_)
+        problems = tool_problems()
         if problems:
-            box = layout.box()
-            box.alert = True
+            warning = layout.box()
+            warning.alert = True
             for icon, message in problems:
-                box.label(text=message, icon=icon)
-
-        row = layout.row(align=True)
-        row.operator("paradise_assets.play", text="Build & Play", icon="PLAY").watch = False
-        row.operator("paradise_assets.play", text="Watch & Play", icon="FILE_REFRESH").watch = True
-
-        if layout_ is not None:
-            _draw_session(layout, session, layout_.root)
+                warning.label(text=message, icon=icon)
 
         # The only place a failed rebuild surfaces until the tray (ParadiseEngine#192).
-        _draw_watch(layout, context)
+        _draw_watch(layout, located.root)
 
         row = layout.row(align=True)
         row.operator("paradise_assets.build", icon="MOD_BUILD")
         row.operator("paradise_assets.verify", icon="CHECKMARK")
-        layout.operator("paradise_assets.clean", icon="TRASH")
-
-
-def _draw_session(layout, session, root: str) -> None:
-    """Whether the game is running, and why it stopped if it stopped on its own."""
-    process = session.process_for(root)
-    if process is not None:
         row = layout.row(align=True)
-        row.label(text=f"Playing (pid {process.pid})", icon="RADIOBUT_ON")
-        row.operator("paradise_assets.stop_play", text="Stop", icon="PAUSE")
-        return
-
-    if (reason := session.exit_reason(root)) is not None:
-        box = layout.box()
-        box.alert = True
-        box.label(text="The game stopped on its own.", icon="ERROR")
-        for line in _wrap(reason, 44)[:3]:
-            box.label(text=line)
+        row.operator("paradise_assets.clean", icon="TRASH")
+        row.operator("paradise_assets.refresh_catalogue", text="Catalogue", icon="ASSET_MANAGER")
 
 
-def _draw_watch(layout, context) -> None:
+def _draw_watch(layout, root: str) -> None:
     """Whether a watcher is running for this project, and the last thing it complained about."""
-    state = store.read_state(context.scene)
-    if state is None:
-        return
-    # A project moved out from under the session must not take the whole sidebar down.
-    layout_ = project.locate(state.path)
-    if layout_ is None:
-        return
-    root = layout_.root
-
     running = watch.is_running(root)
     row = layout.row(align=True)
     row.label(
@@ -166,34 +217,11 @@ def _draw_watch(layout, context) -> None:
             box.label(text=line)
 
 
-#: Listing models walks assets/, which a draw must not do on every redraw. Cached per project
-#: and refreshed no more often than this: a panel showing a two-second-old answer is fine, one
-#: that walks the tree at redraw rate is not.
-_MODELS_TTL = 2.0
+class PARADISE_ASSETS_PT_play(_AssetsPanel, Panel):
+    """Build the project and run the game on whatever document is open."""
 
-#: project root -> (taken at, model paths)
-_models_cache: dict[str, tuple[float, list[str]]] = {}
-
-
-def _models(layout) -> list[str]:
-    """Every model in the project, by project-relative path."""
-    cached = _models_cache.get(layout.root)
-    now = time.monotonic()
-    if cached is not None and now - cached[0] < _MODELS_TTL:
-        return cached[1]
-
-    paths = [model.path for model in asset_index.list_assets(layout, [".glb"])]
-    _models_cache[layout.root] = (now, paths)
-    return paths
-
-
-class PARADISE_ASSETS_PT_models(_AssetsPanel, Panel):
-    """The models this project holds. Read-only: `paradise assets extract` writes their prefabs."""
-
-    bl_label = "Model Prefabs"
-    bl_idname = "PARADISE_ASSETS_PT_models"
-    bl_parent_id = "PARADISE_ASSETS_PT_document"
-    bl_options = {"DEFAULT_CLOSED"}
+    bl_label = "Play"
+    bl_idname = "PARADISE_ASSETS_PT_play"
 
     @classmethod
     def poll(cls, context):
@@ -201,48 +229,66 @@ class PARADISE_ASSETS_PT_models(_AssetsPanel, Panel):
 
     def draw(self, context):
         layout = self.layout
-        state = store.read_state(context.scene)
-        located = project.locate(state.path) if state is not None else None
-        if located is None:
-            return
 
-        models = _models(located)
-        if not models:
-            layout.label(text="No models in this project.", icon="INFO")
-            return
+        # Every redraw: these must not log or a warning fires per frame.
+        from .play import session
+        from .play.ops import play_problems
 
-        for path in models:
-            layout.label(text=os.path.basename(path), icon="MESH_DATA")
+        located = store.project_of(context.scene)
 
-        # Deliberately says nothing about WHICH models have a prefab. Where one lands is
-        # `[glb] extract`, else project.toml's `[extract] directory`, else beside the model —
-        # so "is there one beside it" is the wrong question on a project that configures either,
-        # and answering the right one is more reading than a draw should do.
-        for line in _wrap(
-            "`paradise assets extract` writes a prefab for a model that has none, unless "
-            "something already places its mesh. It is yours from then on.", 44
-        ):
-            layout.label(text=line)
+        # Only what stops THIS project playing: a missing CLI is the Project panel's to report,
+        # and saying it twice on one screen reads as two faults.
+        problems = play_problems(located)
+        if problems:
+            box = layout.box()
+            box.alert = True
+            for icon, message in problems:
+                box.label(text=message, icon=icon)
+
+        row = layout.row(align=True)
+        row.operator("paradise_assets.play", text="Build & Play", icon="PLAY").watch = False
+        row.operator("paradise_assets.play", text="Watch & Play", icon="FILE_REFRESH").watch = True
+
+        if located is not None:
+            _draw_session(layout, session, located.root)
+
+
+def _draw_session(layout, session, root: str) -> None:
+    """Whether the game is running, and why it stopped if it stopped on its own."""
+    process = session.process_for(root)
+    if process is not None:
+        row = layout.row(align=True)
+        row.label(text=f"Playing (pid {process.pid})", icon="RADIOBUT_ON")
+        row.operator("paradise_assets.stop_play", text="Stop", icon="PAUSE")
+        return
+
+    if (reason := session.exit_reason(root)) is not None:
+        box = layout.box()
+        box.alert = True
+        box.label(text="The game stopped on its own.", icon="ERROR")
+        for line in _wrap(reason, 44)[:3]:
+            box.label(text=line)
 
 
 class PARADISE_ASSETS_PT_object(_AssetsPanel, Panel):
     bl_label = "Components"
     bl_idname = "PARADISE_ASSETS_PT_object"
-    bl_parent_id = "PARADISE_ASSETS_PT_document"
 
     @classmethod
     def poll(cls, context):
-        return context.active_object is not None
+        return store.read_state(context.scene) is not None and context.active_object is not None
 
     def draw(self, context):
         layout = self.layout
-        obj = context.active_object
+        obj = component_ops.document_object(context)
 
-        guid = store.guid_of(obj)
+        guid = store.guid_of(obj) if obj is not None else None
         if guid is None:
             layout.label(text="Not a document object.", icon="DOT")
             return
 
+        if obj is not context.active_object:
+            layout.label(text=f"Shape of {obj.name}", icon="MESH_CUBE")
         layout.label(text=guid, icon="COPY_ID")
 
         vocabulary = component_ops.vocabulary_for(context)
@@ -280,9 +326,7 @@ class PARADISE_ASSETS_PT_object(_AssetsPanel, Panel):
             drawn.append((component, component_id, schema, edited))
             if schema is None or component_schema.is_format_owned(component_id):
                 continue
-            raw = component.get("data")
-            data = raw if isinstance(raw, dict) else {}
-            merged = component_ops.merged_data(obj, component_id, data)
+            merged = _live_payload(obj, component_id, schema, component)
             for item in schema.plan(merged):
                 if item.role not in (
                     component_schema.ROLE_LEAF, component_schema.ROLE_ROW
@@ -331,12 +375,20 @@ class PARADISE_ASSETS_PT_object(_AssetsPanel, Panel):
             _draw_schema_fields(box, context, obj, component, schema, edited)
 
 
-def _draw_schema_fields(box, context, obj, component: dict, schema, edited: dict) -> None:
-    """One component's fields, editable where the schema says they can be."""
+def _live_payload(obj, component_id: str, schema, component: dict) -> dict:
+    """The payload as the panel shows it: document, plus pending edits, plus what the shape
+    Empties say now. ONE function for the widget sync and the draw: when the two planned from
+    different payloads, a row the sync never saw drew as a label instead of a checkbox."""
     raw = component.get("data")
     data = raw if isinstance(raw, dict) else {}
-    component_id = str(component.get("id", ""))
     merged = component_ops.merged_data(obj, component_id, data)
+    return shapes.overlay_live(obj, component_id, schema, merged, shapes.default_row)
+
+
+def _draw_schema_fields(box, context, obj, component: dict, schema, edited: dict) -> None:
+    """One component's fields, editable where the schema says they can be."""
+    component_id = str(component.get("id", ""))
+    merged = _live_payload(obj, component_id, schema, component)
 
     for item in schema.plan(merged):
         value = edits.read_path(merged, item.path)
@@ -346,6 +398,43 @@ def _draw_schema_fields(box, context, obj, component: dict, schema, edited: dict
                 text=f"{item.path}: {component_schema.format_value(value)}",
                 icon="DECORATE_LOCKED",
             )
+            continue
+
+        if item.role == component_schema.ROLE_SHAPES:
+            row = box.row(align=True)
+            single = item.field.type != "array"
+            count = (1 if isinstance(value, dict) else 0) if single else (
+                len(value) if isinstance(value, list) else 0)
+            caption = "an Empty under this object" if single else "Empties under this object"
+            if not shapes.editable(obj, component_id):
+                row.label(text=f"{item.path} ({count})  — the prefab's; edit it there",
+                          icon="DECORATE_LOCKED")
+                continue
+            row.label(text=f"{item.path} ({count})  — {caption}", icon="MESH_CUBE")
+            if not single or count == 0:
+                for shape_type, icon in (
+                    ("Box", "CUBE"), ("Sphere", "SPHERE"), ("Capsule", "META_CAPSULE")
+                ):
+                    add = row.operator("paradise_assets.add_shape", text="", icon=icon)
+                    add.component_id = component_id
+                    add.field_name = item.path
+                    add.shape_type = shape_type
+                    add.single = single
+            continue
+
+        if item.role == component_schema.ROLE_ROW and _is_shape_row(item):
+            row = box.row(align=True)
+            shape_type = _shape_type_of(item, value)
+            select = row.operator(
+                "paradise_assets.select_shape",
+                text=f"{item.index}  {shape_type or 'shape'}", icon="RESTRICT_SELECT_OFF")
+            select.component_id = component_id
+            select.field_name = _shape_field_of(item)
+            select.index = item.index if item.index is not None else 0
+            drop = row.operator("paradise_assets.remove_shape", text="", icon="X")
+            drop.component_id = component_id
+            drop.field_name = select.field_name
+            drop.index = select.index
             continue
 
         if item.role == component_schema.ROLE_ARRAY:
@@ -375,6 +464,26 @@ def _draw_schema_fields(box, context, obj, component: dict, schema, edited: dict
             continue
 
         field_widgets.draw_item(box, context, obj, component_id, item, value, edited)
+
+
+def _is_shape_row(item) -> bool:
+    field = item.field
+    return field.authored_by == "shape" or any(c.authored_by == "shape" for c in field.fields)
+
+
+def _shape_field_of(item) -> str:
+    """The shape field a row belongs to: ``Value/0`` is a row of ``Value``; ``Volume`` is its own."""
+    head, _, tail = item.path.rpartition("/")
+    return head if tail.isdigit() else item.path
+
+
+def _shape_type_of(item, value) -> str | None:
+    if item.field.authored_by == "shape":
+        nested = value
+    else:
+        member = next((c for c in item.field.fields if c.authored_by == "shape"), None)
+        nested = value.get(member.name) if member is not None and isinstance(value, dict) else None
+    return nested.get("ShapeType") if isinstance(nested, dict) else None
 
 
 def _draw_meta(box, obj, component: dict) -> None:
@@ -445,9 +554,8 @@ def _payload_lines(data, prefix: str = "", depth: int = 0) -> list[str]:
 
 classes = (
     PARADISE_ASSETS_PT_document,
-    # Parents before children, or Blender warns about an unregistered bl_parent_id.
+    PARADISE_ASSETS_PT_project,
     PARADISE_ASSETS_PT_play,
-    PARADISE_ASSETS_PT_models,
     PARADISE_ASSETS_PT_object,
 )
 

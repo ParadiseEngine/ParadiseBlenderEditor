@@ -15,12 +15,40 @@ from .. import edits
 from ..document import project
 from . import store, sync
 
-__all__ = ["path_for", "refresh_from_document", "save", "try_open"]
+__all__ = ["path_for", "recent_documents", "refresh_from_document", "save", "try_open"]
 
 
 def path_for(layout: project.ProjectLayout, document_path: str) -> str:
     """Where this document's working file belongs."""
     return layout.blend_for(document_path)
+
+
+def recent_documents(layout: project.ProjectLayout, limit: int = 8) -> list[str]:
+    """Documents this machine has a working file for, most recently written first.
+
+    The workfile tree mirrors ``assets/``, so what it contains is a record of what was opened
+    here -- the only "recent" this addon has, since the document itself carries no session state
+    and the ``.blend`` is a cache. A workfile whose document is gone is skipped rather than
+    offered: opening it would fail, and a stale cache is no evidence the document still exists.
+    """
+    found: list[tuple[float, str]] = []
+    for directory, _dirs, names in os.walk(layout.editor_blend):
+        for name in names:
+            # Exactly ``.blend``: Blender's own ``.blend1`` backups sit beside them.
+            if not name.endswith(".blend"):
+                continue
+            workfile = os.path.join(directory, name)
+            relative = os.path.relpath(workfile, layout.editor_blend)
+            document = os.path.join(layout.assets, os.path.splitext(relative)[0] + ".prefab")
+            if not os.path.isfile(document):
+                continue
+            try:
+                found.append((os.path.getmtime(workfile), document))
+            except OSError:
+                continue
+
+    found.sort(reverse=True)
+    return [document for _mtime, document in found[:limit]]
 
 
 def save(layout: project.ProjectLayout, document_path: str) -> str | None:

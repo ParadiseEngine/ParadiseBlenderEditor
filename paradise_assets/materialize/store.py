@@ -13,6 +13,7 @@ import os
 import bpy
 
 from ..document import guid as document_guid
+from ..document import project
 
 __all__ = [
     "DocumentState",
@@ -22,6 +23,7 @@ __all__ = [
     "guid_of",
     "object_with_guid",
     "prefab_of",
+    "project_of",
     "read_state",
     "stamp_of",
     "tag_name",
@@ -34,6 +36,11 @@ GUID_KEY = "paradise_guid"
 
 #: Set on an object RESOLVED out of a prefab: saving one back would flatten the instance.
 DERIVED_KEY = "paradise_derived"
+
+#: JSON list of component ids the object's OWN file entry carries. Set on an instance, whose
+#: displayed payload folds the prefab's components in; absent on an ordinary object, where the
+#: payload is the entry.
+AUTHORED_KEY = "paradise_authored_components"
 
 #: The object's components as a JSON string. Read-only display data; never written back.
 COMPONENTS_KEY = "paradise_components"
@@ -99,6 +106,21 @@ def read_state(scene: bpy.types.Scene) -> DocumentState | None:
         return None
     stamp = _STAMPS.get(os.path.normcase(os.path.abspath(path)), scene.get(STAMP_KEY, ""))
     return DocumentState(path, stamp)
+
+
+def project_of(scene: bpy.types.Scene) -> project.ProjectLayout | None:
+    """The asset project this session belongs to: the open document's, else the one containing
+    the ``.blend`` itself.
+
+    The fallback is what makes the project-level actions (build, verify, watch) reachable before
+    any document is open -- a workfile under ``.editor/blend/`` is already inside its project,
+    and so is a ``.blend`` an author keeps beside their game. Without it those buttons could only
+    be offered from inside a document, which is the one place they are least needed.
+    """
+    state = read_state(scene)
+    if state is not None:
+        return project.locate(state.path)
+    return project.locate(bpy.data.filepath) if bpy.data.filepath else None
 
 
 def tag_object(obj: bpy.types.Object, guid: str, components: list) -> None:
@@ -173,6 +195,26 @@ def object_with_guid(scene: bpy.types.Scene, guid: str | None):
         if found is not None and found.lower() == needle:
             return obj
     return None
+
+
+def tag_authored(obj: bpy.types.Object, component_ids) -> None:
+    """Record which components this instance's own entry authors (lower-cased ids)."""
+    obj[AUTHORED_KEY] = json.dumps(sorted({str(c).lower() for c in component_ids}))
+
+
+def authors(obj: bpy.types.Object, component_id: str) -> bool:
+    """Whether the object's OWN file entry carries this component -- the only components the
+    save writes for it. An ordinary object authors everything it shows; an instance only what
+    its entry adds over the prefab; a derived child nothing."""
+    if is_derived(obj):
+        return False
+    raw = obj.get(AUTHORED_KEY)
+    if not isinstance(raw, str):
+        return True
+    try:
+        return component_id.lower() in json.loads(raw)
+    except json.JSONDecodeError:
+        return True
 
 
 def is_derived(obj: bpy.types.Object) -> bool:

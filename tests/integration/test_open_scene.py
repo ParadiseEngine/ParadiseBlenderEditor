@@ -186,9 +186,10 @@ def main() -> int:
         shutil.copy2(documents[0], copy)
         open_document(copy, layout)
 
-        # A Blender-only helper object, the way an author's rig or guide empty appears: no
-        # identity, so a parent link to it has nothing to record.
-        helper = bpy.data.objects.new("RigHelper", None)
+        # A Blender-only helper object, the way an author's rig or guide mesh appears: no
+        # identity, so a parent link to it has nothing to record. (An EMPTY with document
+        # children is a group and gets adopted instead -- see test_groups.py.)
+        helper = bpy.data.objects.new("RigHelper", bpy.data.meshes.new("RigHelper"))
         bpy.context.scene.collection.objects.link(helper)
         entity = next(o for o in bpy.context.scene.collection.all_objects if store.guid_of(o))
         entity.parent = helper

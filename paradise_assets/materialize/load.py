@@ -11,11 +11,11 @@ import tomllib
 import bpy
 from mathutils import Quaternion, Vector
 
-from ..document import axes, mesh_document, project, resolve, schema, well_known
+from ..document import axes, component_schema, mesh_document, project, resolve, schema, well_known
 from ..document.prefab import PrefabDocument, PrefabObject
 from ..document.prefab import loads as parse_document
-from . import store
-from .meshes import MeshLibrary
+from . import shapes, store
+from .meshes import LIBRARY_COLLECTION, MeshLibrary
 
 __all__ = ["LoadResult", "load_document"]
 
@@ -48,11 +48,23 @@ def load_document(
     document: PrefabDocument,
     scene_path: str,
     layout: project.ProjectLayout,
+    *,
+    clear_startup: bool = False,
 ) -> LoadResult:
-    """Materialize ``document`` into ``scene``, replacing anything already loaded there."""
+    """Materialize ``document`` into ``scene``, replacing anything already loaded there.
+
+    ``clear_startup`` asks for Blender's startup content to go with it (see
+    :func:`_startup_content`). Opt-in, and only the operator that opens a document FOR A PERSON
+    passes it: this function is also how a thumbnail is rendered, how a reload rebuilds, and how
+    an extraction re-materializes, and each of those has arranged the scene it hands over."""
     result = LoadResult()
     result.read(scene_path)
+    # Captured before anything changes, dropped after the clear and before anything is created:
+    # the clear owns the document objects, and doing it in this order means no captured
+    # reference can have been freed under us and no name is taken when the document wants it.
+    startup = _startup_content(scene) if clear_startup else None
     _clear_previous(scene)
+    _drop_startup_content(startup)
 
     mesh_fields = schema.load(layout.root)
     if not mesh_fields.from_schema:
@@ -69,6 +81,16 @@ def load_document(
 
     authored = {entry.guid for entry in document.objects if entry.guid is not None}
 
+    # Which prefab each instance instantiates. Read BEFORE the expansion, which replaces an
+    # instance entry with the prefab's resolved root and so consumes the reference: without this
+    # the only object that knows is one added in this session (instancing.add_instance), and
+    # "open the prefab this came from" would work for those alone.
+    instanced = {
+        entry.guid: entry.prefab for entry in document.objects
+        if entry.guid is not None and entry.prefab is not None
+    }
+
+    own_entries = {entry.guid: entry for entry in document.objects if entry.guid is not None}
     library = MeshLibrary(scene, result.warn)
     created: dict[str, bpy.types.Object] = {}
 
@@ -77,8 +99,19 @@ def load_document(
         if entry.guid not in authored:
             store.mark_derived(obj)
             result.derived += 1
+        if (reference := instanced.get(entry.guid)) is not None:
+            store.tag_prefab(obj, reference.guid, reference.path)
+            store.tag_authored(obj, [c.id for c in own_entries[entry.guid].components])
         created[entry.guid] = obj
         result.objects += 1
+
+    # Shapes only for what this DOCUMENT authors. An instance's own entry is read from the
+    # file, not the expansion: the expansion folds the prefab's components in, and a shape the
+    # prefab declares is edited in the prefab. A resolved child is not an object at all.
+    vocabulary = component_schema.load(layout.root)
+    for entry in document.objects:
+        if entry.guid in created:
+            shapes.materialize(created[entry.guid], _components_payload(entry), vocabulary)
 
     result.instances = expansion.expanded
     document = expansion.document
@@ -89,9 +122,9 @@ def load_document(
     for entry in document.objects:
         if entry.parent is None:
             continue
-        child = created[entry.guid]
+        child = created.get(entry.guid)
         parent = created.get(entry.parent)
-        if parent is None:
+        if child is None or parent is None:
             result.warn(
                 f"{entry.name or entry.guid}: its parent {entry.parent} could not be materialized, "
                 "so it is shown unparented"
@@ -246,11 +279,62 @@ def _mesh_reference(entry: PrefabObject, mesh_fields: schema.MeshFields) -> str 
     return None
 
 
+def _startup_content(scene: bpy.types.Scene):
+    """Blender's startup file, when that is all this session is; ``None`` otherwise.
+
+    A fresh Blender opens on the startup file, so a document materialized into it lands beside a
+    Cube, a Camera, a Light and the ``Collection`` holding them -- clutter in the Outliner, and
+    three objects the author has to learn are not part of the level (they are not document
+    objects, so a save ignores them, which makes it worse rather than better: they persist,
+    invisibly meaningless, into the working file).
+
+    The gate is "never saved AND never touched". ``is_dirty`` is what separates the startup file
+    from a session someone has done unsaved work in, and it is the same signal the Asset
+    Browser's open entry asks about before replacing a session. Anything else -- a saved .blend,
+    a workfile reopened, an author who modelled something first -- is content this addon has no
+    business deleting, so it is left entirely alone.
+
+    It is NOT enough on its own, which is why the caller has to ask as well. ``is_dirty`` follows
+    UNDO PUSHES, not data changes: every operator a person runs makes one, and a script that
+    links an object makes none. ``thumbnail.py`` is exactly that script -- it starts an empty
+    file and links its own camera and key light before materializing -- so a gate that trusted
+    ``is_dirty`` alone deleted the camera and rendered every prefab black.
+    """
+    if bpy.data.filepath or bpy.data.is_dirty:
+        return None
+    # Document objects are `_clear_previous`'s, not ours. A pristine GUI session holds none, but
+    # a scripted one loading twice does, and capturing those meant handing already-freed
+    # references to `objects.remove`.
+    return (
+        [obj for obj in scene.collection.all_objects if store.guid_of(obj) is None],
+        list(scene.collection.children),
+    )
+
+
+def _drop_startup_content(captured) -> None:
+    """Remove what :func:`_startup_content` found. Objects first, so a collection is empty by the
+    time it goes; a collection still holding something else -- the mesh library from an earlier
+    load in the same session -- is kept, because emptiness is the only claim we have on it."""
+    if captured is None:
+        return
+
+    objects, collections = captured
+    for obj in objects:
+        bpy.data.objects.remove(obj, do_unlink=True)
+    for collection in collections:
+        if collection.name == LIBRARY_COLLECTION or collection.all_objects or collection.children:
+            continue
+        bpy.data.collections.remove(collection)
+
+
 def _clear_previous(scene: bpy.types.Scene) -> None:
     """Remove a previous load's objects (by GUID marker, so the user's own survive), keeping
     the mesh library so reload does not re-import every GLB. Drops pending edits too, which is
     why ``workfile.refresh_from_document`` refuses to run this over unsaved work."""
-    doomed = [obj for obj in scene.collection.all_objects if store.guid_of(obj) is not None]
+    doomed = [
+        obj for obj in scene.collection.all_objects
+        if store.guid_of(obj) is not None or shapes.is_shape(obj)
+    ]
     for obj in doomed:
         bpy.data.objects.remove(obj, do_unlink=True)
 

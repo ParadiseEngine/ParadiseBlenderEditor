@@ -25,7 +25,7 @@ from . import catalogue, watch
 from .document import atomic, extract, new_prefab, project
 from .document import prefab as prefab_document
 from .document.prefab import PrefabDocumentError, loads
-from .materialize import instancing, load, save, store, workfile
+from .materialize import grouping, instancing, load, save, store, workfile
 
 __all__ = ["classes"]
 
@@ -49,6 +49,12 @@ class PARADISE_ASSETS_OT_open_prefab(Operator):
     filter_glob: StringProperty(default="*.prefab", options={"HIDDEN"})  # type: ignore[valid-type]
 
     def invoke(self, context, event):
+        # A panel row for a specific prefab sets ``filepath`` and means "open THAT" -- putting a
+        # file browser in front of it would ask the author to pick the file they just clicked.
+        # Panel buttons get fresh property defaults per draw, so the plain Open… button (which
+        # sets nothing) still browses.
+        if self.filepath:
+            return self.execute(context)
         context.window_manager.fileselect_add(self)
         return {"RUNNING_MODAL"}
 
@@ -88,8 +94,11 @@ class PARADISE_ASSETS_OT_open_prefab(Operator):
             self.report({"ERROR"}, f"Could not read {path}: {error}")
             return {"CANCELLED"}
 
-        # try_open may have replaced the session; use the scene we have NOW.
-        result = load.load_document(bpy.context.scene, document, path, layout)
+        # try_open may have replaced the session; use the scene we have NOW. clear_startup:
+        # this is the one path a person takes to open a document into a Blender that has nothing
+        # else in it, and the startup file's cube is not part of their level.
+        result = load.load_document(
+            bpy.context.scene, document, path, layout, clear_startup=True)
         for warning in result.warnings[:5]:
             self.report({"WARNING"}, warning)
 
@@ -138,6 +147,86 @@ class PARADISE_ASSETS_OT_reload_prefab(Operator):
         return {"FINISHED"}
 
 
+class PARADISE_ASSETS_OT_recreate_workfile(Operator):
+    """Delete this document's working .blend and build a new one from the document"""
+
+    bl_idname = "paradise_assets.recreate_workfile"
+    bl_label = "Recreate Working File"
+    # No UNDO: it deletes a file and replaces the session; an undo step over that is a lie.
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context):
+        return store.read_state(context.scene) is not None
+
+    def invoke(self, context, event):
+        # Always asks. Reload keeps what the workfile holds and this does not, so the difference
+        # between the two buttons is exactly what an author would lose by picking the wrong one.
+        return context.window_manager.invoke_confirm(self, event)
+
+    def execute(self, context):
+        state = store.read_state(context.scene)
+        if state is None:
+            self.report({"ERROR"}, "No prefab document is open.")
+            return {"CANCELLED"}
+
+        document_path = state.path
+        layout = project.locate(document_path)
+        if layout is None:
+            self.report({"ERROR"}, f"No asset project at or above {document_path}")
+            return {"CANCELLED"}
+
+        # Read BEFORE deleting anything. A document that will not parse must leave the author
+        # with the working file they still had, not with neither it nor a scene.
+        try:
+            with open(document_path, encoding="utf-8") as handle:
+                document = loads(handle.read(), document_path)
+        except (PrefabDocumentError, OSError) as error:
+            self.report({"ERROR"}, f"{error} — the working file was left alone.")
+            return {"CANCELLED"}
+
+        discarded = _discard_workfile(layout, document_path)
+
+        # An empty file, not the startup one: this is a rebuild of a cache, and the cube would
+        # only have to be cleared again. `read_homefile`, never `read_factory_settings`, which
+        # resets preferences and so disables this addon mid-operator.
+        bpy.ops.wm.read_homefile(use_empty=True)
+
+        # The session was replaced; use the scene we have NOW.
+        scene = bpy.context.scene
+        result = load.load_document(scene, document, document_path, layout)
+        for warning in result.warnings[:5]:
+            self.report({"WARNING"}, warning)
+
+        written = workfile.save(layout, document_path)
+        if written is None:
+            self.report({"WARNING"}, "could not write the working file under .editor/blend")
+
+        _start_watch(self, layout)
+        self.report(
+            {"INFO"},
+            f"Recreated {os.path.basename(document_path)} from the document: "
+            f"{result.objects} object(s), {result.meshes} mesh(es)"
+            + (f"; discarded {discarded} cached file(s)" if discarded else ""),
+        )
+        return {"FINISHED"}
+
+
+def _discard_workfile(layout: project.ProjectLayout, document_path: str) -> int:
+    """Remove the working file and Blender's own backup beside it; how many went.
+
+    The backup goes too, or `.blend1` is a copy of exactly the state being thrown away, one
+    File > Recover Last Session from coming back.
+    """
+    target = workfile.path_for(layout, document_path)
+    gone = 0
+    for path in (target, target + "1"):
+        with contextlib.suppress(OSError):
+            os.remove(path)
+            gone += 1
+    return gone
+
+
 class PARADISE_ASSETS_OT_save_prefab(Operator):
     """Write placement changes back to the prefab document"""
 
@@ -184,20 +273,19 @@ class PARADISE_ASSETS_OT_save_prefab(Operator):
 
 
 class PARADISE_ASSETS_OT_toggle_watch(Operator):
-    """Start or stop the asset watcher for this document's project"""
+    """Start or stop the asset watcher for this project"""
 
     bl_idname = "paradise_assets.toggle_watch"
     bl_label = "Toggle Asset Watch"
 
     @classmethod
     def poll(cls, context):
-        return store.read_state(context.scene) is not None
+        return store.project_of(context.scene) is not None
 
     def execute(self, context):
-        state = store.read_state(context.scene)
-        layout = project.locate(state.path)
+        layout = store.project_of(context.scene)
         if layout is None:
-            self.report({"ERROR"}, "No asset project for the open document")
+            self.report({"ERROR"}, "No asset project for this file")
             return {"CANCELLED"}
 
         if watch.is_running(layout.root):
@@ -417,6 +505,37 @@ _CATALOGUE_SCRIPT = (
 )
 
 
+class PARADISE_ASSETS_OT_group_objects(Operator):
+    """Put the selected document objects under a new group, which is an Empty they are parented to"""
+
+    bl_idname = "paradise_assets.group_objects"
+    bl_label = "Group Objects"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        if store.read_state(context.scene) is None:
+            return False
+        selected = [obj for obj in context.selected_objects if store.guid_of(obj) is not None]
+        return bool(selected) and all(
+            obj.parent is not None and not store.is_derived(obj) for obj in selected)
+
+    def execute(self, context):
+        members = [obj for obj in context.selected_objects if store.guid_of(obj) is not None]
+        try:
+            group = grouping.group_objects(context.scene, members, context.active_object)
+        except grouping.GroupError as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+
+        for obj in context.selected_objects:
+            obj.select_set(False)
+        group.select_set(True)
+        context.view_layer.objects.active = group
+        self.report({"INFO"}, f"Grouped {len(members)} object(s) under '{group.name}'. Save to keep it.")
+        return {"FINISHED"}
+
+
 class PARADISE_ASSETS_OT_refresh_catalogue(Operator):
     """Regenerate the Asset Browser catalogue of this project's prefabs"""
 
@@ -429,13 +548,12 @@ class PARADISE_ASSETS_OT_refresh_catalogue(Operator):
 
     @classmethod
     def poll(cls, context):
-        return store.read_state(context.scene) is not None
+        return store.project_of(context.scene) is not None
 
     def execute(self, context):
-        state = store.read_state(context.scene)
-        layout = project.locate(state.path)
+        layout = store.project_of(context.scene)
         if layout is None:
-            self.report({"ERROR"}, "No asset project found for the open document")
+            self.report({"ERROR"}, "No asset project found for this file")
             return {"CANCELLED"}
         self._root = layout.root
 
@@ -535,10 +653,12 @@ class PARADISE_ASSETS_FH_prefab(bpy.types.FileHandler):
 classes = (
     PARADISE_ASSETS_OT_open_prefab,
     PARADISE_ASSETS_OT_reload_prefab,
+    PARADISE_ASSETS_OT_recreate_workfile,
     PARADISE_ASSETS_OT_save_prefab,
     PARADISE_ASSETS_OT_toggle_watch,
     PARADISE_ASSETS_OT_add_prefab_instance,
     PARADISE_ASSETS_OT_extract_prefab,
+    PARADISE_ASSETS_OT_group_objects,
     PARADISE_ASSETS_OT_refresh_catalogue,
     PARADISE_ASSETS_FH_prefab,
 )

@@ -23,6 +23,7 @@ __all__ = [
     "ROLE_LEAF",
     "ROLE_LOCKED",
     "ROLE_ROW",
+    "ROLE_SHAPES",
     "ComponentSchema",
     "FieldSchema",
     "PlanItem",
@@ -58,6 +59,9 @@ ROLE_LEAF = "leaf"
 ROLE_ARRAY = "array"
 ROLE_ROW = "row"
 ROLE_LOCKED = "locked"
+#: A list of host shapes: rows are Empties in the scene, and only their non-geometry members
+#: are typed here.
+ROLE_SHAPES = "shapes"
 
 
 class FieldSchema:
@@ -102,8 +106,13 @@ class FieldSchema:
         if is_host_locked(self):
             return False
         if self.type == "array":
-            # Host-baked items stay locked, so no Add button over them either.
-            return self.items is not None and not is_host_locked(self.items)
+            # Host-baked items stay locked, so no Add button over them either; a shape list's
+            # Add is an Empty, not a row.
+            return (
+                self.items is not None
+                and not is_host_locked(self.items)
+                and _shape_member(self) is None
+            )
         return self.type in EDITABLE_TYPES or is_asset_field(self)
 
     def default_value(self):
@@ -224,16 +233,69 @@ def _walk(
         _walk_field(field, path, value, items, node if isinstance(node, dict) else {})
 
 
+_SHAPE_KIND = "shape"
+
+
+def _shape_row(field: FieldSchema) -> FieldSchema | None:
+    """The row type of a shape field: the list's item type or the field itself. A row is a shape
+    when it IS the host shape (``authoredBy: shape`` on it) or carries a member that is."""
+    if field.type == "array":
+        row = field.items
+    elif field.type == "object":
+        row = field
+    else:
+        return None
+    if row is None:
+        return None
+    if row.authored_by == _SHAPE_KIND or any(c.authored_by == _SHAPE_KIND for c in row.fields):
+        return row
+    return None
+
+
+def _shape_member(field: FieldSchema) -> FieldSchema | None:
+    """Backwards name: whether *field* is a shape field at all. Kept for the two callers."""
+    return _shape_row(field)
+
+
+def _walk_shapes(field: FieldSchema, path: str, value, items: list[PlanItem]) -> None:
+    """A shape list, or one shape: a header, then per row the members the Empty does not decide.
+    A row that IS the shape has none. A single row keeps the field's own path, so a game member
+    beside the geometry is ``Volume/IsTrigger``."""
+    row_type = _shape_row(field)
+    member = next((c for c in row_type.fields if c.authored_by == _SHAPE_KIND), None)
+    items.append(PlanItem(path, field, ROLE_SHAPES))
+    if field.type == "array":
+        rows = [(join_path(path, str(i)), r) for i, r in enumerate(value)] if isinstance(value, list) else []
+    else:
+        rows = [(path, value)] if isinstance(value, dict) else []
+    for index, (row_path, row) in enumerate(rows):
+        items.append(PlanItem(row_path, row_type, ROLE_ROW, index=index))
+        if row_type.authored_by == _SHAPE_KIND:
+            continue
+        node = row if isinstance(row, dict) else {}
+        for child in row_type.fields:
+            if child is member:
+                continue
+            _walk_field(child, join_path(row_path, child.name), node.get(child.name), items, node)
+
+
 def _walk_field(
     field: FieldSchema, path: str, value, items: list[PlanItem], siblings: dict
 ) -> None:
     if not _is_visible(field, siblings):
+        return
+    # A shape before the host lock: the field IS host-authored, and the Empty is its editor.
+    if _shape_row(field) is not None:
+        _walk_shapes(field, path, value, items)
         return
     if is_host_locked(field):
         items.append(PlanItem(path, field, ROLE_LOCKED))
         return
     # Arrays before the asset check, or ``assetKinds`` on the list makes it one picker.
     if field.type == "array":
+        if _shape_member(field) is not None:
+            _walk_shapes(field, path, value, items)
+            return
         if field.items is None or is_host_locked(field.items):
             items.append(PlanItem(path, field, ROLE_LOCKED))
             return

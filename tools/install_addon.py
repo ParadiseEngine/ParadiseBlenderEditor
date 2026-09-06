@@ -7,7 +7,7 @@ for distribution, build a proper extension zip -- from the package directory, wh
 where ``blender_manifest.toml`` lives and what Blender treats as the extension root::
 
     mkdir -p dist
-    blender --command extension build --source-dir paradise_blender --output-dir dist
+    blender --command extension build --source-dir paradise_assets --output-dir dist
 
 Pointing ``--source-dir`` at the repository root fails: there is no ``__init__.py``
 there, and the manifest is deliberately not there either.
@@ -29,19 +29,14 @@ import os
 import platform
 import sys
 
-#: The extensions this repository ships. Both are linked by default, and both can be enabled at
-#: once -- they are complements during the migration, not alternatives:
-#:
-#:   paradise_blender  the .blend is the source of truth and exports to data/
-#:   paradise_assets   assets/ is the source of truth and the .blend is a cache of one scene
-#:
-#: Pass a package name to link just one.
-PACKAGES = ("paradise_blender", "paradise_assets")
+#: The extensions this repository ships. A tuple rather than a constant because this repo
+#: shipped two until the ``.blend``-is-truth exporter was removed (#35), and the loop that
+#: linked both is what makes adding a second one again a one-line change.
+PACKAGES = ("paradise_assets",)
 
 #: How each appears in Preferences > Add-ons, and what it is for.
 DISPLAY_NAMES = {
-    "paradise_blender": "'Paradise Engine Tools'  — the .blend is the source, exported to data/",
-    "paradise_assets": "'Paradise Assets'        — open assets/levels/*.prefab and place things in it",
+    "paradise_assets": "'Paradise Assets'  — open assets/**/*.prefab and place things in it",
 }
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

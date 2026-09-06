@@ -60,8 +60,7 @@ paradise_assets/
   document/     ★ pure Python, imports no bpy — the *.prefab format and the canonical TOML writer
   materialize/    document <-> Blender objects: load, save, mesh instancing, ID-property store
   ops.py          open_prefab / save_prefab / reload_prefab, add_prefab_instance,
-                  extract_prefab, mirror_model_prefabs, refresh_catalogue
-  model_watch.py  the timer half of the model prefab mirror (the diff itself is bpy-free)
+                  extract_prefab, refresh_catalogue
   ui.py           the Paradise Assets sidebar tab
 tools/
   ParadiseBlenderBridge/   .NET CLI: navmesh bake + contract conformance check
@@ -233,48 +232,32 @@ only in `<asset>.meta`, and `paradise assets watch` runs the C# `SidecarMaintain
 a sidecar for any file under `assets/` lacking one. Two minters race and the loser's guid is
 dropped with a `Conflicted` log line, so `document/sidecar.py` has `read` and `wait_for` and
 deliberately no `write`. A creation therefore has a prerequisite rather than an ordering rule:
-no watcher, no identity, no new prefab. `model_watch.ensure_watcher` starts one before anything
+no watcher, no identity, no new prefab. `watch.ensure` starts one before anything
 is created, and the extract operator refuses up front rather than after rewriting the level.
 
 Batch the wait, don't repeat it. The watcher reconciles a set of new files together, so waiting
-per file turns one reconcile into one timeout per file — that is how generating a project's
-worth of model prefabs stalled after the first two. `new_prefab.write` then `identify_all`
+per file turns one reconcile into one timeout per file. `new_prefab.write` then `identify_all`
 under a single deadline is the shape.
 
 Two deliberate divergences from C# `SidecarMeta.Parse`, both because this side only READS: a
 missing `schema_version` is accepted, and a stray root scalar (a legacy `kind = "document"`) is
 ignored rather than refusing the document. C# refuses because its next rewrite would drop the
 key; refusing here would cost the asset every reference to it — no catalogue entry, no pickable
-reference, invisible to the model mirror. A *declared* version this build cannot read is still
-refused.
+reference. A *declared* version this build cannot read is still refused.
 
-**`meta.GeneratedFrom = "<model guid>"` on a prefab's root means "the model mirror owns this
-file".** Not its path, not its file name, and deliberately not its sidecar: sidecars belong to
-the watcher, and a settings domain of ours there drew a `verify` warning per prefab for a domain
-no build step reads. `meta` is the right home because it is open — the reader accepts an unknown
-field and the resolver carries it through. A prefab without the field is hand-authored:
-never rewritten, never deleted, even sitting exactly where a generated one would go.
-
-Keying on the model's IDENTITY rather than its name is what makes a rename an update instead of
-a delete-and-create. And a renamed model does not rename its prefab: the reference's guid is the
-identity and the path a hint, so the mirror refreshes the path inside its own document and
-leaves the file where every level already points at it. **The addon never calls
-`paradise assets mv`** — a rename from a timer is a synchronous CLI stall to fix nothing.
+**A generated model prefab is a SEED, not a projection.** `paradise assets extract` writes one
+beside a newly imported GLB so it is placeable straight away, and from that moment it is an
+ordinary document its author owns: nothing records which model it came from, nothing updates it,
+and nothing deletes it. The mirror that used to do all three, and the `meta.GeneratedFrom` marker
+it needed, were removed (ParadiseEngine#256) — a model is one hop away through the mesh
+document's `source` when anyone actually needs it.
 
 **A rigged model gets a different component, and that is read from the model.** `document/gltf.py`
 parses only the GLB's JSON chunk (never the geometry) and calls a non-empty `skins` array a rig.
-There are two preferences, static and skinned, because ShiningPie declares two mesh components
-and authoring a rigged model as static gives a prefab that loads, shows the mesh, and is the
-wrong kind of thing in the game. The mirror skips what it has no component for rather than
-guessing; a project with no rigged models never needs the skinned one.
-
-**The model prefab mirror is opt-in, and that is not caution for its own sake.** It is the only
-thing in `paradise_assets` that deletes a file. `mirror_model_prefabs` defaults to `False`, a
-deletion waits for a model to have been gone for several consecutive polls AND several seconds
-(a Finder move reaches a watcher as a delete followed by an add, with the identity relinked in
-between), and a prefab any document still instantiates is never deleted at all. The one-shot
-"Generate Model Prefabs" operator runs a full pass without arming the timer, which is how to
-try it.
+`extract` reads the game's authoring schema for a mesh-bearing component and picks the skinned
+one for a rigged model, because authoring a rigged model as static gives a prefab that loads,
+shows the mesh, and is the wrong kind of thing in the game. It warns and writes a prefab with no
+mesh rather than guessing when the schema names none.
 
 **Extraction keeps the extracted object's identity on the INSTANCE, and gives the prefab root a
 new one.** That is what the resolver does (`resolve.py`: the resolved root's guid IS the instance

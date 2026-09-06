@@ -4,10 +4,12 @@ and ``transform`` stay live from Blender, host-baked fields stay locked."""
 from __future__ import annotations
 
 import os
+import time
 
 from bpy.types import Panel
 
-from . import component_ops, edits, field_widgets, model_watch, watch
+from . import component_ops, edits, field_widgets, watch
+from .document import assets as asset_index
 from .document import component_schema, project, well_known
 from .materialize import save, store, sync
 
@@ -138,8 +140,29 @@ def _draw_watch(layout, context) -> None:
             box.label(text=line)
 
 
+#: Listing models walks assets/, which a draw must not do on every redraw. Cached per project
+#: and refreshed no more often than this: a panel showing a two-second-old answer is fine, one
+#: that walks the tree at redraw rate is not.
+_MODELS_TTL = 2.0
+
+#: project root -> (taken at, model paths)
+_models_cache: dict[str, tuple[float, list[str]]] = {}
+
+
+def _models(layout) -> list[str]:
+    """Every model in the project, by project-relative path."""
+    cached = _models_cache.get(layout.root)
+    now = time.monotonic()
+    if cached is not None and now - cached[0] < _MODELS_TTL:
+        return cached[1]
+
+    paths = [model.path for model in asset_index.list_assets(layout, [".glb"])]
+    _models_cache[layout.root] = (now, paths)
+    return paths
+
+
 class PARADISE_ASSETS_PT_models(_AssetsPanel, Panel):
-    """One prefab per model, generated and kept in step."""
+    """The models this project holds. Read-only: `paradise assets extract` writes their prefabs."""
 
     bl_label = "Model Prefabs"
     bl_idname = "PARADISE_ASSETS_PT_models"
@@ -151,46 +174,29 @@ class PARADISE_ASSETS_PT_models(_AssetsPanel, Panel):
         return store.read_state(context.scene) is not None
 
     def draw(self, context):
-        from .prefs import get_preferences
-
         layout = self.layout
         state = store.read_state(context.scene)
         located = project.locate(state.path) if state is not None else None
         if located is None:
             return
 
-        # Cached on the dump's stamp, or this would parse the schema on every redraw. The
-        # skinned half is offered unconditionally here: the panel cannot know whether the
-        # project has rigged models without walking every GLB, which a draw must not do.
-        choice, problem = model_watch.mesh_choice(located)
+        models = _models(located)
+        if not models:
+            layout.label(text="No models in this project.", icon="INFO")
+            return
 
-        preferences = get_preferences(context)
-        if preferences is not None:
-            layout.prop(preferences, "mirror_model_prefabs")
+        for path in models:
+            layout.label(text=os.path.basename(path), icon="MESH_DATA")
 
-        for label, component, preference in (
-            ("Static", choice.static, "static_mesh_component"),
-            ("Skinned", choice.skinned, "skinned_mesh_component"),
+        # Deliberately says nothing about WHICH models have a prefab. Where one lands is
+        # `[glb] extract`, else project.toml's `[extract] directory`, else beside the model —
+        # so "is there one beside it" is the wrong question on a project that configures either,
+        # and answering the right one is more reading than a draw should do.
+        for line in _wrap(
+            "`paradise assets extract` writes a prefab for a model that has none, unless "
+            "something already places its mesh. It is yours from then on.", 44
         ):
-            row = layout.row(align=True)
-            row.label(text=label)
-            row.operator_menu_enum(
-                "paradise_assets.set_mesh_component", "component",
-                text=component.type_name.rsplit(".", 1)[-1] if component is not None else "Choose…",
-                icon="MESH_DATA",
-            ).preference = preference
-
-        if problem is not None:
-            box = layout.box()
-            box.alert = True
-            for index, line in enumerate(_wrap(problem, 44)[:4]):
-                box.label(text=line, icon="ERROR" if index == 0 else "NONE")
-
-        layout.operator("paradise_assets.mirror_model_prefabs", icon="FILE_REFRESH")
-
-        last = model_watch.last_report(located.root)
-        if last is not None:
-            layout.label(text=f"Last: {last[:60]}", icon="INFO")
+            layout.label(text=line)
 
 
 class PARADISE_ASSETS_PT_object(_AssetsPanel, Panel):

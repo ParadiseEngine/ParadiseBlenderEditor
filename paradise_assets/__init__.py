@@ -54,10 +54,8 @@ def register() -> None:
 def unregister() -> None:
     import bpy
 
-    from . import browser, dropped, field_widgets, model_watch, watch
+    from . import browser, dropped, field_widgets, watch
     from .materialize import sync
-
-    model_watch.stop_all()
     browser.unregister_menu()
     dropped.unregister_handler()
     sync.unregister_handler()

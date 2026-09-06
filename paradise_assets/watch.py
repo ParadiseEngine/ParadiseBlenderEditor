@@ -265,7 +265,6 @@ def adopt_loaded_file(*_args) -> None:
     if not hasattr(bpy.data, "scenes"):
         return
 
-    from . import model_watch
     from .document import project as project_layout
     from .materialize import store, workfile
 
@@ -289,20 +288,12 @@ def adopt_loaded_file(*_args) -> None:
             watch_problem = start_for(located.root)
             if watch_problem:
                 print(f"[paradise_assets] {watch_problem}")
-            model_watch.start(located.root)
 
         # The old file's projects, no longer open, lose their watcher; a shared one survives.
         wanted = {_normalize(root) for root in seen}
         for root in list(_WATCHERS):
             if root not in wanted:
                 stop(root)
-        # Same for the model mirror's poll, or opening another project keeps writing prefabs
-        # into the one before it.
-        for root in list(model_watch.roots()):
-            if root not in seen:
-                model_watch.stop(root)
-        if not seen:
-            model_watch.stop_all()
     finally:
         _adopting = False
 
@@ -342,3 +333,16 @@ def unregister_handler() -> None:
 
 #: Quitting is the case ``load_pre`` cannot see; a crash or SIGKILL is covered by nothing.
 atexit.register(stop_all)
+
+
+def ensure(project_root: str) -> str | None:
+    """Make sure the project has a watcher to mint sidecars, or say why it cannot have one."""
+    if is_running(project_root):
+        return None
+    problem = start(project_root)
+    if problem is None:
+        return None
+    return (
+        f"{problem} The asset watcher is what gives a new prefab its identity, so nothing can "
+        "be created without it."
+    )

@@ -1,4 +1,4 @@
-"""Creating prefabs from inside Blender: extraction, and the model prefab mirror.
+"""Creating prefabs from inside Blender: extraction.
 
     blender --background --factory-startup --python tests/integration/test_create_prefab.py -- <project>
 
@@ -15,8 +15,7 @@ against the tool that actually ends it.
 
 THE test is that an extraction changes nothing you can see: the same objects stand in the same
 places afterwards, because the instance keeps the extracted object's identity and its placement
-while the prefab holds the shape. The mirror's test is the opposite one -- it must NOT touch a
-hand-authored prefab, and must not delete anything until a model has really gone.
+while the prefab holds the shape.
 """
 
 from __future__ import annotations
@@ -27,7 +26,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import uuid
 
 import bpy
 
@@ -35,15 +33,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 import addon_utils
 
-from paradise_assets import model_watch, watch
+from paradise_assets import watch
+from paradise_assets.document import prefab as prefab_document
 from paradise_assets.document import (
-    model_prefabs,
     project,
-    schema,
     sidecar,
     well_known,
 )
-from paradise_assets.document import prefab as prefab_document
 from paradise_assets.materialize import load, save, store
 from paradise_assets.play import host
 
@@ -151,15 +147,11 @@ def test_registration() -> None:
     print("\n== the addon registers, with the two new operators ==")
     # Against bpy.types: `bpy.ops.<x>.<y>` hands back a callable stub whatever the name, so
     # hasattr on it would pass for an operator that does not exist.
-    for name in ("EXTRACT_PREFAB", "MIRROR_MODEL_PREFABS", "SET_MESH_COMPONENT"):
+    for name in ("EXTRACT_PREFAB",):
         check(
             hasattr(bpy.types, f"PARADISE_ASSETS_OT_{name.lower()}"),
             f"paradise_assets.{name.lower()} is registered",
         )
-
-    preferences = bpy.context.preferences.addons["paradise_assets"].preferences
-    # The mirror deletes files, so an addon update must never turn it on under an author.
-    check(preferences.mirror_model_prefabs is False, "the model prefab mirror ships off")
 
 
 def test_extraction(source: str) -> None:
@@ -349,226 +341,6 @@ def _by_name(scene) -> dict[str, tuple]:
     }
 
 
-def test_mirror(source: str) -> None:
-    print("\n== the mirror generates one prefab per model ==")
-    with tempfile.TemporaryDirectory() as work, watching() as _stop:
-        root = copy_project(source, os.path.join(work, "project"))
-        layout = project.locate(root)
-        preferences = bpy.context.preferences.addons["paradise_assets"].preferences
-        preferences.static_mesh_component = STATIC_COMPONENT
-        preferences.skinned_mesh_component = SKINNED_COMPONENT
-
-        # The mirror starts a watcher only when it CREATES something. A project the engine's
-        # extractor has already given a prefab per model creates nothing on the first pass, and
-        # this test's own writes below (the holder level) still need identities minted.
-        check(model_watch.ensure_watcher(layout.root) is None, "a watcher runs for the copied project")
-
-        open_document(layout.resolve("levels/test.prefab"), layout)
-
-        models = _models(layout)
-        check(bool(models), f"{len(models)} model(s) in the copied project")
-
-        rigged_models = sorted(m.stem for m in models if m.skinned)
-        check(
-            set(rigged_models) == RIGGED,
-            f"the rigged models are found by reading the GLBs ({rigged_models})",
-        )
-
-        # The engine's `paradise assets extract` also generates a model prefab (beside the GLB,
-        # carrying the same GeneratedFrom marker); the mirror ADOPTS those where they are rather
-        # than filing a second one, so location is only asserted for what the mirror created.
-        adopted = {p.guid for p in model_prefabs.read_generated(layout, schema.load(layout.root))}
-        check(bpy.ops.paradise_assets.mirror_model_prefabs() == {"FINISHED"}, "the mirror ran")
-        generated = model_prefabs.read_generated(layout, schema.load(layout.root))
-        check(
-            len(generated) == len(models),
-            f"one generated prefab per model ({len(generated)} of {len(models)})",
-        )
-        check(
-            {p.model_guid for p in generated} == {m.guid for m in models},
-            "each generated prefab names its model by identity",
-        )
-        check(
-            all(p.mesh_path == _mesh_path(models, p.model_guid) for p in generated),
-            "each mesh reference names the model's .mesh document, never the GLB",
-        )
-        cube = next(p for p in generated if p.stem == "Prim_Cube")
-        check(
-            cube.guid in adopted or cube.relative == "prefabs/models/Prim_Cube.prefab",
-            f"a generated prefab is filed under prefabs/models, or adopted where the extractor "
-            f"put it ({cube.relative})",
-        )
-        check(
-            all(p.relative.startswith("prefabs/models/") for p in generated if p.guid not in adopted),
-            "everything the mirror itself created is under prefabs/models",
-        )
-
-        rigged = {p.stem for p in generated if p.mesh_component_id == _component_id(
-            layout, SKINNED_COMPONENT)}
-        check(rigged == RIGGED, f"and only the rigged ones get the skinned component ({sorted(rigged)})")
-        static = {p.stem for p in generated if p.mesh_component_id == _component_id(
-            layout, STATIC_COMPONENT)}
-        check(
-            static == {m.stem for m in models} - RIGGED,
-            f"the rest get the static one ({len(static)})",
-        )
-
-        check(
-            all(_marker(p) == p.model_guid for p in generated),
-            "the marker is meta.GeneratedFrom on the root, not a sidecar settings domain",
-        )
-        check(
-            all(sidecar.read(sidecar.path_for(p.path)).settings == {} for p in generated),
-            "so the sidecars carry nothing but the watcher's identity",
-        )
-
-        print("\n== a second pass changes nothing, and hand-authored prefabs are untouched ==")
-        hand = layout.resolve("prefabs/box.prefab")
-        with open(hand, "rb") as handle:
-            before = handle.read()
-        bpy.ops.paradise_assets.mirror_model_prefabs()
-        check(
-            len(model_prefabs.read_generated(layout, schema.load(layout.root))) == len(models),
-            "the second pass generated nothing new",
-        )
-        with open(hand, "rb") as handle:
-            check(handle.read() == before, "the hand-authored box.prefab was not touched")
-        with open(hand, encoding="utf-8") as handle:
-            hand_root = prefab_document.loads(handle.read(), hand).root()
-        check(
-            model_prefabs.GENERATED_FROM not in hand_root.meta.data,
-            "and it is still not marked generated",
-        )
-
-        print("\n== the CLI accepts everything the mirror wrote ==")
-        # Before the rename and delete cases below, which deliberately leave dangling models
-        # behind: those are this test's damage, not the mirror's output.
-        for verb in (["assets", "prefab-check"], ["assets", "verify"]):
-            report = run_cli(verb, root)
-            if report is None:
-                print(f"SKIP: no `paradise` CLI resolved, so `{' '.join(verb)}` was not run")
-                continue
-            check(report[0] == 0, f"`paradise {' '.join(verb)}` exits 0: {report[1][-400:]}")
-
-        print("\n== a renamed model takes its prefab's reference with it ==")
-        renamed = layout.resolve("Models/Boulder.glb")
-        os.replace(layout.resolve("Models/Prim_Sphere.glb"), renamed)
-        os.replace(
-            sidecar.path_for(layout.resolve("Models/Prim_Sphere.glb")), sidecar.path_for(renamed)
-        )
-        bpy.ops.paradise_assets.mirror_model_prefabs()
-
-        after = model_prefabs.read_generated(layout, schema.load(layout.root))
-        sphere = next(p for p in after if p.model_guid == _guid_of(models, "Models/Prim_Sphere.glb"))
-        check(
-            sphere.mesh_path == _mesh_path(_models(layout), sphere.model_guid),
-            f"the mesh reference follows the document the sidecar records ({sphere.mesh_path})",
-        )
-        sphere_before = next(p for p in generated if p.model_guid == sphere.model_guid)
-        check(
-            sphere.relative == sphere_before.relative,
-            f"and the prefab kept its name, so levels still point at it ({sphere.relative})",
-        )
-        check(
-            len(after) == len(generated),
-            f"nothing was generated or deleted for the rename ({len(after)})",
-        )
-
-        print("\n== a deleted model waits out the grace period before its prefab goes ==")
-        doomed = layout.resolve("Models/Skyline_1.glb")
-        doomed_guid = _guid_of(models, "Models/Skyline_1.glb")
-        os.remove(doomed)
-        os.remove(sidecar.path_for(doomed))
-        prefab_path = next(p.path for p in generated if p.model_guid == doomed_guid)
-
-        bpy.ops.paradise_assets.mirror_model_prefabs()
-        check(os.path.isfile(prefab_path), "the first pass deletes nothing")
-        bpy.ops.paradise_assets.mirror_model_prefabs()
-        check(
-            os.path.isfile(prefab_path),
-            "nor the second, because the grace period has not elapsed (a Finder move looks "
-            "exactly like this for a moment)",
-        )
-
-        # Backdated rather than slept through: the two fences are a poll COUNT and an elapsed
-        # time, and this leaves the count fence doing its own work above.
-        absences = model_watch._ABSENCES[layout.root]
-        absences[doomed_guid] = model_prefabs.Absence(absences[doomed_guid].polls, -60.0)
-        bpy.ops.paradise_assets.mirror_model_prefabs()
-        check(not os.path.exists(prefab_path), "once the model has really gone, so does its prefab")
-        check(not os.path.exists(sidecar.path_for(prefab_path)), "and its sidecar with it")
-
-        print("\n== a prefab a level instantiates is never deleted ==")
-        # Re-listed: the rename and the delete above moved things, so the opening `models` list
-        # no longer says where everything lives.
-        current = _models(layout)
-        kept = next(
-            p for p in model_prefabs.read_generated(layout, schema.load(layout.root))
-            if p.stem == "Prim_Cube"
-        )
-        _instantiate(layout, kept)
-        model = _model_path(current, kept.model_guid)
-        os.remove(layout.resolve(model))
-        os.remove(sidecar.path_for(layout.resolve(model)))
-        for _ in range(2):
-            bpy.ops.paradise_assets.mirror_model_prefabs()
-        model_watch._ABSENCES[layout.root][kept.model_guid] = model_prefabs.Absence(9, -600.0)
-        bpy.ops.paradise_assets.mirror_model_prefabs()
-        check(os.path.isfile(kept.path), f"{kept.relative} survives, because a level uses it")
-
-
-def _models(layout):
-    return model_prefabs.list_models(layout)
-
-
-def _model_path(models, guid: str) -> str | None:
-    return next((m.path for m in models if m.guid == guid), None)
-
-
-def _mesh_path(models, guid: str) -> str | None:
-    return next((m.mesh.path for m in models if m.guid == guid and m.mesh), None)
-
-
-def _guid_of(models, path: str) -> str | None:
-    return next((m.guid for m in models if m.path == path), None)
-
-
-def _component_id(layout, type_name: str) -> str | None:
-    return next(
-        (c.component_id for c in schema.mesh_components(layout.root) if c.type_name == type_name),
-        None,
-    )
-
-
-def _marker(prefab) -> str | None:
-    """The generated marker, read straight out of the document's root meta."""
-    with open(prefab.path, encoding="utf-8") as handle:
-        root = prefab_document.loads(handle.read(), prefab.relative).root()
-    return root.meta.data.get(model_prefabs.GENERATED_FROM)
-
-
-def _instantiate(layout, prefab) -> None:
-    """Put an instance of ``prefab`` into a level, the thing that must stop a delete."""
-    from paradise_assets.document import new_prefab
-    from paradise_assets.document.asset_reference import AssetReference
-
-    document = new_prefab.root_only("Holder")
-    instance = prefab_document.PrefabObject.with_meta(
-        str(uuid.uuid4()), prefab.stem, document.root_guid)
-    instance.prefab = AssetReference(prefab.guid, prefab.relative)
-    document.objects.append(instance)
-    # The watcher rebuilds the copied project after each mirror pass (a real game's worth of
-    # assets), and a mint can queue behind that build; the default 10 s is an operator's budget.
-    try:
-        new_prefab.create(layout.resolve("levels/holder.prefab"), layout, document, timeout=90.0)
-    except new_prefab.CreateError:
-        # Say what the watcher was doing, or a timeout reads as "the addon is slow".
-        running, exit_reason = watch.is_running(layout.root), watch.exit_reason(layout.root)
-        print(f"DIAG watcher running: {running}; exit: {exit_reason}")
-        print(f"DIAG last error: {watch.last_error(layout.root)}")
-        raise
-
-
 def main() -> int:
     source = sys.argv[sys.argv.index("--") + 1] if "--" in sys.argv else DEFAULT_PROJECT
     if project.locate(source) is None:
@@ -595,7 +367,6 @@ def main() -> int:
 
     test_extraction(source)
     test_nested_extraction()
-    test_mirror(source)
 
     print(f"\n{len(failures)} failure(s)")
     for label in failures:

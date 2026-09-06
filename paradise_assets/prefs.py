@@ -69,40 +69,6 @@ class ParadiseAssetsPreferences(AddonPreferences):
         default="",
     )
 
-    mirror_model_prefabs: BoolProperty(  # type: ignore[valid-type]
-        name="Keep a Prefab per Model",
-        description=(
-            "While a document is open, create a prefab under prefabs/models/ for every model "
-            "that has none, follow the model when it moves, and DELETE the prefab when the "
-            "model is gone. Off by default because of that last one -- a hand-authored prefab "
-            "is never touched, but a generated one is this mirror's to remove"
-        ),
-        # Destructive behaviour ships off: nothing an addon update turns on should be able to
-        # delete a file under an author who never asked for it.
-        default=False,
-    )
-
-    static_mesh_component: StringProperty(  # type: ignore[valid-type]
-        name="Static Mesh Component",
-        description=(
-            "Which component a generated prefab authors an unrigged model's mesh into, by CLR "
-            "type name. The game decides how many mesh-bearing components it declares, so this "
-            "cannot be guessed; leave it empty when the schema declares exactly one"
-        ),
-        default="",
-    )
-
-    skinned_mesh_component: StringProperty(  # type: ignore[valid-type]
-        name="Skinned Mesh Component",
-        description=(
-            "The same, for a model that carries a rig. A rigged model authored as static is a "
-            "prefab that loads, shows the mesh, and is the wrong kind of thing in the game -- so "
-            "the mirror stays idle on rigged models until this is set. A project with none does "
-            "not need it"
-        ),
-        default="",
-    )
-
     auto_watch: BoolProperty(  # type: ignore[valid-type]
         name="Watch While a Document Is Open",
         description=(
@@ -123,7 +89,6 @@ class ParadiseAssetsPreferences(AddonPreferences):
         box.prop(self, "build_profile")
         box.prop(self, "ktx_path")
         box.prop(self, "auto_watch")
-        box.prop(self, "mirror_model_prefabs")
 
         box = layout.box()
         box.label(text="Play", icon="PLAY")

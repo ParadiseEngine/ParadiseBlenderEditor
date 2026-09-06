@@ -167,22 +167,18 @@ the origin. Two consequences worth knowing before pressing it:
 Save your placement changes first: the extraction works on the file, so it refuses to run while
 the scene holds edits the document does not have.
 
-**Model Prefabs** (a panel of its own) keeps one prefab per model. *Generate Model Prefabs* runs
-one pass: every `.glb` under `assets/` that no generated prefab stands for gets one at
-`prefabs/models/<name>.prefab`, and a model that moved or was renamed has its prefab's mesh
-reference refreshed. The prefab itself is never renamed — its guid is what levels reference, and
-moving the file would break them to fix nothing.
+**Model Prefabs** (a panel of its own) lists the models this project holds. It is read-only —
+prefabs are `paradise assets extract`'s to write, and nothing in the addon generates, updates or
+deletes one.
 
-Pick two components in that panel, static and skinned. The mirror reads each `.glb` to see
-whether it carries a rig, and a rigged model authored as a static one is a prefab that loads,
-shows the mesh, and is the wrong kind of thing in the game — so it is never guessed. A project
-with no rigged models needs only the static one. With no schema at all, build the game's
-launcher once.
+Which component a generated prefab authors its mesh into is the project's choice, not the
+addon's: `extract` reads `[extract] static_mesh_component` and `skinned_mesh_component` from
+`project.toml`, falling back to the game's authoring schema. A rigged model authored as a static
+one is a prefab that loads, shows the mesh, and is the wrong kind of thing in the game, so it is
+never guessed — `extract` warns and writes a prefab with no mesh rather than pick for you.
 
-The **Keep a Prefab per Model** preference does the same on a timer while a document is open.
-It is **off by default**, because that pass also DELETES: when a model is gone, the prefab that
-stood for it goes too. Three things bound that. A prefab is only the mirror's if its root's
-`meta` carries `GeneratedFrom`, so a hand-authored one is never touched or removed. A missing
-model has to stay missing for several seconds and several polls, because a Finder move arrives
-as a delete followed by an add. And a prefab some document still instantiates is kept and
-reported, whatever happened to its model.
+A prefab is written only when the model has nowhere to be placed from yet. If anything already
+references its mesh — the prefab written last time, one moved elsewhere since, or a document that
+adopted the mesh by hand — `extract` leaves it alone and says so. Nothing tracks the pair
+afterwards: a prefab you edit is yours, and deleting a model leaves its prefab behind for
+`assets verify` to report as a dangling reference.

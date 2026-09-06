@@ -73,8 +73,8 @@ if command -v "$BLENDER" >/dev/null 2>&1; then
   integration "the object context menus" \
     tests/integration/test_context_menu.py "$DEFAULT_NOISE"
 
-  # Groups: a document object with only meta and transform, shown as a Blender collection.
-  integration "groups as collections" \
+  # Groups: a document object with only meta and transform, shown as an Empty its members parent to.
+  integration "groups as empties" \
     tests/integration/test_groups.py "$DEFAULT_NOISE"
 
   # The byte-exact round trip through Blender needs a real asset project; it skips cleanly when

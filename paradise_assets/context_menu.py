@@ -1,5 +1,5 @@
 """The right-click entries for a document object, in both editors an author selects one in:
-open the prefab it instantiates, and turn it into one.
+open the prefab it instantiates, turn it into one, and group the selection under a new Empty.
 
 Both are reachable from the sidebar already. The menus are where an author's hand already is
 when the question comes up -- the Outliner because it is the only place the document's tree is
@@ -151,6 +151,10 @@ def _draw(self, context) -> None:
         "paradise_assets.extract_prefab",
         text="Create Prefab from Object…",
         icon="EXPORT")
+    column.operator(
+        "paradise_assets.group_objects",
+        text="Group Selected",
+        icon="OUTLINER_COLLECTION")
 
 
 def register_menu() -> None:

@@ -24,15 +24,14 @@ import os
 import uuid
 
 import bpy
-from mathutils import Quaternion
+from mathutils import Matrix, Quaternion
 
 from .. import edits as component_edits
 from ..document import atomic, axes, canonical_toml, well_known
 from ..document import prefab as prefab_document
 from ..document.asset_reference import AssetReference
 from ..document.prefab import PrefabComponent, PrefabDocument, PrefabDocumentError, PrefabObject
-from . import groups, store
-from .meshes import LIBRARY_COLLECTION
+from . import store
 
 __all__ = ["SaveError", "SaveResult", "document_trs", "save_prefab"]
 
@@ -76,6 +75,8 @@ def save_prefab(scene: bpy.types.Scene) -> SaveResult:
     with open(state.path, encoding="utf-8") as handle:
         base = prefab_document.loads(handle.read(), state.path)
 
+    _adopt_new_groups(scene)
+    _fold_parent_inverses(scene)
     _refuse_duplicate_identities(scene)
     _refuse_foreign_parents(scene)
     _refuse_moved_derived(scene)
@@ -191,10 +192,7 @@ def _merge(scene: bpy.types.Scene, base: PrefabDocument, result: SaveResult) -> 
     is kept: Blender guarantees no iteration order, and following it would reshuffle the file on
     every save. New objects follow, in name order."""
     objects = {store.guid_of(obj): obj for obj in _document_objects(scene)}
-    # A group is a document object Blender happens to show as a collection (groups.py), so it
-    # merges exactly like one -- same identity, same place in file order, same removal rule.
-    collections = {groups.guid_of(found): found for found in _document_groups(scene)}
-    present = frozenset(objects) | frozenset(collections)
+    present = frozenset(objects)
 
     merged = PrefabDocument()
     for entry in base.objects:
@@ -204,9 +202,6 @@ def _merge(scene: bpy.types.Scene, base: PrefabDocument, result: SaveResult) -> 
                 merged.objects.append(entry)
             else:
                 result.removed += 1
-            continue
-        if (collection := collections.pop(entry.guid, None)) is not None:
-            merged.objects.append(_group_entry(collection, entry, scene))
             continue
         obj = objects.pop(entry.guid, None)
         if obj is None:
@@ -218,119 +213,74 @@ def _merge(scene: bpy.types.Scene, base: PrefabDocument, result: SaveResult) -> 
         result.added += 1
         merged.objects.append(_object_entry(obj, None, result))
 
-    for collection in sorted(collections.values(), key=lambda c: c.name):
-        result.added += 1
-        merged.objects.append(_group_entry(collection, None, scene))
-
     return merged
 
 
-def _document_groups(scene: bpy.types.Scene) -> list:
-    """Group collections under the scene, minting an identity for one the author just made.
+def _adopt_new_groups(scene: bpy.types.Scene) -> None:
+    """Give an Empty the author made to group document objects under an identity of its own.
 
-    A new collection is given a ``uuid4`` rather than waited for: sidecars mint identities for
-    FILES under ``assets/``, and an object inside a document has never been one of those --
-    ``instancing.add_instance`` mints the same way for a placed instance.
+    The gesture is "add an Empty, parent things to it": that Empty has no GUID, so without this
+    it is neither written nor a legal parent and the save refuses. Only an EMPTY holding at
+    least one document object qualifies -- a stray camera or light stays Blender's own, and an
+    Empty with nothing in it is a marker somebody has not finished. One left unparented hangs
+    off the document root, exactly as a placed instance does: a second root never loads.
+
+    Never over the ROOT: the root IS the document, and adopting an Empty it was dragged under
+    would mint a new root and write a document that is no longer the one that was opened. With
+    no unique parentless root there is nothing to adopt into, and the foreign-parent rule names
+    the Empty instead.
+
+    Minted as ``uuid4`` rather than waited for: sidecars mint identities for FILES under
+    ``assets/``, and an object inside a document has never been one of those.
     """
-    found = []
-    for collection in _walk_collections(scene.collection):
-        if collection.name == LIBRARY_COLLECTION:
-            continue
-        if groups.guid_of(collection) is None:
-            if not collection.objects and not collection.children:
-                # Blender's own empty collection, or one the author has not put anything in:
-                # a group with no children is not a group (groups.py).
+    root = _root_object(scene)
+    if root is None:
+        return
+    # World matrices are stale until the depsgraph runs; parenting from a stale one moved the
+    # Empty to the origin on the first save.
+    bpy.context.view_layer.update()
+    adopted = True
+    while adopted:
+        adopted = False
+        for obj in scene.collection.all_objects:
+            if obj.type != "EMPTY" or store.guid_of(obj) is not None:
                 continue
-            groups.tag(collection, str(uuid.uuid4()), collection.name)
-        found.append(collection)
-    return found
+            if not any(store.guid_of(child) is not None for child in obj.children):
+                continue
+            store.tag_object(obj, str(uuid.uuid4()), [])
+            store.tag_name(obj, obj.name)
+            adopted = True
+            if obj.parent is None:
+                world = obj.matrix_world.copy()
+                obj.parent = root
+                obj.matrix_parent_inverse.identity()
+                obj.matrix_world = world
 
 
-def _walk_collections(root: bpy.types.Collection):
-    """Every collection under ``root``, excluding the mesh library and anything inside it."""
-    for child in root.children:
-        if child.name == LIBRARY_COLLECTION:
+def _fold_parent_inverses(scene: bpy.types.Scene) -> None:
+    """Move a non-identity ``matrix_parent_inverse`` into the local channels.
+
+    Ctrl+P and the Outliner's drag-to-parent keep an object in place by storing the offset in
+    the parent inverse, and the document has no field for it: the channels alone would put the
+    object somewhere else on the next load. Folded here, once, rather than read through on every
+    save -- a decomposition is lossy, and the channels are what :func:`_unchanged` compares.
+    """
+    for obj in _document_objects(scene):
+        if obj.parent is None or obj.matrix_parent_inverse == _IDENTITY:
             continue
-        yield child
-        yield from _walk_collections(child)
+        local = obj.matrix_parent_inverse @ obj.matrix_basis
+        obj.matrix_parent_inverse.identity()
+        obj.matrix_basis = local
 
 
-def _holder_guid(collection: bpy.types.Collection, scene: bpy.types.Scene) -> str | None:
-    """The document parent of a group: the group it sits inside, else the document ROOT.
-
-    Not ``None`` at the top level, which is the whole point: a document has exactly one root, so
-    a group linked straight into the scene collection hangs off the root exactly as an object
-    dropped there does (``instancing._parent_to_document_root``). Returning nothing here wrote a
-    second root and the save refused itself.
-    """
-    for candidate in _walk_collections(scene.collection):
-        if collection.name in candidate.children:
-            return groups.guid_of(candidate)
-    return _root_guid(scene)
+_IDENTITY = Matrix.Identity(4)
 
 
-def _root_guid(scene: bpy.types.Scene) -> str | None:
-    """The document root: the one object with no parent and no group around it. ``None`` when
-    that is not unique -- the root rule then refuses the save and names the objects, which is a
-    better error than anything this could invent."""
-    found = [
-        obj for obj in _document_objects(scene)
-        if obj.parent is None
-        and not any(groups.guid_of(c) is not None for c in obj.users_collection)
-    ]
-    return store.guid_of(found[0]) if len(found) == 1 else None
-
-
-def _parent_guid(obj: bpy.types.Object, scene: bpy.types.Scene) -> tuple[str | None, str | None]:
-    """The document parent of ``obj``, and a warning when Blender says two things at once.
-
-    Membership wins WHERE THE GROUP HANGS WHERE THE OBJECT ALREADY HUNG, which is the ordinary
-    authoring gesture and is transform-neutral by construction: a group's transform is the
-    identity and its parent is the object's old parent, so re-hanging under it moves nothing.
-
-    That case has to win, or the feature cannot be used at all. Dragging rows into a collection
-    in the Outliner does NOT clear their object parenting, and every object in a real level is
-    parented to the document root -- so a rule that let parenting win unconditionally discarded
-    every group an author could actually make (#41).
-
-    Parenting still wins when the group hangs somewhere ELSE, because then the two disagree about
-    the transform space and only the parent's answer is the one the object is drawn at. Said out
-    loud rather than discovered: the document has one parent link and cannot hold both.
-    """
-    parent = store.guid_of(obj.parent) if obj.parent is not None else None
-    group = next(
-        (c for c in obj.users_collection if groups.guid_of(c) is not None), None)
-    if group is None:
-        return parent, None
-
-    if parent is None or _holder_guid(group, scene) == parent:
-        return groups.guid_of(group), None
-
-    return parent, (
-        f"{obj.name} is parented to '{obj.parent.name}', which is not where its group "
-        f"'{group.name}' hangs; the document keeps the parent, so its place in the group is "
-        "not saved."
-    )
-
-
-def _group_entry(
-    collection: bpy.types.Collection, original: PrefabObject | None, scene: bpy.types.Scene
-) -> PrefabObject:
-    """One group collection as a document object: meta, an identity transform, nothing else."""
-    entry = PrefabObject() if original is None else original
-    _write_meta(
-        entry, groups.guid_of(collection), groups.name_of(collection),
-        _holder_guid(collection, scene))
-    if entry.component(well_known.TRANSFORM_ID) is None:
-        # Spelled out rather than omitted, so the object reads as placed at the origin rather
-        # than as one whose placement nobody wrote.
-        entry.components.append(PrefabComponent(
-            well_known.TRANSFORM_ID, well_known.TRANSFORM_TYPE, {
-                well_known.POSITION: [0.0, 0.0, 0.0],
-                well_known.ROTATION: [0.0, 0.0, 0.0, 1.0],
-                well_known.SCALE: [1.0, 1.0, 1.0],
-            }))
-    return entry
+def _root_object(scene: bpy.types.Scene):
+    """The document root, or ``None`` when it is not unique -- the root rule then refuses the
+    save and names the objects, which is a better error than anything this could invent."""
+    found = [obj for obj in _document_objects(scene) if obj.parent is None]
+    return found[0] if len(found) == 1 else None
 
 
 def _object_entry(obj: bpy.types.Object, original: PrefabObject | None, result: SaveResult) -> PrefabObject:
@@ -346,10 +296,7 @@ def _object_entry(obj: bpy.types.Object, original: PrefabObject | None, result: 
         reference_guid, reference_path = store.prefab_of(obj)
         entry.prefab = AssetReference(reference_guid, reference_path)
 
-    parent_guid, conflict = _parent_guid(obj, obj.users_scene[0] if obj.users_scene else bpy.context.scene)
-    if conflict is not None:
-        result.warnings.append(conflict)
-
+    parent_guid = store.guid_of(obj.parent) if obj.parent is not None else None
     _write_meta(entry, guid, store.document_name(obj), parent_guid)
     _write_transform(entry, obj, original, result)
 

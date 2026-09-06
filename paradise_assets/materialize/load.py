@@ -14,7 +14,7 @@ from mathutils import Quaternion, Vector
 from ..document import axes, mesh_document, project, resolve, schema, well_known
 from ..document.prefab import PrefabDocument, PrefabObject
 from ..document.prefab import loads as parse_document
-from . import groups, store
+from . import store
 from .meshes import LIBRARY_COLLECTION, MeshLibrary
 
 __all__ = ["LoadResult", "load_document"]
@@ -92,25 +92,8 @@ def load_document(
 
     library = MeshLibrary(scene, result.warn)
     created: dict[str, bpy.types.Object] = {}
-    grouped: dict[str, bpy.types.Collection] = {}
-
-    # A group is an object the format has no special case for; only Blender shows it differently
-    # (groups.py). Which entries those are depends on who has children, so it is decided once
-    # here rather than per entry.
-    root_guid = expansion.document.single_root()
-    root_guid = root_guid.guid if root_guid is not None else None
-    parents = {entry.parent for entry in expansion.document.objects if entry.parent is not None}
-    by_guid = {entry.guid: entry for entry in expansion.document.objects}
-    group_guids = _group_guids(expansion.document, root_guid, parents)
 
     for entry in expansion.document.objects:
-        # Only an AUTHORED entry can be a group: a resolved child is the prefab's, locked, and
-        # showing a prefab's internals as collections would multiply them per instance.
-        if entry.guid in authored and entry.guid in group_guids:
-            grouped[entry.guid] = _create_group(entry)
-            result.objects += 1
-            continue
-
         obj = _create_object(entry, scene, layout, library, mesh_fields, result)
         if entry.guid not in authored:
             store.mark_derived(obj)
@@ -128,33 +111,10 @@ def load_document(
     # resolver's warning already saying why.
     for entry in document.objects:
         if entry.parent is None:
-            _link(scene.collection, created.get(entry.guid) or grouped.get(entry.guid))
             continue
-
-        # A group holds its children by COLLECTION membership, since a Blender collection has no
-        # transform to parent to; an ordinary parent is a parent.
-        if (holder := grouped.get(entry.parent)) is not None:
-            member = created.get(entry.guid) or grouped.get(entry.guid)
-            _link(holder, member)
-            # Parented to where the GROUP hangs, not to the group: a collection has no transform
-            # to be relative to, and without this an object inside a group under a placed object
-            # would be drawn at the group's ancestor's origin instead of its own place. It is
-            # also what makes the save's "the group hangs where the object already hung" test
-            # true on the next round trip.
-            anchor = created.get(_anchor_of(entry.parent, by_guid, grouped))
-            if anchor is not None and not isinstance(member, bpy.types.Collection):
-                member.parent = anchor
-                member.matrix_parent_inverse.identity()
-            continue
-
         child = created.get(entry.guid)
-        if child is None:
-            # A group under an ordinary object: link the collection beside that object instead.
-            _link(_collection_of(scene, created.get(entry.parent)), grouped.get(entry.guid))
-            continue
-
         parent = created.get(entry.parent)
-        if parent is None:
+        if child is None or parent is None:
             result.warn(
                 f"{entry.name or entry.guid}: its parent {entry.parent} could not be materialized, "
                 "so it is shown unparented"
@@ -169,83 +129,6 @@ def load_document(
     result.sources |= library.sources
     store.write_state(scene, scene_path)
     return result
-
-
-def _group_guids(document, root_guid: str | None, parents: set) -> set:
-    """Which entries are shown as Blender collections.
-
-    Shape decides most of it (:func:`groups.is_group_entry`); ANCESTRY decides the rest, and it
-    has to, because Blender cannot express the alternative. A ``Collection`` has no ``parent``
-    property AT ALL and ``Collection.children`` takes only Collections, so a group whose document
-    parent is an ordinary object has nowhere to hang. Shown as a collection it would be linked
-    beside that object and saved back under the ROOT -- a silent reparent of somebody's document.
-
-    So a group's parent must be the root or another group. Anything else stays an Empty, exactly
-    as a group with a placement does, and the document survives the round trip untouched.
-    """
-    by_guid = {entry.guid: entry for entry in document.objects}
-    decided: dict[str, bool] = {}
-
-    def decide(guid: str) -> bool:
-        if guid in decided:
-            return decided[guid]
-        # False before recursing: a document whose parents form a cycle is not a tree, and this
-        # must answer rather than recur forever. The reader refuses such a document anyway.
-        decided[guid] = False
-        entry = by_guid.get(guid)
-        if entry is None:
-            return False
-        answer = groups.is_group_entry(
-            entry, is_root=guid == root_guid, has_children=guid in parents)
-        if answer and entry.parent is not None and entry.parent != root_guid:
-            answer = decide(entry.parent)
-        decided[guid] = answer
-        return answer
-
-    return {guid for guid in by_guid if decide(guid)}
-
-
-def _anchor_of(group_guid: str, by_guid: dict, grouped: dict) -> str | None:
-    """The nearest ancestor of a group that is an OBJECT: what its members parent to. A group
-    inside a group has no transform of its own, so the walk continues past it."""
-    current = by_guid.get(group_guid)
-    while current is not None and current.parent is not None:
-        if current.parent not in grouped:
-            return current.parent
-        current = by_guid.get(current.parent)
-    return None
-
-
-def _create_group(entry: PrefabObject) -> bpy.types.Collection:
-    """One group entry as a Blender collection. Not linked here: where it hangs is the parent
-    pass's business, exactly as an object's parenting is."""
-    collection = bpy.data.collections.new(entry.name or "group")
-    groups.tag(collection, entry.guid, entry.name)
-    return collection
-
-
-def _link(target, child) -> None:
-    """Put ``child`` (an object or a collection) in ``target``, and nowhere else."""
-    if child is None or target is None:
-        return
-    if isinstance(child, bpy.types.Collection):
-        for holder in bpy.data.collections:
-            if child.name in holder.children:
-                holder.children.unlink(child)
-        if child.name not in target.children:
-            target.children.link(child)
-        return
-
-    for holder in list(child.users_collection):
-        holder.objects.unlink(child)
-    target.objects.link(child)
-
-
-def _collection_of(scene: bpy.types.Scene, obj) -> bpy.types.Collection:
-    """The collection an object lives in, so a group hung under it lands beside it."""
-    if obj is None:
-        return scene.collection
-    return next(iter(obj.users_collection), scene.collection)
 
 
 def _create_object(
@@ -441,11 +324,6 @@ def _clear_previous(scene: bpy.types.Scene) -> None:
     doomed = [obj for obj in scene.collection.all_objects if store.guid_of(obj) is not None]
     for obj in doomed:
         bpy.data.objects.remove(obj, do_unlink=True)
-
-    # Group collections go the same way and for the same reason: they stand for document objects,
-    # so a reload that kept them would show the previous document's grouping around this one's.
-    for collection in [c for c in bpy.data.collections if groups.guid_of(c) is not None]:
-        bpy.data.collections.remove(collection)
 
 
 def scene_document_path(scene: bpy.types.Scene) -> str | None:

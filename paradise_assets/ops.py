@@ -25,7 +25,7 @@ from . import catalogue, watch
 from .document import atomic, extract, new_prefab, project
 from .document import prefab as prefab_document
 from .document.prefab import PrefabDocumentError, loads
-from .materialize import instancing, load, save, store, workfile
+from .materialize import grouping, instancing, load, save, store, workfile
 
 __all__ = ["classes"]
 
@@ -505,6 +505,37 @@ _CATALOGUE_SCRIPT = (
 )
 
 
+class PARADISE_ASSETS_OT_group_objects(Operator):
+    """Put the selected document objects under a new group, which is an Empty they are parented to"""
+
+    bl_idname = "paradise_assets.group_objects"
+    bl_label = "Group Objects"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        if store.read_state(context.scene) is None:
+            return False
+        selected = [obj for obj in context.selected_objects if store.guid_of(obj) is not None]
+        return bool(selected) and all(
+            obj.parent is not None and not store.is_derived(obj) for obj in selected)
+
+    def execute(self, context):
+        members = [obj for obj in context.selected_objects if store.guid_of(obj) is not None]
+        try:
+            group = grouping.group_objects(context.scene, members, context.active_object)
+        except grouping.GroupError as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+
+        for obj in context.selected_objects:
+            obj.select_set(False)
+        group.select_set(True)
+        context.view_layer.objects.active = group
+        self.report({"INFO"}, f"Grouped {len(members)} object(s) under '{group.name}'. Save to keep it.")
+        return {"FINISHED"}
+
+
 class PARADISE_ASSETS_OT_refresh_catalogue(Operator):
     """Regenerate the Asset Browser catalogue of this project's prefabs"""
 
@@ -627,6 +658,7 @@ classes = (
     PARADISE_ASSETS_OT_toggle_watch,
     PARADISE_ASSETS_OT_add_prefab_instance,
     PARADISE_ASSETS_OT_extract_prefab,
+    PARADISE_ASSETS_OT_group_objects,
     PARADISE_ASSETS_OT_refresh_catalogue,
     PARADISE_ASSETS_FH_prefab,
 )

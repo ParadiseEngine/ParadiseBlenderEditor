@@ -50,7 +50,7 @@ paradise_assets/
   document/     ★ pure Python, imports no bpy — the *.prefab format, the canonical TOML writer,
                   the axis rebase, sidecar reading, the game's component schema
   materialize/    document <-> Blender objects: load, save, mesh instancing, ID-property store,
-                  the working .blend, save-on-save, groups (collections)
+                  the working .blend, save-on-save
   play/           the CLI: resolution, Build / Verify / Clean / Play, the running session
   ops.py          open_prefab / save_prefab / reload_prefab, add_prefab_instance,
                   extract_prefab, toggle_watch, refresh_catalogue
@@ -162,35 +162,27 @@ The glTF importer's own leftovers are handled where they are made: `meshes.py` d
 move left empty — `glTF_not_exported` otherwise sits in the Outliner beside the library for the
 life of the session.
 
-**A COLLECTION in Blender is an ordinary document object, and the format knows nothing about it.**
-A group is an object carrying only `meta` and `transform` whose members are its children;
-`materialize/groups.py` is the single definition of which objects those are, because load and
-save disagreeing would not error — it would move objects between the scene and a collection on
-every round trip and rewrite the document each time. Four rules the shape alone does not settle,
-each with a reason it cannot go the other way: never the root (the root IS the document — what an
-instance places, what `instancing` parents under, what extraction refuses), never an instance,
-identity transform only (a Blender collection cannot be moved, so a placed group would lose its
-placement on the first save), and at least one child (or every marker empty silently becomes an
-empty collection). A fifth is ANCESTRY, and Blender's data model forces it: a `Collection` has no
-`parent` property at all and `Collection.children` takes only Collections, so a group whose
-document parent is an ordinary object has nowhere to hang. Shown as a collection it was linked
-beside that object and saved back under the ROOT — a silent reparent of somebody's document. A
-group's parent must therefore be the root or another group; anything else stays an Empty. A group linked straight into the scene collection hangs off the ROOT, not off
-nothing — returning nothing there wrote a second root and the save refused itself.
+**A GROUP is an Empty, and the format knows nothing about it.** A document object carrying only
+`meta` and `transform` whose members are its children is shown exactly like every other object:
+an Empty with Blender parenting, which the Outliner nests, drags, and moves as a unit. An earlier
+design showed such objects as Blender Collections; it could not carry a transform (a Collection
+cannot be moved), could not hang under an ordinary object (a Collection has no `parent`), and
+had to re-derive group-ness from shape on every load, so emptying one flipped its representation.
+Empties have none of those limits, and the group rules collapsed to one: the save adopts an
+Empty the author made that holds at least one document object, minting it an identity and
+hanging an unparented one off the document root (`save._adopt_new_groups`) — a second root
+never loads. A stray camera or light, or an Empty with nothing in it, stays Blender's own.
+Never over the root: with no unique parentless root nothing is adopted and the foreign-parent
+rule names the Empty, or dragging the root under a new Empty would have minted a new root.
 
-Membership beats parenting WHERE THE GROUP HANGS WHERE THE OBJECT ALREADY HUNG, and that case
-has to win or the feature cannot be used at all: dragging rows into a collection does not clear
-their object parenting, and every object in a real level is parented to the document root — so
-the first rule, "parenting always wins", discarded every group an author could actually make.
-It is transform-neutral by construction (a group's transform is the identity and its parent is
-the object's old parent). Where the group hangs somewhere else the two disagree about the
-transform space, only the parent's answer matches what the object is drawn at, and the save
-keeps the parent and says so.
-
-The load half is what keeps that true across a round trip: a group's members are parented to
-the nearest ancestor that is an OBJECT, not to the group — a collection has no transform to be
-relative to, and without it an object in a group under a placed object would be drawn at that
-object's origin.
+The one-gesture version is **Group Selected** (`materialize/grouping.py`, right-click in the
+Outliner or viewport): a new Empty at the active member's position, hung where that member
+hung, members re-parented in place. It parents with an IDENTITY `matrix_parent_inverse` and
+rewrites the local channels, never through `parent_set`, because Blender keeps an object in
+place across Ctrl+P and Outliner drag-to-parent by storing the offset in the inverse — which
+the document has no field for. The save folds such an inverse into the channels once
+(`save._fold_parent_inverses`) so hand parenting is safe too; before it, an object parented by
+Ctrl+P loaded back somewhere else.
 
 **An instance loaded from a document carries no prefab reference of its own** — the expansion
 in `resolve.py` replaces the instance entry with the prefab's resolved root, consuming it. So

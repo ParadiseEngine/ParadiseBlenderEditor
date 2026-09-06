@@ -189,7 +189,7 @@ def main() -> int:
             )
 
             print("\n== what the entries would run ==")
-            for idname in ("open_prefab_elsewhere", "extract_prefab"):
+            for idname in ("open_prefab_elsewhere", "extract_prefab", "group_objects"):
                 check(
                     hasattr(bpy.ops.paradise_assets, idname),
                     f"paradise_assets.{idname} exists",
@@ -265,8 +265,9 @@ def main() -> int:
                 drawn(bpy.context) == [
                     "paradise_assets.open_prefab_elsewhere",
                     "paradise_assets.extract_prefab",
+                    "paradise_assets.group_objects",
                 ],
-                f"both entries on a document object ({drawn(bpy.context)})",
+                f"all three entries on a document object ({drawn(bpy.context)})",
             )
             outsider = bpy.data.objects.new("JustACube", None)
             bpy.context.scene.collection.objects.link(outsider)

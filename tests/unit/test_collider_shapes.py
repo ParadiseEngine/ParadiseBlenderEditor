@@ -26,7 +26,7 @@ def test_a_box_rides_on_the_scale_and_round_trips():
     assert back["ShapeType"] == "Box"
     assert close(back["LocalCenter"], (1, 2, 3))
     assert close(back["Size"], (2, 4, 6))
-    assert back["Radius"] == 0.0 and back["Height"] == 0.0
+    assert "Radius" not in back and "Height" not in back   # a box says nothing about them
 
 
 def test_a_sphere_is_its_display_size_and_a_stretched_one_stays_enclosing():
@@ -44,7 +44,16 @@ def test_a_capsule_is_y_aligned_in_the_document_and_z_in_blender():
     assert close(scale, (0.6, 0.6, 1.8))          # the height is Blender Z
     back = collider_shapes.from_gizmo("Capsule", size, position, rotation, scale)
     assert back["Radius"] == pytest.approx(0.3) and back["Height"] == pytest.approx(1.8)
-    assert back["Size"] == [0.0, 0.0, 0.0]
+    assert "Size" not in back
+
+
+def test_an_unused_member_keeps_whatever_the_document_had():
+    stored = {"ShapeType": "Sphere", "Radius": 0.5, "Size": [1, 1, 1]}
+    _, size, position, rotation, scale = collider_shapes.to_gizmo(stored)
+    computed = collider_shapes.from_gizmo("Sphere", size, position, rotation, scale)
+    merged = dict(stored)
+    merged.update(collider_shapes.keep_unchanged(stored, computed))
+    assert merged["Size"] == [1, 1, 1]
 
 
 def test_a_rotated_box_round_trips_its_rotation():

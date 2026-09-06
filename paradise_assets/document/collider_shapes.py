@@ -66,7 +66,9 @@ def to_gizmo(shape: dict):
 
 
 def from_gizmo(shape_type: str, display_size: float, position, rotation, scale) -> dict:
-    """The geometry members a Blender TRS spells, in document axes."""
+    """The geometry members a Blender TRS spells, in document axes. Only the members this
+    primitive USES: a sphere's ``Size`` is whatever the document had, and rewriting it to
+    zeros churned a file nobody touched."""
     center, rot, extents = axes.from_blender_trs(
         tuple(float(v) for v in position),
         tuple(float(v) for v in rotation),
@@ -77,9 +79,6 @@ def from_gizmo(shape_type: str, display_size: float, position, rotation, scale) 
         "ShapeType": shape_type,
         "LocalCenter": [round(v, 6) for v in center],
         "LocalRotation": [round(v, 6) for v in rot],
-        "Size": [0.0, 0.0, 0.0],
-        "Radius": 0.0,
-        "Height": 0.0,
     }
     if shape_type == "Sphere":
         geometry["Radius"] = round(float(display_size) * max(sx, sy, sz), 6)

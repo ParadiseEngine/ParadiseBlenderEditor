@@ -103,11 +103,12 @@ def load_document(
         created[entry.guid] = obj
         result.objects += 1
 
-    # Shapes only for what this document owns: an instance's collider is its prefab's, edited
-    # there, and a resolved child is not an object at all.
+    # Shapes only for what this DOCUMENT authors. An instance's own entry is read from the
+    # file, not the expansion: the expansion folds the prefab's components in, and a shape the
+    # prefab declares is edited in the prefab. A resolved child is not an object at all.
     vocabulary = component_schema.load(layout.root)
-    for entry in expansion.document.objects:
-        if entry.guid in authored and entry.guid not in instanced:
+    for entry in document.objects:
+        if entry.guid in created:
             shapes.materialize(created[entry.guid], _components_payload(entry), vocabulary)
 
     result.instances = expansion.expanded

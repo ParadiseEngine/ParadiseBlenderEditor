@@ -310,9 +310,9 @@ def _object_entry(
 
     # Last, so an overlay edit could never win against the meta/transform writes above.
     _apply_edits(obj, entry, result)
-    # After the overlay: a typed IsTrigger and a moved Empty land on the same row.
-    if store.prefab_of(obj) is None:
-        result.edited += shapes.bake(obj, entry, vocabulary, _default_row)
+    # After the overlay: a typed IsTrigger and a moved Empty land on the same row. ``entry`` is
+    # the file's own entry, so for an instance only the lists IT authors are baked.
+    result.edited += shapes.bake(obj, entry, vocabulary, _default_row)
     return entry
 
 

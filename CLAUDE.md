@@ -195,8 +195,9 @@ Box / Sphere / Capsule buttons add one; the row's game members (Id, IsTrigger, L
 typed in the panel and land on the same row as the moved Empty. A shape Empty carries NO
 document identity, so nothing that walks document objects sees it — except
 `load._clear_previous`, which must remove them or a reload shows two documents' shapes. Shapes
-are made only for objects the document owns: an instance's collider is its prefab's and is
-edited there.
+are made for the components this DOCUMENT authors — for an instance, its own entry as the file
+spells it, not the expansion that folds the prefab's components in: ShiningPie's props carry no
+collider, every one of its 122 placed instances does.
 
 **An instance loaded from a document carries no prefab reference of its own** — the expansion
 in `resolve.py` replaces the instance entry with the prefab's resolved root, consuming it. So

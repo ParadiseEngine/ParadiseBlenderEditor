@@ -220,6 +220,52 @@ def main() -> int:
             check(rows[1].get("IsTrigger") is False and rows[1].get("Layer") == 0 and rows[1].get("Id") == "",
                   "and every game member at its schema default")
 
+            print("\n== an instance's own collider is shown; its prefab's is not ==")
+            os.makedirs(os.path.join(root, "assets", "props"))
+            prop = os.path.join(root, "assets", "props", "crate.prefab")
+            PROP = "11111111-2222-4333-8444-555555555555"
+            with open(prop, "w", encoding="utf-8") as handle:
+                handle.write(
+                    f'schema_version = 1\n\n[[objects]]\n\n[[objects.components]]\nid = "{META}"\n'
+                    f'type = "meta"\nGuid = "{PROP}"\nName = "Crate"\n\n[[objects.components]]\n'
+                    f'id = "{COLLIDER}"\ntype = "Game.AuthoredCollider"\n\n[[objects.components.Shapes]]\n'
+                    'Id = "PrefabOwned"\nShapeType = "Box"\nSize = [1, 1, 1]\n')
+            with open(prop + ".meta", "w", encoding="utf-8") as handle:
+                handle.write(f'schema_version = 1\nguid = "{PROP}"\n')
+            level = path.replace("arena.prefab", "placed.prefab")
+            OWN = "dddddddd-4444-4444-8444-444444444444"
+            FROM_PREFAB = "dddddddd-5555-4555-8555-555555555555"
+            with open(level, "w", encoding="utf-8") as handle:
+                handle.write(
+                    DOCUMENT.split("[[objects]]", 2)[0]
+                    + "[[objects]]" + DOCUMENT.split("[[objects]]", 2)[1]
+                    + f'[[objects]]\nprefab = {{ guid = "{PROP}", path = "props/crate.prefab" }}\n\n'
+                    f'[[objects.components]]\nid = "{META}"\ntype = "meta"\nGuid = "{OWN}"\n'
+                    f'Name = "OwnCollider"\nParent = "{ROOT}"\n\n[[objects.components]]\n'
+                    f'id = "{COLLIDER}"\ntype = "Game.AuthoredCollider"\n\n[[objects.components.Shapes]]\n'
+                    'Id = "LevelOwned"\nShapeType = "Sphere"\nRadius = 2.0\n\n'
+                    f'[[objects]]\nprefab = {{ guid = "{PROP}", path = "props/crate.prefab" }}\n\n'
+                    f'[[objects.components]]\nid = "{META}"\ntype = "meta"\nGuid = "{FROM_PREFAB}"\n'
+                    f'Name = "PrefabCollider"\nParent = "{ROOT}"\n')
+            with open(level + ".meta", "w", encoding="utf-8") as handle:
+                handle.write('schema_version = 1\nguid = "eeeeeeee-6666-4666-8666-666666666666"\n')
+            was = read(level)
+            open_document(level, layout)
+            own = shapes.shape_empties(object_named("OwnCollider"), COLLIDER, "Shapes")
+            check(len(own) == 1 and own[0].empty_display_type == "SPHERE",
+                  f"an instance that authors its collider gets its Empty ({len(own)})")
+            check(not shapes.shape_empties(object_named("PrefabCollider"), COLLIDER, "Shapes"),
+                  "one whose collider comes from the prefab gets none")
+            own[0].location.x = 3.0
+            save.save_prefab(bpy.context.scene)
+            placed = prefab_document.loads(read(level), level)
+            moved = next(e for e in placed.objects if e.name == "OwnCollider")
+            check(close(moved.component(COLLIDER).data["Shapes"][0]["LocalCenter"], (3, 0, 0)),
+                  "and moving it writes the instance's own row")
+            untouched = next(e for e in placed.objects if e.name == "PrefabCollider")
+            check(untouched.component(COLLIDER) is None, "without inventing a collider on the other")
+            open_document(path, layout)
+
             print("\n== a reload rebuilds the Empties from the document ==")
             written = read(path)
             open_document(path, layout)

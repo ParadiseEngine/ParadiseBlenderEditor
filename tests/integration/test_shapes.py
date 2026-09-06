@@ -171,7 +171,7 @@ def main() -> int:
             car = object_named("Car")
             empties = shapes.shape_empties(car, COLLIDER, "Shapes")
             check(len(empties) == 2, f"two shape Empties ({[e.name for e in empties]})")
-            body, bumper = (empties + [None, None])[:2]
+            body, bumper = [*empties, None, None][:2]
             check(body is not None and body.parent is car and shapes.is_shape(body),
                   "parented to the object and tagged as a shape")
             check(body is not None and body.empty_display_type == "CUBE"
@@ -193,7 +193,8 @@ def main() -> int:
             body.scale.z = 2.0
             save.save_prefab(bpy.context.scene)
             rows = shapes_of(path)
-            check(close(rows[0]["LocalCenter"], (1, 0.25, 0)), f"LocalCenter moved ({rows[0]['LocalCenter']})")
+            check(close(rows[0]["LocalCenter"], (1, 0.25, 0)),
+                  f"LocalCenter moved ({rows[0]['LocalCenter']})")
             check(close(rows[0]["Size"], (2, 2, 4)), f"Size follows the scale ({rows[0]['Size']})")
             check(rows[0]["Id"] == "Body" and rows[0]["IsTrigger"] is False and rows[0]["Layer"] == 0,
                   "the row's game members are untouched")
@@ -207,7 +208,8 @@ def main() -> int:
             bpy.data.objects.remove(body, do_unlink=True)
             save.save_prefab(bpy.context.scene)
             rows = shapes_of(path)
-            check(len(rows) == 1 and rows[0]["Id"] == "Bumper", f"one row left ({[r.get('Id') for r in rows]})")
+            check(len(rows) == 1 and rows[0]["Id"] == "Bumper",
+                  f"one row left ({[r.get('Id') for r in rows]})")
 
             print("\n== adding a shape appends a complete row ==")
             capsule = shapes.add_shape(car, COLLIDER, "Shapes", "Capsule")
@@ -216,7 +218,8 @@ def main() -> int:
             rows = shapes_of(path)
             check(len(rows) == 2 and rows[1]["ShapeType"] == "Capsule", "a Capsule row was appended")
             check(rows[1]["Radius"] == 0.25 and rows[1]["Height"] == 1.0, "with the default extents")
-            check(close(rows[1]["LocalCenter"], (0, 1, 0)), f"where the Empty was put ({rows[1]['LocalCenter']})")
+            check(close(rows[1]["LocalCenter"], (0, 1, 0)),
+                  f"where the Empty was put ({rows[1]['LocalCenter']})")
             check(rows[1].get("IsTrigger") is False and rows[1].get("Layer") == 0 and rows[1].get("Id") == "",
                   "and every game member at its schema default")
 
@@ -249,7 +252,6 @@ def main() -> int:
                     f'Name = "PrefabCollider"\nParent = "{ROOT}"\n')
             with open(level + ".meta", "w", encoding="utf-8") as handle:
                 handle.write('schema_version = 1\nguid = "eeeeeeee-6666-4666-8666-666666666666"\n')
-            was = read(level)
             open_document(level, layout)
             own = shapes.shape_empties(object_named("OwnCollider"), COLLIDER, "Shapes")
             check(len(own) == 1 and own[0].empty_display_type == "SPHERE",

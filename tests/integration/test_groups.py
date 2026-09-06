@@ -144,7 +144,7 @@ def main() -> int:
             written = prefab_document.loads(read(path), path)
             moved = next(e for e in written.objects if e.name == "Highway")
             kept = next(e for e in written.objects if e.name == "Deck")
-            check(list(moved.component(TRS).data["Position"])[0] == 11.0,
+            check(moved.component(TRS).data["Position"][0] == 11.0,
                   "the group's position moved")
             check(list(kept.component(TRS).data["Position"]) == [1.0, 2.0, 3.0],
                   "the member's local position is untouched")
@@ -172,7 +172,7 @@ def main() -> int:
                     {c.id.lower() for c in group_entry.components} == {META.lower(), TRS.lower()},
                     "carrying meta and transform and nothing else",
                 )
-                check(list(group_entry.component(TRS).data["Position"])[0] == 2.0,
+                check(group_entry.component(TRS).data["Position"][0] == 2.0,
                       "with the placement the author gave it")
                 child = next((e for e in written.objects if e.name == "Pivot"), None)
                 check(child is not None and child.parent == group_entry.guid,

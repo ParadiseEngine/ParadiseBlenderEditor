@@ -34,7 +34,8 @@ def test_a_sphere_is_its_display_size_and_a_stretched_one_stays_enclosing():
     display, size, position, rotation, scale = collider_shapes.to_gizmo(row)
     assert (display, size) == ("SPHERE", 0.7)
     assert close(scale, (1, 1, 1))
-    assert collider_shapes.from_gizmo("Sphere", 0.7, position, rotation, (1, 3, 1))["Radius"] == pytest.approx(2.1)
+    stretched = collider_shapes.from_gizmo("Sphere", 0.7, position, rotation, (1, 3, 1))
+    assert stretched["Radius"] == pytest.approx(2.1)
 
 
 def test_a_capsule_is_y_aligned_in_the_document_and_z_in_blender():

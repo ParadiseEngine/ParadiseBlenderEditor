@@ -115,13 +115,16 @@ def keep_unchanged(stored: dict, computed: dict) -> dict:
 def _same_numbers(a, b) -> bool:
     if not isinstance(a, (list, tuple)) or len(a) != len(b):
         return False
-    return all(abs(float(x) - float(y)) <= _EPSILON * max(abs(float(x)), 1.0) for x, y in zip(a, b))
+    return all(
+        abs(float(x) - float(y)) <= _EPSILON * max(abs(float(x)), 1.0)
+        for x, y in zip(a, b, strict=True)
+    )
 
 
 def _same_rotation(a, b) -> bool:
     if not isinstance(a, (list, tuple)) or len(a) != 4:
         return False
-    dot = abs(sum(float(x) * float(y) for x, y in zip(a, b)))
+    dot = abs(sum(float(x) * float(y) for x, y in zip(a, b, strict=True)))
     return abs(1.0 - dot) <= _EPSILON
 
 

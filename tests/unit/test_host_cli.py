@@ -69,3 +69,79 @@ def test_dotnet_children_turn_the_msbuild_server_off(monkeypatch):
     env = host.subprocess_environment()
 
     assert env["DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER"] == "1"
+
+
+def test_the_cli_is_the_version_the_project_pins(tmp_path, monkeypatch):
+    """A CLI older than the tree writes documents the runtime cannot read, and one that cannot
+    read the manifest falls back to defaults and reports a cascade about everything except the
+    version. So the version comes from the project, exactly as the release pipeline reads it."""
+    root = tmp_path / "game"
+    root.mkdir()
+    (root / "Directory.Packages.props").write_text(
+        "<Project>\n  <PropertyGroup>\n    <ParadiseVersion>0.42.0</ParadiseVersion>\n"
+        "  </PropertyGroup>\n</Project>\n"
+    )
+    cached = tmp_path / "cache" / "0.42.0"
+    cached.mkdir(parents=True)
+    binary = cached / ("paradise.exe" if os.name == "nt" else "paradise")
+    binary.write_text("")
+    monkeypatch.setattr(host, "_TOOL_CACHE", str(tmp_path / "cache"))
+    monkeypatch.setattr(host, "_preference", lambda name, default="": default)
+    # Present, and deliberately NOT what gets used.
+    monkeypatch.setattr(host.shutil, "which", lambda name: "/usr/local/bin/paradise")
+
+    assert host.project_engine_version(str(root)) == "0.42.0"
+    assert host.resolve_cli_command(str(root)) == [str(binary)]
+
+
+def test_an_already_cached_version_is_not_fetched_again(tmp_path, monkeypatch):
+    cached = tmp_path / "cache" / "0.42.0"
+    cached.mkdir(parents=True)
+    binary = cached / ("paradise.exe" if os.name == "nt" else "paradise")
+    binary.write_text("")
+    monkeypatch.setattr(host, "_TOOL_CACHE", str(tmp_path / "cache"))
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("a cached version must not be fetched again")
+
+    monkeypatch.setattr(host.subprocess, "run", refuse)
+
+    assert host._versioned_cli("0.42.0") == [str(binary)]
+
+
+def test_a_configured_cli_still_wins_over_the_pin(tmp_path, monkeypatch):
+    """The escape hatch: pointing the addon at a source build is how the engine is worked on."""
+    root = tmp_path / "game"
+    root.mkdir()
+    (root / "Directory.Packages.props").write_text("<ParadiseVersion>0.42.0</ParadiseVersion>")
+    chosen = tmp_path / "built-paradise"
+    chosen.write_text("")
+    monkeypatch.setattr(
+        host, "_preference", lambda name, default="": str(chosen) if name == "cli" else default
+    )
+    monkeypatch.setattr(host, "_versioned_cli", lambda version: ["never"])
+
+    assert host.resolve_cli_command(str(root)) == [os.path.realpath(chosen)]
+
+
+def test_a_pin_that_cannot_be_fetched_falls_through_rather_than_stopping_work(tmp_path, monkeypatch):
+    """Offline, or a version never published. Falling back keeps the addon usable and says so;
+    refusing outright would strand someone with no network and nothing to do."""
+    root = tmp_path / "game"
+    root.mkdir()
+    (root / "Directory.Packages.props").write_text("<ParadiseVersion>9.9.9</ParadiseVersion>")
+    monkeypatch.setattr(host, "_preference", lambda name, default="": default)
+    monkeypatch.setattr(host, "_versioned_cli", lambda version: None)
+    monkeypatch.setattr(host.shutil, "which", lambda name: "/usr/local/bin/paradise")
+
+    assert host.resolve_cli_command(str(root)) == ["/usr/local/bin/paradise"]
+
+
+def test_a_project_that_pins_nothing_uses_whatever_is_installed(tmp_path, monkeypatch):
+    root = tmp_path / "game"
+    root.mkdir()
+    monkeypatch.setattr(host, "_preference", lambda name, default="": default)
+    monkeypatch.setattr(host.shutil, "which", lambda name: "/usr/local/bin/paradise")
+
+    assert host.project_engine_version(str(root)) is None
+    assert host.resolve_cli_command(str(root)) == ["/usr/local/bin/paradise"]

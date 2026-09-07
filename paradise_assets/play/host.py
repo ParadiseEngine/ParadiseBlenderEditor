@@ -9,6 +9,8 @@ the long-lived ones (:mod:`..watch`, :mod:`.session`), which are supervised chil
 from __future__ import annotations
 
 import os
+import pathlib
+import re
 import shutil
 import subprocess
 
@@ -16,6 +18,7 @@ __all__ = [
     "CliJob",
     "CliResult",
     "ensure_cli_built",
+    "project_engine_version",
     "resolve_cli_command",
     "run_cli",
     "start_cli",
@@ -70,6 +73,59 @@ def _configured(value: str) -> list[str] | None:
     return [resolved] if os.path.exists(resolved) else None
 
 
+#: One directory per version, shared by every project on the machine. NOT the global tool
+#: (``~/.dotnet/tools``): that is a single slot, and installing into it for one project changes
+#: which CLI every other project gets.
+_TOOL_CACHE = os.path.join(os.path.expanduser("~"), ".paradise", "cli")
+
+_PARADISE_VERSION = re.compile(r"<ParadiseVersion>\s*([^<\s]+)\s*</ParadiseVersion>")
+
+
+def project_engine_version(project_root: str) -> str | None:
+    """
+    The engine version a project pins, read from ``Directory.Packages.props``.
+
+    The same one number the release pipeline reads, and for the same reason: the CLI that writes
+    a project's documents and the runtime that reads them should be one engine build by
+    construction. ``None`` for a tree that pins nothing that way, which falls back to whatever
+    CLI is installed.
+    """
+    try:
+        text = pathlib.Path(project_root, "Directory.Packages.props").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    found = _PARADISE_VERSION.search(text)
+    return found.group(1) if found else None
+
+
+def _versioned_cli(version: str) -> list[str] | None:
+    """``paradise`` at exactly *version*, fetched once into its own directory. ``None`` when it is
+    not there and cannot be fetched -- offline, or a version that was never published."""
+    directory = os.path.join(_TOOL_CACHE, version)
+    binary = os.path.join(directory, "paradise.exe" if os.name == "nt" else "paradise")
+    if os.path.exists(binary):
+        return [binary]
+
+    dotnet = _dotnet()
+    if dotnet is None:
+        return None
+    try:
+        completed = subprocess.run(
+            [dotnet, "tool", "install", "Paradise.Cli", "--version", version, "--tool-path", directory],
+            capture_output=True,
+            text=True,
+            timeout=600,
+            env=_with_dotnet_on_path(),
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        print(f"[paradise_assets] could not fetch paradise {version}: {error}")
+        return None
+    if completed.returncode != 0:
+        print(f"[paradise_assets] could not fetch paradise {version}: {completed.stderr.strip()}")
+        return None
+    return [binary] if os.path.exists(binary) else None
+
+
 def _ladder(configured: str, command_name: str) -> list[str] | None:
     """Configured path, then PATH, then the installed dotnet tool."""
     if configured.strip():
@@ -102,15 +158,39 @@ def _preference(name: str, default: str = "") -> str:
         return default
 
 
-def resolve_cli_command() -> list[str] | None:
-    """Argv prefix for the ``paradise`` CLI, or ``None``."""
-    return _ladder(_preference("cli"), "paradise")
+def resolve_cli_command(project_root: str | None = None) -> list[str] | None:
+    """
+    Argv prefix for the ``paradise`` CLI, or ``None``.
+
+    With a *project_root*, the CLI is the one that project PINS -- fetched on first use and kept
+    per version -- because a CLI older than the tree writes documents the runtime cannot read, and
+    one that cannot read the manifest falls back to defaults and reports a cascade of errors about
+    everything except the version. The configured preference still wins, so pointing the addon at
+    a source build stays possible; a pinned version that cannot be fetched warns and falls through
+    rather than stopping work offline.
+    """
+    configured = _preference("cli")
+    if configured.strip():
+        found = _configured(configured)
+        if found is not None:
+            return found
+
+    if project_root:
+        version = project_engine_version(project_root)
+        if version is not None:
+            pinned = _versioned_cli(version)
+            if pinned is not None:
+                return pinned
+            print(f"[paradise_assets] paradise {version} unavailable; using whatever is installed")
+
+    return _ladder("", "paradise")
 
 
-def subprocess_environment() -> dict[str, str]:
-    """Child environment with the dotnet directory on PATH (a Dock-launched Blender has none,
-    and MSBuild's own ``dotnet exec`` steps need it) and the MSBuild server off: two ``dotnet``
-    builds sharing one die on MSB0001, which is what Play looked like beside a live watcher."""
+def _with_dotnet_on_path() -> dict[str, str]:
+    """``os.environ`` plus the dotnet directory on PATH: a Dock-launched Blender has none, and
+    MSBuild's own ``dotnet exec`` steps need it. Separate from :func:`subprocess_environment`
+    because fetching a tool needs this and nothing else -- in particular not a preference, which
+    would drag ``bpy`` into a path that has to work while Blender is starting."""
     environment = dict(os.environ)
     dotnet = _dotnet()
     if dotnet is not None:
@@ -118,6 +198,14 @@ def subprocess_environment() -> dict[str, str]:
         current = environment.get("PATH", "")
         if directory not in current.split(os.pathsep):
             environment["PATH"] = directory + os.pathsep + current if current else directory
+    return environment
+
+
+def subprocess_environment() -> dict[str, str]:
+    """Child environment for a CLI verb: dotnet on PATH and the MSBuild server off, since two
+    ``dotnet`` builds sharing one die on MSB0001 -- which is what Play looked like beside a live
+    watcher."""
+    environment = _with_dotnet_on_path()
     environment["DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER"] = "1"
     ktx = _preference("ktx_path").strip()
     if ktx:
@@ -248,7 +336,7 @@ class CliJob:
 
 def start_cli(arguments: list[str], cwd: str) -> CliJob | None:
     """Start the CLI in ``cwd`` without waiting; ``None`` when there is no CLI to run."""
-    command = resolve_cli_command()
+    command = resolve_cli_command(cwd)
     if command is None:
         return None
     stages = []
@@ -263,7 +351,7 @@ def run_cli(arguments: list[str], cwd: str, timeout: float = 900.0) -> CliResult
     """Run the CLI to completion in ``cwd``; ``None`` when it could not start. Synchronous, for
     background Blender (no event loop for a modal) and scripts; the operators use
     :func:`start_cli`."""
-    command = resolve_cli_command()
+    command = resolve_cli_command(cwd)
     if command is None:
         return None
 

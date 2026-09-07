@@ -103,7 +103,7 @@ class _CliOperator:
         if self._layout is None:
             return {"CANCELLED"}
 
-        if resolve_cli_command() is None:
+        if resolve_cli_command(self._layout.root) is None:
             self.report({"ERROR"}, CLI_MISSING)
             return {"CANCELLED"}
 
@@ -180,7 +180,7 @@ class PARADISE_ASSETS_OT_play(Operator):
             return {"CANCELLED"}
         layout, document_path = found
 
-        if resolve_cli_command() is None:
+        if resolve_cli_command(layout.root) is None:
             self.report({"ERROR"}, CLI_MISSING)
             return {"CANCELLED"}
 

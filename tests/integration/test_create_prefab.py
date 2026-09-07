@@ -309,7 +309,7 @@ def test_nested_extraction() -> None:
             obj for obj in bpy.context.scene.collection.all_objects if store.is_derived(obj)
         ]
         check(
-            sorted(o.name for o in derived) == ["Cup", "Shelf"],
+            sorted(store.document_name(o) or o.name for o in derived) == ["Cup", "Shelf"],
             f"the prefab's children are shown as derived ({sorted(o.name for o in derived)})",
         )
 
@@ -332,10 +332,15 @@ def test_nested_extraction() -> None:
 
 def _by_name(scene) -> dict[str, tuple]:
     """Where every document object stands, keyed by name: a resolved child's identity is minted
-    per instance, so it cannot be the key across an extraction."""
+    per instance, so it cannot be the key across an extraction.
+
+    The DOCUMENT's name, not Blender's: the Outliner name carries a mark for an instance and for
+    a prefab's child, which is exactly what an extraction turns objects into."""
     bpy.context.view_layer.update()
     return {
-        obj.name: tuple(round(v, 5) for row in obj.matrix_world for v in row)
+        store.document_name(obj) or obj.name: tuple(
+            round(v, 5) for row in obj.matrix_world for v in row
+        )
         for obj in scene.collection.all_objects
         if store.guid_of(obj) is not None
     }

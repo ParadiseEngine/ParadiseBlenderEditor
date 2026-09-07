@@ -53,6 +53,69 @@ def open_document(path: str, layout) -> load.LoadResult:
     return load.load_document(fresh_scene(), document, path, layout)
 
 
+#: One prefab-local identity per fixture object, fixed so a carrier's Target is predictable.
+PROBE_ROOT_LOCAL = "aaaaaaaa-0000-4000-8000-000000000001"
+PROBE_CHILD_LOCAL = "aaaaaaaa-0000-4000-8000-000000000002"
+PROBE_INSTANCE = "410f381b-fc6e-5a66-a70a-698972a199b5"
+PROBE_LEVEL = "bbbbbbbb-0000-4000-8000-000000000001"
+
+
+def _instanced_probe(work: str):
+    """A project of its own holding ``prefabs/lamp.prefab`` (Post + Bulb) and a level whose root
+    holds one instance of it. Returns ``(level, prefab, instance guid, child local guid)``.
+
+    The instance hangs under a root rather than being one: a document has exactly one root, so an
+    instance that WAS the root could not be deleted without emptying the document, and deleting
+    an instance is the ordinary gesture these tests are about.
+
+    Its own tree rather than the checkout's, because the prefab reference has to resolve against
+    it -- and the manifest goes under ``assets/``, which is what ``project.locate`` looks for; a
+    bare ``project.toml`` at the root finds nothing.
+    """
+    assets = os.path.join(work, "assets")
+    prefabs = os.path.join(assets, "prefabs")
+    scenes_dir = os.path.join(assets, "scenes")
+    os.makedirs(prefabs)
+    os.makedirs(scenes_dir)
+    with open(os.path.join(assets, "project.toml"), "w", encoding="utf-8", newline="") as handle:
+        handle.write('name = "probe"\nschema_version = 1\n')
+
+    def meta(body: str) -> str:
+        return f'\n[[objects.components]]\nid = "{well_known.META_ID}"\ntype = "meta"\n' + body
+
+    def transform() -> str:
+        return (
+            f'\n[[objects.components]]\nid = "{well_known.TRANSFORM_ID}"\ntype = "transform"\n'
+            "Position = [0.0, 0.0, 0.0]\nRotation = [0.0, 0.0, 0.0, 1.0]\nScale = [1.0, 1.0, 1.0]\n"
+        )
+
+    prefab_path = os.path.join(prefabs, "lamp.prefab")
+    with open(prefab_path, "w", encoding="utf-8", newline="") as handle:
+        handle.write(
+            "schema_version = 1\n"
+            "\n[[objects]]\n" + meta(f'Guid = "{PROBE_ROOT_LOCAL}"\nName = "Post"\n') + transform()
+            + "\n[[objects]]\n"
+            + meta(
+                f'Guid = "{PROBE_CHILD_LOCAL}"\nName = "Bulb"\nParent = "{PROBE_ROOT_LOCAL}"\n'
+            )
+            + transform()
+        )
+
+    scene_path = os.path.join(scenes_dir, "lit.prefab")
+    with open(scene_path, "w", encoding="utf-8", newline="") as handle:
+        handle.write(
+            "schema_version = 1\n"
+            "\n[[objects]]\n" + meta(f'Guid = "{PROBE_LEVEL}"\nName = "Level"\n') + transform()
+            + "\n[[objects]]\n"
+            'prefab = { guid = "5f2a1111-2222-4333-8444-555555555555", '
+            'path = "prefabs/lamp.prefab" }\n'
+            + meta(f'Guid = "{PROBE_INSTANCE}"\nName = "Lamp_03"\nParent = "{PROBE_LEVEL}"\n')
+            + transform()
+        )
+
+    return scene_path, prefab_path, PROBE_INSTANCE, PROBE_CHILD_LOCAL
+
+
 def main() -> int:
     root = sys.argv[sys.argv.index("--") + 1] if "--" in sys.argv else DEFAULT_PROJECT
     layout = project.locate(root)
@@ -294,7 +357,12 @@ def main() -> int:
         check(result.derived == 1, "the prefab's child is marked derived")
 
         derived = [o for o in bpy.context.scene.collection.all_objects if store.is_derived(o)]
-        check(all(all(o.lock_location) for o in derived), "derived children are locked in the viewport")
+        # Movable, and actively UNLOCKED: the locks live in the .blend, so a workfile written
+        # before overrides could be authored would otherwise keep them with nothing to say why.
+        check(not any(any(o.lock_location) for o in derived),
+              "a prefab's child can be moved -- the move becomes an override carrier")
+        check(all(store.local_of(o) is not None for o in derived),
+              "a prefab's child records the (instance, local) address a carrier spells")
 
         save.save_prefab(bpy.context.scene)
 
@@ -391,14 +459,92 @@ def main() -> int:
             "the surviving instance keeps its carrier and the deleted one's is gone",
         )
 
-        # A derived child cannot be moved: the document has no way to say so.
-        overridden = next(o for o in bpy.context.scene.collection.all_objects if store.is_derived(o))
-        overridden.location.x += 1.0
+    print("\n== moving a prefab's child writes an override carrier ==")
+    with tempfile.TemporaryDirectory() as work:
+        scene_path, prefab_path, instance_guid, child_local = _instanced_probe(work)
+        probe_layout = project.locate(scene_path)
+        open_document(scene_path, probe_layout)
+
+        with open(scene_path, "rb") as handle:
+            original = handle.read()
+
+        child = next(o for o in bpy.context.scene.collection.all_objects if store.is_derived(o))
+        child.location.x += 1.0
+        saved = save.save_prefab(bpy.context.scene)
+        check(saved.moved == 1, f"the move is reported once ({saved.moved})")
+
+        with open(scene_path, encoding="utf-8") as handle:
+            after = prefab_document.loads(handle.read(), scene_path)
+        carriers = [o for o in after.objects if o.target is not None]
+        check(len(carriers) == 1, f"one carrier is written ({len(carriers)})")
+        check(
+            carriers and carriers[0].parent == instance_guid and carriers[0].target == child_local,
+            "the carrier addresses (instance, prefab-local), which is the resolver's own key",
+        )
+        # All three channels, never only the one that moved: a partial override would inherit the
+        # rest from a prefab somebody else is still editing.
+        placement = carriers[0].component(well_known.TRANSFORM_ID) if carriers else None
+        check(
+            placement is not None
+            and sorted(placement.data) == ["Position", "Rotation", "Scale"],
+            "the carrier carries a whole transform, not just the channel that moved",
+        )
+        check(after.by_guid()[instance_guid].prefab is not None, "it is still an instance")
+
+        # THE byte check: nothing moved, so the second save must rewrite nothing at all.
+        with open(scene_path, "rb") as handle:
+            once = handle.read()
+        save.save_prefab(bpy.context.scene)
+        with open(scene_path, "rb") as handle:
+            check(handle.read() == once, "a second save of an unchanged scene rewrites no bytes")
+
+        # Put back where the prefab has it: the override is not smaller, it is gone.
+        child = next(o for o in bpy.context.scene.collection.all_objects if store.is_derived(o))
+        child.location.x -= 1.0
+        save.save_prefab(bpy.context.scene)
+        with open(scene_path, "rb") as handle:
+            check(handle.read() == original,
+                  "moving it back to the prefab's own value removes the carrier entirely")
+
+    print("\n== deleting a prefab's child drops it ==")
+    with tempfile.TemporaryDirectory() as work:
+        scene_path, prefab_path, instance_guid, child_local = _instanced_probe(work)
+        probe_layout = project.locate(scene_path)
+        open_document(scene_path, probe_layout)
+
+        child = next(o for o in bpy.context.scene.collection.all_objects if store.is_derived(o))
+        bpy.data.objects.remove(child, do_unlink=True)
+        save.save_prefab(bpy.context.scene)
+
+        with open(scene_path, encoding="utf-8") as handle:
+            after = prefab_document.loads(handle.read(), scene_path)
+        dropped = [o for o in after.objects if o.target is not None and o.dropped]
+        check(len(dropped) == 1 and dropped[0].target == child_local,
+              "the deleted child is written as a Dropped carrier, not as a missing object")
+
+        reloaded = load.load_document(fresh_scene(), after, scene_path, probe_layout)
+        check(reloaded.objects == 2,
+              f"the drop survives a reload: root + instance, no Bulb ({reloaded.objects})")
+
+    print("\n== deleting an instance is not a half-deleted subtree ==")
+    with tempfile.TemporaryDirectory() as work:
+        scene_path, prefab_path, instance_guid, child_local = _instanced_probe(work)
+        probe_layout = project.locate(scene_path)
+        open_document(scene_path, probe_layout)
+
+        # Blender orphans an object's children rather than deleting them, so the prefab's child
+        # is left behind parentless. It is pure display and is swept, not refused.
+        bpy.data.objects.remove(
+            store.object_with_guid(bpy.context.scene, instance_guid), do_unlink=True)
         try:
-            save.save_prefab(bpy.context.scene)
-            check(False, "moving a prefab's child is refused at save")
+            saved = save.save_prefab(bpy.context.scene)
+            check(saved.removed >= 1, f"deleting an instance removes its entry ({saved.removed})")
+            with open(scene_path, encoding="utf-8") as handle:
+                after = prefab_document.loads(handle.read(), scene_path)
+            check([o.guid for o in after.objects] == [PROBE_LEVEL],
+                  "the instance and everything of its is gone, leaving the level's root")
         except save.SaveError as error:
-            check("cannot express" in str(error), f"the refusal says why: {error}")
+            check(False, f"deleting an instance should not be refused: {error}")
 
     print("\n== an instance whose prefab is missing does not take the load down ==")
     with tempfile.TemporaryDirectory() as work:

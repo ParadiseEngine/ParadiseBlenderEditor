@@ -26,12 +26,15 @@ __all__ = [
     "apply_to",
     "clear",
     "count",
+    "drop_path",
     "edited_fields",
     "read",
     "read_path",
     "read_structure",
     "remove_component",
     "removed_ids",
+    "revert_field",
+    "reverted_paths",
     "set_field",
     "visible_components",
     "write_path",
@@ -42,8 +45,14 @@ __all__ = [
 
 EDITS_KEY = "paradise_edits"
 
-#: Pending add/remove, separate from :data:`EDITS_KEY` so :func:`read` never mistakes a
+#: Pending add/remove/revert, separate from :data:`EDITS_KEY` so :func:`read` never mistakes a
 #: payload for a field map.
+#:
+#: "Reverted" is its own verb rather than a use of the other two. Forgetting a pending edit
+#: (:func:`clear`) hands a field back to what the FILE says; once an override is in the file that
+#: changes nothing, and "revert to prefab" would silently do nothing in the one case an author is
+#: actually in. Removing the field from the override is what hands it back to the prefab, and
+#: that is neither an add nor a remove of the component.
 STRUCTURE_KEY = "paradise_structure"
 
 
@@ -119,10 +128,12 @@ def edited_fields(obj: bpy.types.Object, component_id: str) -> dict[str, object]
 
 def count(obj: bpy.types.Object) -> int:
     """How many pending changes the panel should report: fields plus add/remove."""
+    structure = read_structure(obj)
     return (
         sum(len(fields) for fields in read(obj).values())
-        + len(added_components(obj))
-        + len(removed_ids(obj))
+        + len(structure["added"])
+        + len(structure["removed"])
+        + len(structure["reverted"])
     )
 
 
@@ -130,26 +141,34 @@ def read_structure(obj: bpy.types.Object) -> dict[str, list]:
     """Pending add/remove, ``{"added": [...], "removed": [...]}``."""
     raw = obj.get(STRUCTURE_KEY)
     if not isinstance(raw, str) or not raw:
-        return {"added": [], "removed": []}
+        return {"added": [], "removed": [], "reverted": []}
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError:
-        return {"added": [], "removed": []}
+        return {"added": [], "removed": [], "reverted": []}
     if not isinstance(parsed, dict):
-        return {"added": [], "removed": []}
+        return {"added": [], "removed": [], "reverted": []}
     added = [
         spec for spec in parsed.get("added") or []
         if isinstance(spec, dict) and spec.get("id")
     ]
     removed = [str(item) for item in parsed.get("removed") or [] if item]
-    return {"added": added, "removed": removed}
+    reverted = [
+        {"id": str(spec["id"]), "path": str(spec.get("path", ""))}
+        for spec in parsed.get("reverted") or []
+        if isinstance(spec, dict) and spec.get("id")
+    ]
+    return {"added": added, "removed": removed, "reverted": reverted}
 
 
 def _write_structure(obj: bpy.types.Object, structure: dict[str, list]) -> None:
     added = structure.get("added") or []
     removed = structure.get("removed") or []
-    if added or removed:
-        obj[STRUCTURE_KEY] = json.dumps({"added": added, "removed": removed}, sort_keys=True)
+    reverted = structure.get("reverted") or []
+    if added or removed or reverted:
+        obj[STRUCTURE_KEY] = json.dumps(
+            {"added": added, "removed": removed, "reverted": reverted}, sort_keys=True
+        )
     elif STRUCTURE_KEY in obj:
         del obj[STRUCTURE_KEY]
 
@@ -162,6 +181,65 @@ def added_components(obj: bpy.types.Object) -> list[dict]:
 def removed_ids(obj: bpy.types.Object) -> list[str]:
     """Component ids queued to be dropped at save."""
     return read_structure(obj)["removed"]
+
+
+def reverted_paths(obj: bpy.types.Object) -> dict[str, list[str]]:
+    """``{component id: [slash path, ...]}`` queued to be handed back to the prefab. An empty
+    path means the whole component's override."""
+    found: dict[str, list[str]] = {}
+    for spec in read_structure(obj)["reverted"]:
+        found.setdefault(spec["id"], []).append(spec["path"])
+    return found
+
+
+def revert_field(obj: bpy.types.Object, component_id: str, path: str = "") -> None:
+    """Queue an overridden field -- or a whole component's override -- for removal, and forget
+    any pending edit to it, which the revert supersedes."""
+    if not component_id:
+        return
+    structure = read_structure(obj)
+    entry = {"id": component_id, "path": path}
+    if entry not in structure["reverted"]:
+        structure["reverted"].append(entry)
+    _write_structure(obj, structure)
+    clear(obj, component_id, path or None)
+
+
+def drop_path(root: dict, path: str) -> bool:
+    """Delete the value at a slash path; True when there was one. An empty path clears the
+    payload, which is how a whole component's override is handed back."""
+    if not path:
+        existed = bool(root)
+        root.clear()
+        return existed
+
+    parts = path.split("/")
+    node: object = root
+    for part in parts[:-1]:
+        node = _step(node, part)
+        if node is None:
+            return False
+    return _unset(node, parts[-1])
+
+
+def _step(container, part: str):
+    if isinstance(container, list):
+        if not part.isdigit() or int(part) >= len(container):
+            return None
+        return container[int(part)]
+    return container.get(part) if isinstance(container, dict) else None
+
+
+def _unset(container, part: str) -> bool:
+    if isinstance(container, list):
+        if not part.isdigit() or int(part) >= len(container):
+            return False
+        del container[int(part)]
+        return True
+    if isinstance(container, dict) and part in container:
+        del container[part]
+        return True
+    return False
 
 
 def add_component(obj: bpy.types.Object, spec: dict) -> None:

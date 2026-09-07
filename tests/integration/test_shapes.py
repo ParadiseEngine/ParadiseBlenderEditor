@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 import paradise_assets
 from paradise_assets.document import prefab as prefab_document
 from paradise_assets.document import project
-from paradise_assets.materialize import grouping, load, save, shapes
+from paradise_assets.materialize import grouping, load, save, shapes, store
 
 failures: list[str] = []
 
@@ -145,7 +145,13 @@ def open_document(path: str, layout):
 
 
 def object_named(name: str):
-    return next((o for o in bpy.context.scene.collection.all_objects if o.name == name), None)
+    """By the DOCUMENT's name: the Outliner name carries a mark for an instance and for a
+    prefab's child, and half the objects this file looks up are instances."""
+    return next(
+        (o for o in bpy.context.scene.collection.all_objects
+         if (store.document_name(o) or o.name) == name),
+        None,
+    )
 
 
 def shapes_of(path: str) -> list:

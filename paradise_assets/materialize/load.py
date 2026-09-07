@@ -11,10 +11,9 @@ import tomllib
 import bpy
 from mathutils import Quaternion, Vector
 
-from ..document import axes, component_schema, mesh_document, project, resolve, schema, well_known
+from ..document import axes, component_schema, mesh_document, project, schema, well_known
 from ..document.prefab import PrefabDocument, PrefabObject
-from ..document.prefab import loads as parse_document
-from . import shapes, store
+from . import shapes, store, tagging
 from .meshes import LIBRARY_COLLECTION, MeshLibrary
 
 __all__ = ["LoadResult", "load_document"]
@@ -74,34 +73,22 @@ def load_document(
         )
 
     # Instances are expanded for DISPLAY only; the resolved children are marked derived so save
-    # never writes them back.
-    expansion = resolve.resolve(document, lambda reference: _load_prefab(layout, reference, result))
-    for error in expansion.errors:
+    # never writes them back as objects of their own -- only ever as overrides on the instance.
+    # `tagging` owns the whole of what the .blend records, and the SAVE re-tags through the same
+    # function, so the load's view and the save's cannot drift apart.
+    resolution = tagging.resolve_document(document, layout, result.warn)
+    for error in resolution.errors:
         result.warn(error)
+    result.sources |= resolution.sources
 
-    authored = {entry.guid for entry in document.objects if entry.guid is not None}
-
-    # Which prefab each instance instantiates. Read BEFORE the expansion, which replaces an
-    # instance entry with the prefab's resolved root and so consumes the reference: without this
-    # the only object that knows is one added in this session (instancing.add_instance), and
-    # "open the prefab this came from" would work for those alone.
-    instanced = {
-        entry.guid: entry.prefab for entry in document.objects
-        if entry.guid is not None and entry.prefab is not None
-    }
-
-    own_entries = {entry.guid: entry for entry in document.objects if entry.guid is not None}
     library = MeshLibrary(scene, result.warn)
     created: dict[str, bpy.types.Object] = {}
 
-    for entry in expansion.document.objects:
+    for entry in resolution.document.objects:
         obj = _create_object(entry, scene, layout, library, mesh_fields, result)
-        if entry.guid not in authored:
-            store.mark_derived(obj)
+        tagging.tag(obj, entry, resolution)
+        if store.is_derived(obj):
             result.derived += 1
-        if (reference := instanced.get(entry.guid)) is not None:
-            store.tag_prefab(obj, reference.guid, reference.path)
-            store.tag_authored(obj, [c.id for c in own_entries[entry.guid].components])
         created[entry.guid] = obj
         result.objects += 1
 
@@ -111,10 +98,10 @@ def load_document(
     vocabulary = component_schema.load(layout.root)
     for entry in document.objects:
         if entry.guid in created:
-            shapes.materialize(created[entry.guid], _components_payload(entry), vocabulary)
+            shapes.materialize(created[entry.guid], tagging.payload(entry), vocabulary)
 
-    result.instances = expansion.expanded
-    document = expansion.document
+    result.instances = resolution.expanded
+    document = resolution.document
 
     # Second pass: a parent may appear later in the file. An instance whose prefab could not be
     # read is not in the expansion at all, so a child hanging off it stays a root here, with the
@@ -153,8 +140,6 @@ def _create_object(
     obj.empty_display_size = 0.25
     scene.collection.objects.link(obj)
 
-    store.tag_object(obj, entry.guid, _components_payload(entry))
-    store.tag_name(obj, entry.name)
     _apply_transform(obj, entry)
 
     reference = _mesh_reference(entry, mesh_fields)
@@ -211,20 +196,6 @@ def _base_colour(path: str):
     )
 
 
-def _load_prefab(layout, reference, result):
-    """Read a prefab a scene references, reporting rather than raising."""
-    path = result.read(layout.resolve(reference.path))
-    try:
-        with open(path, encoding="utf-8") as handle:
-            return parse_document(handle.read(), path)
-    except OSError:
-        result.warn(f"prefab '{reference.path}' could not be read")
-        return None
-    except Exception as error:   # PrefabDocumentError, reported not raised
-        result.warn(str(error))
-        return None
-
-
 def _transform_of(entry: PrefabObject):
     """The object's local TRS, out of its transform component. Identity when it has none."""
     component = entry.component(well_known.TRANSFORM_ID)
@@ -256,14 +227,6 @@ def _apply_transform(obj: bpy.types.Object, entry: PrefabObject) -> None:
     # The document is (x, y, z, w); Blender's Quaternion is (w, x, y, z).
     obj.rotation_quaternion = Quaternion((rotation[3], rotation[0], rotation[1], rotation[2]))
     obj.scale = Vector(scale)
-
-
-def _components_payload(entry: PrefabObject) -> list:
-    """The object's components in the shape the panel and the JSON store want."""
-    return [
-        {"id": component.id, "type": component.type, "data": component.data}
-        for component in entry.components
-    ]
 
 
 def _mesh_reference(entry: PrefabObject, mesh_fields: schema.MeshFields) -> str | None:

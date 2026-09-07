@@ -81,6 +81,11 @@ if command -v "$BLENDER" >/dev/null 2>&1; then
   integration "collision shapes as empties" \
     tests/integration/test_shapes.py "$DEFAULT_NOISE"
 
+  # Prefab-instance overrides: authoring one, and the three gestures that end one. Its own
+  # temporary project throughout -- these operators write two documents.
+  integration "prefab instance overrides" \
+    tests/integration/test_overrides.py "$DEFAULT_NOISE"
+
   # The byte-exact round trip through Blender needs a real asset project; it skips cleanly when
   # PARADISE_ASSETS_PROJECT names nothing.
   integration "open and save an asset-project scene" \

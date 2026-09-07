@@ -74,8 +74,26 @@ the dropdown.
 Move, rotate and scale with Blender's own gizmos. The document is Y-up and Blender is Z-up; you
 never see that, because `document/axes.py` rebases on the way in and out.
 
-An instance's *children* are the prefab's, not yours: moving one is refused on save, because the
-document has no way to say it. Move the instance, or edit the prefab it came from.
+An instance's *children* belong to the prefab, but you can change them here: move one, or edit a
+field on it, and the document records an **override** rather than a copy. The prefab still owns
+everything you did not touch, so a later edit to the prefab still reaches this instance.
+
+The Outliner marks what is what — `Crate ▸` is a prefab instance, `Bulb ·` is one of its
+children, and a trailing `*` means something about it is overridden. Those marks are display
+only; the document never sees them. The **Document Tree** panel shows the same thing with real
+icons, and it updates before you save.
+
+Right-click an instance (or anything under one) for the three ways an override ends:
+
+- **Apply Overrides to Prefab…** writes them into the prefab. That changes *every* instance of
+  it, in every level — the confirm says so.
+- **Revert Instance to Prefab** throws them away.
+- **Unpack Prefab Instance** breaks the link: the objects become this document's own. They keep
+  the identities they had, so nothing that referenced them breaks. It is not reversible.
+
+One thing is still the prefab's alone: **collision shapes**. A shape row is a list entry, and an
+override replaces a whole list, so overriding one would silently drop the prefab's other rows.
+The panel says *"the prefab's; edit it there"*.
 
 ## 5. Edit components
 

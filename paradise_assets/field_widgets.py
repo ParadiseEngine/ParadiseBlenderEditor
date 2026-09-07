@@ -169,7 +169,10 @@ def _assign_rna(slot, value) -> None:
         slot.value_int = int(value)
 
 
-def draw_item(layout, context, obj, component_id: str, item, value, edited: dict, row=None) -> None:
+def draw_item(
+    layout, context, obj, component_id: str, item, value, edited: dict, row=None,
+    overridden=frozenset(),
+) -> None:
     """One plan row as a widget. Asset references are a search popup, not an EnumProperty:
     rewriting that enum on every redraw is what made a picked slot stick."""
     row = row or layout.row(align=True)
@@ -182,15 +185,18 @@ def draw_item(layout, context, obj, component_id: str, item, value, edited: dict
     if component_schema.is_asset_field(item.field, value):
         _draw_asset(row, component_id, item, value, label)
         _draw_revert(row, edited, component_id, item.path)
+        _draw_prefab_revert(row, component_id, item.path, overridden)
         return
     if slot is None:
         row.label(text=f"{label}: {component_schema.format_value(value)}")
+        _draw_prefab_revert(row, component_id, item.path, overridden)
         return
     row.prop(
         slot, slot.rna, text=label,
         slider=slot.rna == "value_factor",
     )
     _draw_revert(row, edited, component_id, item.path)
+    _draw_prefab_revert(row, component_id, item.path, overridden)
 
 
 def _draw_asset(row, component_id: str, item, value, label: str) -> None:
@@ -211,6 +217,22 @@ def _draw_revert(row, edited: dict, component_id: str, path: str) -> None:
     if not _path_is_edited(edited, path):
         return
     revert = row.operator("paradise_assets.revert_component_field", text="", icon="LOOP_BACK")
+    revert.component_id = component_id
+    revert.field_name = path
+
+
+def _draw_prefab_revert(row, component_id: str, path: str, overridden) -> None:
+    """The badge on a field whose value is this instance's rather than its prefab's, and the
+    button that hands it back. ``DECORATE_OVERRIDE`` is the icon Blender itself uses for a
+    library override, so it reads without a legend.
+
+    Only the TOP-LEVEL field is marked: `resolve._merge_data` is shallow, so an override
+    replaces a whole sub-table and the field the author overrode is the outermost one.
+    """
+    if path.split("/")[0] not in overridden:
+        return
+    revert = row.operator(
+        "paradise_assets.revert_to_prefab", text="", icon="DECORATE_OVERRIDE")
     revert.component_id = component_id
     revert.field_name = path
 

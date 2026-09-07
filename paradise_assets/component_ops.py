@@ -15,9 +15,19 @@ from bpy.types import Operator
 
 from . import edits
 from .document import component_schema, project
+from .document import overrides as document_overrides
 from .materialize import shapes, store
 
-__all__ = ["classes", "components_of", "document_object", "merged_data", "schema_for", "vocabulary_for"]
+__all__ = [
+    "base_data",
+    "classes",
+    "components_of",
+    "document_object",
+    "merged_data",
+    "overridden_fields",
+    "schema_for",
+    "vocabulary_for",
+]
 
 
 def vocabulary_for(context) -> component_schema.Vocabulary:
@@ -53,6 +63,53 @@ def merged_data(obj, component_id: str, data: dict) -> dict:
     for path, value in edits.edited_fields(obj, component_id).items():
         edits.write_path(merged, path, copy.deepcopy(value))
     return merged
+
+
+def base_data(obj, component_id: str) -> dict:
+    """What the PREFAB says this component holds. Empty when no prefab authored the object,
+    which is the right answer: it overrides nothing."""
+    for component in store.base_json(obj):
+        if isinstance(component, dict) and str(component.get("id", "")).lower() == component_id.lower():
+            data = component.get("data")
+            return data if isinstance(data, dict) else {}
+    return {}
+
+
+def overridden_fields(obj, component_id: str, shown: dict) -> set:
+    """Which top-level fields of this component differ from the prefab's.
+
+    Top-level only, because `resolve._merge_data` is shallow -- an override replaces a whole
+    sub-table rather than merging into it, so the field an author overrode IS the top-level one,
+    and a deeper path is inside it.
+    """
+    base = base_data(obj, component_id)
+    if not base and not store.base_json(obj):
+        return set()
+    return document_overrides.differs(base, shown)
+
+
+class PARADISE_ASSETS_OT_revert_to_prefab(Operator):
+    """Hand this field back to the prefab, dropping the override on it"""
+
+    bl_idname = "paradise_assets.revert_to_prefab"
+    bl_label = "Revert to Prefab"
+    bl_options = {"REGISTER", "UNDO", "INTERNAL"}
+
+    component_id: StringProperty(name="Component")
+    #: Empty reverts the component's whole override.
+    field_name: StringProperty(name="Field")
+
+    def execute(self, context):
+        obj = document_object(context)
+        if obj is None or not self.component_id:
+            return {"CANCELLED"}
+        edits.revert_field(obj, self.component_id, self.field_name)
+        self.report(
+            {"INFO"},
+            f"{self.field_name or 'The component'} will go back to the prefab's value "
+            "— save the document to write it",
+        )
+        return {"FINISHED"}
 
 
 class PARADISE_ASSETS_OT_revert_field(Operator):
@@ -387,6 +444,7 @@ def _redraw(context) -> None:
 
 classes = (
     PARADISE_ASSETS_OT_revert_field,
+    PARADISE_ASSETS_OT_revert_to_prefab,
     PARADISE_ASSETS_OT_add_array_row,
     PARADISE_ASSETS_OT_remove_array_row,
     PARADISE_ASSETS_OT_reveal_object,

@@ -100,13 +100,14 @@ unless a path is genuinely ambiguous.
 
 ## Use
 
-Everything lives in the **Paradise** tab of the 3D viewport sidebar (`N`), as four panels:
+Everything lives in the **Paradise** tab of the 3D viewport sidebar (`N`), as five panels:
 
 | panel | scope | what it is for |
 |---|---|---|
 | **Prefab Document** | the open document | open, save, reload, recreate; add a prefab instance; extract a selection into a new prefab |
 | **Project** | the project it lives in | the asset watcher, Build / Verify / Clean, the Asset Browser catalogue |
 | **Play** | the open document | run the game on it, and say why it stopped |
+| **Document Tree** | the open document | its objects with what the Outliner cannot show: which are prefab instances, which are a prefab's children, and which are overridden |
 | **Components** | the selected object | the document's components, editable where the game's schema says they are |
 
 **Project** is available before any document is open — a `.blend` saved inside a project is
@@ -114,13 +115,22 @@ enough — so a fresh session can start the watcher and build without opening an
 document is open, **Prefab Document** lists what you last worked on here, or what the project
 holds if you have not worked on anything yet.
 
-Right-clicking a **document object** — in the Outliner or in the viewport — adds two entries:
+Right-clicking a **document object** — in the Outliner or in the viewport — adds three entries:
 
 - **Open Prefab in New Blender** — for an instance (or anything under one), opens the prefab it
   came from in a *second* Blender. The level stays open in this one; the watcher reconciles what
   either writes.
 - **Create Prefab from Object…** — the same extraction the sidebar offers, on the object you
   clicked.
+- **Group Selected** — put the selection under a new Empty, which is what a group is.
+
+On something that belongs to a **prefab instance**, three more appear. Editing a field on an
+instance, or moving one of its children, records an *override*; these are how one ends:
+
+- **Apply Overrides to Prefab…** — write them into the prefab, changing every instance of it.
+- **Revert Instance to Prefab** — throw them away.
+- **Unpack Prefab Instance** — break the link and keep the objects. They keep their identities,
+  so nothing that referenced them breaks; it is not reversible.
 
 A typical loop:
 

@@ -22,7 +22,8 @@ from bpy.props import StringProperty
 from bpy.types import Operator
 
 from . import catalogue, watch
-from .document import atomic, extract, new_prefab, project
+from .document import apply as apply_overrides
+from .document import atomic, extract, new_prefab, overrides, project, unpack
 from .document import prefab as prefab_document
 from .document.prefab import PrefabDocumentError, loads
 from .materialize import grouping, instancing, load, save, store, workfile
@@ -650,6 +651,256 @@ class PARADISE_ASSETS_FH_prefab(bpy.types.FileHandler):
         )
 
 
+
+def _instance_of(obj):
+    """The instance ``obj`` belongs to: itself when it is one, else the one it was resolved out
+    of. Clicking a wall of a building and asking to unpack means the building."""
+    while obj is not None:
+        if store.prefab_of(obj) is not None:
+            return obj
+        obj = obj.parent
+    return None
+
+
+class _InstanceOperator(Operator):
+    """Shared shape for the gestures that rewrite a document around one instance.
+
+    Each works on the FILE, exactly as extraction does: the scene is written first, the document
+    re-read, the surgery done on what is actually on disk, and the result rematerialized. None of
+    them needs the watcher -- no asset is created, so there is no identity to wait for, and
+    borrowing extraction's ``watch.ensure`` would refuse the operation for a reason that is not
+    true here.
+    """
+
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context):
+        if store.read_state(context.scene) is None:
+            return False
+        return _instance_of(context.active_object) is not None
+
+    def _prepare(self, context):
+        """``(scene state, layout, instance object)``, or ``None`` after reporting why not."""
+        scene = context.scene
+        state = store.read_state(scene)
+        if state is None:
+            self.report({"ERROR"}, "No prefab document is open.")
+            return None
+
+        layout = project.locate(state.path)
+        if layout is None:
+            self.report({"ERROR"}, f"No asset project above {state.path}")
+            return None
+
+        instance = _instance_of(context.active_object)
+        if instance is None:
+            self.report({"ERROR"}, "This object does not belong to a prefab instance.")
+            return None
+
+        kept = workfile.unsaved_work(scene)
+        if kept is not None:
+            self.report(
+                {"ERROR"},
+                f"This scene has work the document does not: {kept}. Save to the prefab document "
+                "first (Paradise Assets > Save), then try again.",
+            )
+            return None
+
+        try:
+            save.save_prefab(scene)
+        except save.SaveError as error:
+            self.report({"ERROR"}, str(error))
+            return None
+        return state, layout, instance
+
+    def _rematerialize(self, context, state, layout):
+        with open(state.path, encoding="utf-8") as handle:
+            document = loads(handle.read(), state.path)
+        load.load_document(context.scene, document, state.path, layout)
+        workfile.save(layout, state.path)
+
+    def _prefabs(self, layout):
+        def read(reference):
+            try:
+                with open(layout.resolve(reference.path), encoding="utf-8") as handle:
+                    return loads(handle.read(), reference.path)
+            except (OSError, PrefabDocumentError):
+                return None
+        return read
+
+
+class PARADISE_ASSETS_OT_unpack_instance(_InstanceOperator):
+    """Break this prefab instance's link, keeping the objects it was showing"""
+
+    bl_idname = "paradise_assets.unpack_instance"
+    bl_label = "Unpack Prefab Instance"
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_confirm(self, event)
+
+    def execute(self, context):
+        prepared = self._prepare(context)
+        if prepared is None:
+            return {"CANCELLED"}
+        state, layout, instance = prepared
+        guid = store.guid_of(instance)
+
+        try:
+            with open(state.path, encoding="utf-8") as handle:
+                document = loads(handle.read(), state.path)
+            result = unpack.unpack(document, guid, self._prefabs(layout))
+        except (unpack.UnpackError, PrefabDocumentError) as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+        except OSError as error:
+            self.report({"ERROR"}, f"Could not read the document: {error}")
+            return {"CANCELLED"}
+
+        try:
+            atomic.write_text(state.path, prefab_document.dumps(result.document))
+        except OSError as error:
+            self.report({"ERROR"}, f"Could not write the document: {error}")
+            return {"CANCELLED"}
+
+        self._rematerialize(context, state, layout)
+        for warning in result.warnings[:5]:
+            self.report({"WARNING"}, warning)
+        self.report(
+            {"INFO"},
+            f"Unpacked {result.objects} object(s); this document now owns them. "
+            "They keep the identities they had, so nothing that referenced them has broken.",
+        )
+        return {"FINISHED"}
+
+
+class PARADISE_ASSETS_OT_apply_overrides(_InstanceOperator):
+    """Write this instance's overrides into the prefab, changing every instance of it"""
+
+    bl_idname = "paradise_assets.apply_overrides"
+    bl_label = "Apply Overrides to Prefab"
+
+    @classmethod
+    def poll(cls, context):
+        return super().poll(context) and _has_overrides(_instance_of(context.active_object))
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_confirm(self, event)
+
+    def execute(self, context):
+        prepared = self._prepare(context)
+        if prepared is None:
+            return {"CANCELLED"}
+        state, layout, instance = prepared
+        guid = store.guid_of(instance)
+
+        reference = store.prefab_of(instance)
+        prefab_path = layout.resolve(reference[1])
+        try:
+            with open(state.path, encoding="utf-8") as handle:
+                document = loads(handle.read(), state.path)
+            with open(prefab_path, encoding="utf-8") as handle:
+                target = loads(handle.read(), prefab_path)
+            result = apply_overrides.apply_to_prefab(document, guid, target)
+            result.prefab.validate(prefab_path)
+        except (apply_overrides.ApplyError, PrefabDocumentError) as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+        except OSError as error:
+            self.report({"ERROR"}, f"Could not read {reference[1]}: {error}")
+            return {"CANCELLED"}
+
+        if not result.applied:
+            self.report({"INFO"}, "This instance overrides nothing; the prefab is unchanged.")
+            return {"CANCELLED"}
+
+        # The PREFAB first. If the level write then fails the value is applied twice -- the
+        # override and the prefab agree, which looks identical and reloads correctly. The other
+        # order loses the overrides outright.
+        try:
+            atomic.write_text(prefab_path, prefab_document.dumps(result.prefab))
+        except OSError as error:
+            self.report({"ERROR"}, f"Could not write {reference[1]}: {error}")
+            return {"CANCELLED"}
+
+        try:
+            atomic.write_text(state.path, prefab_document.dumps(result.remaining))
+        except OSError as error:
+            self.report(
+                {"ERROR"},
+                f"{reference[1]} was updated but {os.path.basename(state.path)} could not be "
+                f"({error}). Reload: the overrides are still on the instance and now agree with "
+                "the prefab, so nothing is lost.",
+            )
+            return {"CANCELLED"}
+
+        self._rematerialize(context, state, layout)
+        for warning in result.warnings[:5]:
+            self.report({"WARNING"}, warning)
+        self.report(
+            {"INFO"},
+            f"Applied {result.components} component(s) and {result.children} child change(s) to "
+            f"{reference[1]}.",
+        )
+        return {"FINISHED"}
+
+
+class PARADISE_ASSETS_OT_revert_instance(_InstanceOperator):
+    """Throw away this instance's overrides, so it shows exactly what its prefab says"""
+
+    bl_idname = "paradise_assets.revert_instance"
+    bl_label = "Revert Instance to Prefab"
+
+    @classmethod
+    def poll(cls, context):
+        return super().poll(context) and _has_overrides(_instance_of(context.active_object))
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_confirm(self, event)
+
+    def execute(self, context):
+        prepared = self._prepare(context)
+        if prepared is None:
+            return {"CANCELLED"}
+        state, layout, instance = prepared
+        guid = store.guid_of(instance)
+
+        try:
+            with open(state.path, encoding="utf-8") as handle:
+                document = loads(handle.read(), state.path)
+            reverted = overrides.strip_instance(document, guid)
+            atomic.write_text(state.path, prefab_document.dumps(reverted))
+        except PrefabDocumentError as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+        except OSError as error:
+            self.report({"ERROR"}, f"Could not rewrite the document: {error}")
+            return {"CANCELLED"}
+
+        self._rematerialize(context, state, layout)
+        self.report({"INFO"}, "The instance shows its prefab again; its overrides are gone.")
+        return {"FINISHED"}
+
+
+def _has_overrides(instance) -> bool:
+    """Whether this instance's own entry, or one of its children, says anything of its own.
+
+    Read from the .blend's tags rather than the file, because a poll runs at menu-draw rate and
+    must not open a document.
+    """
+    if instance is None:
+        return False
+    from .materialize import tagging
+    if tagging.overridden(instance):
+        return True
+    guid = store.guid_of(instance)
+    for obj in instance.children_recursive:
+        address = store.local_of(obj)
+        if address is not None and address[0] == guid and tagging.overridden(obj):
+            return True
+    return False
+
+
 classes = (
     PARADISE_ASSETS_OT_open_prefab,
     PARADISE_ASSETS_OT_reload_prefab,
@@ -658,6 +909,9 @@ classes = (
     PARADISE_ASSETS_OT_toggle_watch,
     PARADISE_ASSETS_OT_add_prefab_instance,
     PARADISE_ASSETS_OT_extract_prefab,
+    PARADISE_ASSETS_OT_unpack_instance,
+    PARADISE_ASSETS_OT_apply_overrides,
+    PARADISE_ASSETS_OT_revert_instance,
     PARADISE_ASSETS_OT_group_objects,
     PARADISE_ASSETS_OT_refresh_catalogue,
     PARADISE_ASSETS_FH_prefab,

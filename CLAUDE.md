@@ -204,6 +204,56 @@ are made for the components this DOCUMENT authors — for an instance, its own e
 spells it, not the expansion that folds the prefab's components in: ShiningPie's props carry no
 collider, every one of its 122 placed instances does.
 
+**An instance's overrides are authored as CARRIERS, and the trap is the baseline you measure
+against.** Moving a prefab's child, or editing a field on an instance, writes an override rather
+than a copy: the instance's own entry gains a component holding ONLY the touched fields, and a
+child's change goes on a `meta.Target` carrier keyed `(instance guid, prefab-local guid)` -- the
+same key `resolve._expand_document` refuses duplicates on, which is what makes "update, don't
+duplicate" a lookup. Three rules paid for here:
+
+- **A carrier's transform is a PARTIAL.** `resolve._merge_data` merges per field, so a carrier
+  holding only `Position` inherits rotation and scale from the prefab. Measuring a move against
+  that partial reads the absent keys as the IDENTITY and calls every untouched child moved, which
+  rewrites all three channels on every save of a file nobody edited -- and `prefab-check` compares
+  bytes. Move detection is against the RESOLVED snapshot (`store.component_json`, what the load
+  displayed); pruning an override that has come back is against the PREFAB baseline
+  (`store.base_json`). One key cannot be both.
+- **"The author deleted this child" must not be inferred by re-reading the prefab at save time.**
+  One transiently unreadable prefab would then write `Dropped = true` across a level, from a save
+  that reported success. The load records what it actually materialized (`store.tag_children`),
+  and only a local guid that was SHOWN can be dropped.
+- **A carrier that says nothing is pruned, but `Dropped` is content.** Pruning a dropping carrier
+  resurrects the child on the next load.
+
+**A prefab's child can be moved but not re-parented, and not half-deleted.** `resolve._rewrite_meta`
+takes a resolved child's parent from the PREFAB's topology and ignores the carrier's `meta.Parent`
+(which addresses the instance), so there is no field to write a re-parent into -- refused by name.
+Blender's Delete orphans children rather than removing them, so deleting a child mid-tree is
+refused too; deleting the whole INSTANCE is ordinary, and its display objects are swept rather
+than refused (`save._drop_widowed_derived`).
+
+**The load and the save tag through ONE function** (`materialize/tagging.py`). They used to
+disagree: `_refresh_snapshots` rewrote an instance's payload from the LEVEL entry -- meta,
+transform and overrides -- over the RESOLVED payload the load had put there, so saving a level
+collapsed every instance's Components panel to two rows until the next reload. Both callers now
+resolve and tag through the same code, so that disagreement is not a thing that can be written.
+
+**Outliner marks are display, and there is exactly one writer.** Blender exposes no per-object
+Outliner icon, so `Crate \u25b8` / `Bulb \u00b7` / a trailing `*` is the only channel there is.
+`store.mark` sets the name and records it in the same call, because `document_name` trusts
+`SHOWN_NAME_KEY` to tell an author's rename from Blender's uniquifying (#32) -- a caller that set
+`obj.name` and forgot to record it would write `Crate \u25b8` into `assets/`. The marks track the
+DOCUMENT, not the edit overlay: they are written from the load and the save, never from a draw
+(Blender forbids writing an ID property there), so a pending override shows in the Document Tree
+panel, which reads live state, and reaches the name on the next save.
+
+**An instance may not author a collider its prefab declares.** A shape row is a list entry and
+`_merge_data` is shallow, so overriding one replaces the WHOLE list and silently drops the
+prefab's other rows -- bought with a viewport drag, the cheapest gesture for the most expensive
+edit. `shapes.editable` keeps refusing it. If it is ever wanted, the shape is an explicit
+"override colliders on this instance" button that copies the list down ONCE, so the shadowing was
+asked for.
+
 **An instance loaded from a document carries no prefab reference of its own** — the expansion
 in `resolve.py` replaces the instance entry with the prefab's resolved root, consuming it. So
 `load.py` tags the object with `store.tag_prefab` as it materializes, which is the only reason

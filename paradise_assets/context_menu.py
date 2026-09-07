@@ -1,5 +1,6 @@
 """The right-click entries for a document object, in both editors an author selects one in:
-open the prefab it instantiates, turn it into one, and group the selection under a new Empty.
+open the prefab it instantiates, turn it into one, group the selection under a new Empty, and --
+for anything that belongs to an instance -- apply, revert or break its overrides.
 
 Both are reachable from the sidebar already. The menus are where an author's hand already is
 when the question comes up -- the Outliner because it is the only place the document's tree is
@@ -155,6 +156,26 @@ def _draw(self, context) -> None:
         "paradise_assets.group_objects",
         text="Group Selected",
         icon="OUTLINER_COLLECTION")
+
+    # Only for something that IS part of an instance: on a plain object these three could only
+    # ever be greyed, and the menu already earns its rows.
+    if prefab_of(obj) is None:
+        return
+    instances = layout.column()
+    instances.operator_context = "INVOKE_DEFAULT"
+    instances.separator()
+    instances.operator(
+        "paradise_assets.apply_overrides",
+        text="Apply Overrides to Prefab…",
+        icon="EXPORT")
+    instances.operator(
+        "paradise_assets.revert_instance",
+        text="Revert Instance to Prefab",
+        icon="LOOP_BACK")
+    instances.operator(
+        "paradise_assets.unpack_instance",
+        text="Unpack Prefab Instance",
+        icon="UNLINKED")
 
 
 def register_menu() -> None:

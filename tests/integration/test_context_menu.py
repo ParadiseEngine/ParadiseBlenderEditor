@@ -144,7 +144,13 @@ def drawn(context) -> list:
 
 
 def named(name: str):
-    return next((obj for obj in bpy.context.scene.collection.all_objects if obj.name == name), None)
+    """By the DOCUMENT's name: the Outliner name carries a mark for an instance and for a
+    prefab's child, which is precisely what this file looks things up by."""
+    return next(
+        (obj for obj in bpy.context.scene.collection.all_objects
+         if (store.document_name(obj) or obj.name) == name),
+        None,
+    )
 
 
 def main() -> int:
@@ -259,6 +265,17 @@ def main() -> int:
             )
             check(not recorded, "and started nothing")
 
+            print("\n== the instance entries appear only on an instance ==")
+            bpy.context.view_layer.objects.active = named("Level")
+            check(
+                drawn(bpy.context) == [
+                    "paradise_assets.open_prefab_elsewhere",
+                    "paradise_assets.extract_prefab",
+                    "paradise_assets.group_objects",
+                ],
+                f"a plain document object gets the three that apply to it ({drawn(bpy.context)})",
+            )
+
             print("\n== the menu offers itself only for document objects ==")
             bpy.context.view_layer.objects.active = instance
             check(
@@ -266,8 +283,11 @@ def main() -> int:
                     "paradise_assets.open_prefab_elsewhere",
                     "paradise_assets.extract_prefab",
                     "paradise_assets.group_objects",
+                    "paradise_assets.apply_overrides",
+                    "paradise_assets.revert_instance",
+                    "paradise_assets.unpack_instance",
                 ],
-                f"all three entries on a document object ({drawn(bpy.context)})",
+                f"every entry on an instance ({drawn(bpy.context)})",
             )
             outsider = bpy.data.objects.new("JustACube", None)
             bpy.context.scene.collection.objects.link(outsider)

@@ -80,7 +80,7 @@ def start(project_root: str) -> str | None:
     if is_running(key):
         return None
 
-    command = host.resolve_cli_command()
+    command = host.resolve_cli_command(project_root)
     if command is None:
         return (
             "No `paradise` CLI found. Install it as a dotnet tool, or point 'Paradise CLI' in "

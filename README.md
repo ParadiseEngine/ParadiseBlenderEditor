@@ -19,7 +19,7 @@ assets/levels/*.prefab  ──Blender──▶  assets/levels/*.prefab
 | | |
 |---|---|
 | **Blender 5.2+** | the manifest's floor; Blender refuses to enable the extension below it |
-| **the `paradise` CLI** | `Paradise.Cli` from a ParadiseEngine checkout, or the installed dotnet tool — needed for the asset watcher, Build and Play |
+| **the `paradise` CLI** | Fetched automatically at the version the project pins (`ParadiseVersion` in its `Directory.Packages.props`), cached per version under `~/.paradise/cli/`. Set *Paradise CLI* in preferences to override — a ParadiseEngine checkout, say. Falls back to the installed dotnet tool when a project pins nothing, or the pinned version cannot be fetched |
 | KTX-Software (`ktx`) | *optional* — but the engine's glTF reader rejects PNG/JPEG, so textured meshes need it. The CLI does the transcode; the addon only passes the path along |
 
 Nothing here is .NET. The addon is pure Python and shells out to the CLI.

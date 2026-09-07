@@ -123,9 +123,12 @@ def open_document(document: str) -> None:
 
 
 def patch_cli(cli_script: str | None) -> None:
-    """The fake is driven through host.resolve_cli_command with the interpreter in front."""
+    """The fake is driven through host.resolve_cli_command with the interpreter in front.
+
+    Takes the project root the real one takes (it resolves the version a project pins) and
+    ignores it: the fake IS the CLI under test, so there is nothing to version-match."""
     command = None if cli_script is None else [sys.executable, cli_script]
-    host.resolve_cli_command = lambda: command
+    host.resolve_cli_command = lambda project_root=None: command
     play_ops.resolve_cli_command = host.resolve_cli_command
 
 

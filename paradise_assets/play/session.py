@@ -98,7 +98,7 @@ def start(
 
     stop(project_root)
 
-    command = host.resolve_cli_command()
+    command = host.resolve_cli_command(project_root)
     if command is None:
         return None, (
             "No `paradise` CLI found. Install it as a dotnet tool, or point 'Paradise CLI' in "

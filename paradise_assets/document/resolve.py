@@ -14,7 +14,7 @@ from . import guid as document_guid
 from . import well_known
 from .prefab import PrefabComponent, PrefabDocument, PrefabObject
 
-__all__ = ["ResolveResult", "mint_child_guid", "resolve"]
+__all__ = ["ResolveResult", "flatten", "mint_child_guid", "resolve"]
 
 #: Catches an acyclic but absurd chain; the cycle check catches the rest.
 MAX_NESTING_DEPTH = 32
@@ -78,6 +78,13 @@ def _expand_document(document, prefabs, result, stack, cache, depth) -> int:
         expanded += 1
 
     return expanded
+
+
+def flatten(reference, prefabs) -> PrefabDocument | None:
+    """One prefab with its own instances expanded, as ``_expand`` sees it. Public because
+    authoring has to mint the same child identities the resolver does, and those are minted over
+    the FLATTENED prefab -- a child of a prefab nested inside this one included."""
+    return _flatten(reference, prefabs, ResolveResult(), [], {}, 0)
 
 
 def _flatten(reference, prefabs, result, stack, cache, depth):

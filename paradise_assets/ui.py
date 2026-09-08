@@ -41,6 +41,8 @@ class PARADISE_ASSETS_PT_document(_AssetsPanel, Panel):
         if state is None:
             layout.label(text="No document open.", icon="INFO")
             layout.operator("paradise_assets.open_prefab", text="Open Prefab…", icon="FILE_FOLDER")
+            layout.operator(
+                "paradise_assets.create_prefab", text="Create Prefab from Selection…", icon="EXPORT")
             _draw_openable(layout, context)
             return
 
@@ -49,6 +51,10 @@ class PARADISE_ASSETS_PT_document(_AssetsPanel, Panel):
         box = layout.box()
         box.label(text=os.path.basename(state.path), icon="FILE_TEXT")
         box.label(text=_where(state.path, located))
+        identity = _cached(
+            state.path, "identity", lambda: asset_index.read_sidecar_guid(state.path + ".meta"))
+        if identity:
+            box.label(text=identity)
 
         count = sum(1 for obj in context.scene.collection.all_objects if store.guid_of(obj))
         box.label(text=f"{count} document object(s)")
@@ -80,6 +86,7 @@ class PARADISE_ASSETS_PT_document(_AssetsPanel, Panel):
         row = layout.row(align=True)
         row.operator("paradise_assets.add_prefab_instance", text="Add Prefab…", icon="ADD")
         row.operator("paradise_assets.extract_prefab", text="Extract…", icon="EXPORT")
+        layout.operator("paradise_assets.create_prefab", text="Create Prefab from Selection…", icon="EXPORT")
         layout.operator("paradise_assets.open_prefab", text="Open Another…", icon="FILE_FOLDER")
 
 

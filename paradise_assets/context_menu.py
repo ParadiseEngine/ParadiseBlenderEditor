@@ -137,6 +137,12 @@ def _draw(self, context) -> None:
     polls decide, which is Blender's convention — a greyed row says the entry exists.
     """
     obj = getattr(context, "active_object", None)
+    if obj is not None and obj.type == "MESH" and store.guid_of(obj) is None:
+        self.layout.separator()
+        column = self.layout.column()
+        column.operator_context = "INVOKE_DEFAULT"
+        column.operator("paradise_assets.create_prefab", text="Create Prefab from Selection…", icon="EXPORT")
+        return
     if obj is None or store.read_state(context.scene) is None or store.guid_of(obj) is None:
         return
 

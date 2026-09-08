@@ -296,6 +296,12 @@ def main() -> int:
                 drawn(bpy.context) == [],
                 "and none on an object the document does not own",
             )
+            bpy.ops.mesh.primitive_cube_add()
+            check(
+                drawn(bpy.context) == ["paradise_assets.create_prefab"],
+                "raw Blender geometry offers Create Prefab from Selection",
+            )
+            check(bpy.ops.paradise_assets.create_prefab.poll(), "creation is available on a raw mesh")
 
             print("\n== registration, in BOTH menus ==")
             check(

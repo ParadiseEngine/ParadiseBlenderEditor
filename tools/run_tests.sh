@@ -99,6 +99,10 @@ if command -v "$BLENDER" >/dev/null 2>&1; then
     '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2}|Info: |.*\| Saved:)' \
     "${PARADISE_ASSETS_PROJECT:-../shiningpie}"
 
+  integration "create a prefab from raw geometry and reopen in another Blender" \
+    tests/integration/test_geometry_prefab.py "$DEFAULT_NOISE" \
+    "${PARADISE_ASSETS_PROJECT:-../shiningpie}"
+
   # Asset Browser thumbnails. Renders, so it wants the same real project -- and its load-bearing
   # check is that the catalogue came out with no geometry in it.
   integration "prefab thumbnails and the catalogue's weight" \

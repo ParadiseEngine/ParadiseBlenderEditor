@@ -104,7 +104,7 @@ Everything lives in the **Paradise** tab of the 3D viewport sidebar (`N`), as fi
 
 | panel | scope | what it is for |
 |---|---|---|
-| **Prefab Document** | the open document | open, save, reload, recreate; add a prefab instance; extract a selection into a new prefab |
+| **Prefab Document** | prefab authoring | open, save, reload, recreate; create from raw mesh selection; add an instance; extract a document subtree |
 | **Project** | the project it lives in | the asset watcher, Build / Verify / Clean, the Asset Browser catalogue |
 | **Play** | the open document | run the game on it, and say why it stopped |
 | **Document Tree** | the open document | its objects with what the Outliner cannot show: which are prefab instances, which are a prefab's children, and which are overridden |

@@ -96,6 +96,14 @@ object as an ID property (`materialize/store.py`). It is stored, not derived —
 opposite of what the `.blend`-is-truth exporter did, and the reason renaming an object here is
 free.
 
+**Create Prefab from Selection** snapshots raw static meshes into a GLB, then lets the CLI
+extract canonical mesh/material/prefab documents and mint their sidecars. If extraction routes
+the prefab elsewhere, `paradise assets mv` moves the seed and its identity to the chosen path.
+The Blender scene is unchanged. **Create Prefab from Object** instead extracts an existing
+document subtree and leaves an instance. In either workflow, save the level containing the
+instance and build assets before playing. Keep `.meta` files with their assets; a linked `.blend`
+library and name-derived GUIDs are not part of this workflow.
+
 ## 4. Names — Blender's namespace is not the document's
 
 Blender guarantees object names are unique within a file and silently uniquifies to get there
@@ -120,10 +128,15 @@ heard of be opened and saved without corruption. Editing a field does not change
 holds an overlay of only the members someone actually touched, applied over the file's version at
 merge time.
 
-**It does not read Blender's materials, lights, cameras or physics.** Those belong to the
+**Saving a prefab does not read Blender's materials, lights, cameras or physics.** Those belong to the
 document, which the CLI compiles; the `.blend` is a cache and anything read out of it would be a
 second source for a value that already has one. The one exception is display: `load.py` reads a
 material document's `BaseColorFactor` into `obj.color` so an untextured instance is not grey.
+
+Explicit creation from raw geometry is a one-time import: Blender's glTF exporter snapshots
+evaluated meshes and supported materials, with matrices baked into vertices relative to the
+active object's world origin. Baking retains shear from nonuniformly scaled parents; mirrored
+geometry reverses winding. Later prefab saves read canonical documents, never the source meshes.
 
 **It does not convert colour.** The exporter had a whole rule here (Blender's socket colours are
 already linear; do not `srgb_to_linear` them). This addon authors no colour at all.

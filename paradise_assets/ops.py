@@ -413,10 +413,12 @@ class PARADISE_ASSETS_OT_create_prefab(Operator):
                 os.makedirs(os.path.dirname(target.model), exist_ok=True)
                 # Publish a complete GLB so the watcher cannot observe a partial export. A hard
                 # link refuses a target another author created while Blender was exporting.
-                with tempfile.NamedTemporaryFile(dir=os.path.dirname(target.model), suffix=".tmp") as pending:
+                with tempfile.NamedTemporaryFile(
+                    dir=os.path.dirname(target.model), suffix=".tmp", delete_on_close=False,
+                ) as pending:
                     with open(staged, "rb") as source:
                         shutil.copyfileobj(source, pending)
-                    pending.flush()
+                    pending.close()
                     os.link(pending.name, target.model)
                 written = True
 

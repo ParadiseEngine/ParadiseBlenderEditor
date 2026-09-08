@@ -14,8 +14,8 @@ is a different string, so an untouched scene would otherwise rewrite every trans
 
 Override carriers (``meta.Target``) have no Blender object of their own: the load folds them into
 the derived children it displays. They are document-owned data, like payloads, and travel
-through :func:`_merge` untouched as long as the instance they belong to is still in the scene.
-The edit they cannot express -- moving a derived child -- is refused rather than silently lost.
+through :func:`_merge`, recording edits and deletions of materialized children while preserving
+stale carriers for targets that were not displayed.
 """
 
 from __future__ import annotations
@@ -287,6 +287,7 @@ def _merge(
     """
     objects = {store.guid_of(obj): obj for obj in _document_objects(scene)}
     present = frozenset(objects)
+    remaining = dict(objects)
     derived = {
         (address[0], address[1]): obj
         for obj in _derived_objects(scene)
@@ -314,14 +315,14 @@ def _merge(
                 merged.objects.append(updated)
             continue
 
-        obj = objects.pop(entry.guid, None)
+        obj = remaining.pop(entry.guid, None)
         if obj is None:
             result.removed += 1
             continue
         merged.objects.append(_object_entry(obj, entry, result, vocabulary))
         merged.objects.extend(_new_carriers(entry.guid, obj, derived, placed, result))
 
-    for obj in sorted(objects.values(), key=_document_order):
+    for obj in sorted(remaining.values(), key=_document_order):
         result.added += 1
         merged.objects.append(_object_entry(obj, None, result, vocabulary))
         merged.objects.extend(
@@ -385,10 +386,14 @@ def _carrier_entry(
     Shaped exactly like :func:`_object_entry`: start from the file's entry and overwrite only
     what Blender owns, so a field nobody touched is written back byte-for-byte and a component
     this addon has never heard of rides along. ``obj`` is the resolved child in the scene, or
-    ``None`` when the prefab no longer has it -- in which case the file's carrier is left alone
-    rather than guessed at, and the resolver's own warning is what tells the author.
+    ``None`` when absent. Only a target recorded as materialized can be treated as deleted;
+    stale carriers for targets that were never displayed are left alone.
     """
     if obj is None:
+        children = store.resolved_children(instance)
+        if not original.dropped and children is not None and original.target in children:
+            original.meta.data[well_known.DROPPED] = True
+            result.edited += 1
         return original
 
     entry = original

@@ -168,6 +168,54 @@ def main() -> int:
         check(edits.count(child_object()) == 0,
               "the save consumed it -- an overlay it never cleared would refuse every reload")
 
+    print("\n== deleting a previously overridden child survives reload ==")
+    for carrier_first in (False, True):
+        with tempfile.TemporaryDirectory() as work:
+            level, prefab_path = make_project(work)
+            opened(level)
+            child_object().location.x += 2.0
+            edits.set_field(child_object(), TAG, "Value", 3)
+            save.save_prefab(bpy.context.scene)
+            document = read(level)
+            carrier = next(o for o in document.objects if o.target == CHILD_LOCAL)
+            if carrier_first:
+                document.objects.remove(carrier)
+                document.objects.insert(0, carrier)
+                with open(level, "w", encoding="utf-8") as handle:
+                    handle.write(prefab_document.dumps(document))
+            opened(level)
+            bpy.data.objects.remove(child_object(), do_unlink=True)
+            saved = save.save_prefab(bpy.context.scene)
+            carriers = [o for o in read(level).objects if o.target == CHILD_LOCAL]
+            check(len(carriers) == 1 and carriers[0].dropped,
+                  f"existing carrier becomes dropped (carrier first: {carrier_first})")
+            check(saved.edited == 1, "deletion is reported as an edit")
+            opened(level)
+            check(not any(store.is_derived(o) for o in bpy.context.scene.objects),
+                  "the deleted child stays absent after reload")
+            with open(level, "rb") as handle:
+                before = handle.read()
+            save.save_prefab(bpy.context.scene)
+            with open(level, "rb") as handle:
+                check(handle.read() == before, "saving a dropped carrier again changes no bytes")
+
+    print("\n== a stale carrier is preserved when its prefab child is gone ==")
+    with tempfile.TemporaryDirectory() as work:
+        level, prefab_path = make_project(work)
+        opened(level)
+        child_object().location.x += 2.0
+        save.save_prefab(bpy.context.scene)
+        document = read(prefab_path)
+        document.objects = [o for o in document.objects if o.guid != CHILD_LOCAL]
+        with open(prefab_path, "w", encoding="utf-8") as handle:
+            handle.write(prefab_document.dumps(document))
+        opened(level)
+        with open(level, "rb") as handle:
+            before = handle.read()
+        save.save_prefab(bpy.context.scene)
+        with open(level, "rb") as handle:
+            check(handle.read() == before, "an unmaterialized stale carrier is unchanged")
+
     print("\n== reverting an override that is already in the file ==")
     with tempfile.TemporaryDirectory() as work:
         level, prefab_path = make_project(work)

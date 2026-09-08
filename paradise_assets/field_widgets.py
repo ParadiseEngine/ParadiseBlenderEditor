@@ -25,7 +25,7 @@ from bpy.types import Operator, PropertyGroup
 from . import edits
 from .document import assets as asset_index
 from .document import component_schema, project
-from .materialize import store
+from .materialize import light_preview, store
 
 __all__ = ["attach", "classes", "detach", "draw_item", "sync"]
 
@@ -101,6 +101,7 @@ def _commit(slot, context) -> None:
     finally:
         _SYNCING = False
     edits.set_field(obj, slot.component_id, slot.path, value)
+    light_preview.refresh(context.scene)
 
 
 class ParadiseFieldSlot(PropertyGroup):
@@ -135,7 +136,9 @@ class ParadiseFieldSlot(PropertyGroup):
 
 def _overlay_value(slot, context):
     rna = slot.rna
-    if rna in ("value_vector", "value_vector2", "value_quaternion", "value_color"):
+    if rna == "value_color":
+        return dict(zip("rgba", (float(component) for component in slot.value_color), strict=True))
+    if rna in ("value_vector", "value_vector2", "value_quaternion"):
         return [float(component) for component in getattr(slot, rna)]
     if rna in ("value_float", "value_factor", "value_mass", "value_distance",
                "value_angle", "value_time"):
@@ -169,7 +172,10 @@ def _assign_rna(slot, value) -> None:
         slot.value_int = int(value)
 
 
-def draw_item(layout, context, obj, component_id: str, item, value, edited: dict, row=None) -> None:
+def draw_item(
+    layout, context, obj, component_id: str, item, value, edited: dict, row=None,
+    overridden=frozenset(),
+) -> None:
     """One plan row as a widget. Asset references are a search popup, not an EnumProperty:
     rewriting that enum on every redraw is what made a picked slot stick."""
     row = row or layout.row(align=True)
@@ -182,15 +188,18 @@ def draw_item(layout, context, obj, component_id: str, item, value, edited: dict
     if component_schema.is_asset_field(item.field, value):
         _draw_asset(row, component_id, item, value, label)
         _draw_revert(row, edited, component_id, item.path)
+        _draw_prefab_revert(row, component_id, item.path, overridden)
         return
     if slot is None:
         row.label(text=f"{label}: {component_schema.format_value(value)}")
+        _draw_prefab_revert(row, component_id, item.path, overridden)
         return
     row.prop(
         slot, slot.rna, text=label,
         slider=slot.rna == "value_factor",
     )
     _draw_revert(row, edited, component_id, item.path)
+    _draw_prefab_revert(row, component_id, item.path, overridden)
 
 
 def _draw_asset(row, component_id: str, item, value, label: str) -> None:
@@ -211,6 +220,22 @@ def _draw_revert(row, edited: dict, component_id: str, path: str) -> None:
     if not _path_is_edited(edited, path):
         return
     revert = row.operator("paradise_assets.revert_component_field", text="", icon="LOOP_BACK")
+    revert.component_id = component_id
+    revert.field_name = path
+
+
+def _draw_prefab_revert(row, component_id: str, path: str, overridden) -> None:
+    """The badge on a field whose value is this instance's rather than its prefab's, and the
+    button that hands it back. ``DECORATE_OVERRIDE`` is the icon Blender itself uses for a
+    library override, so it reads without a legend.
+
+    Only the TOP-LEVEL field is marked: `resolve._merge_data` is shallow, so an override
+    replaces a whole sub-table and the field the author overrode is the outermost one.
+    """
+    if path.split("/")[0] not in overridden:
+        return
+    revert = row.operator(
+        "paradise_assets.revert_to_prefab", text="", icon="DECORATE_OVERRIDE")
     revert.component_id = component_id
     revert.field_name = path
 
@@ -353,7 +378,10 @@ def _write_slot(slot, field, value, context) -> None:
         elif rna in ("value_vector2", "value_vector", "value_quaternion", "value_color"):
             count = {"value_vector2": 2, "value_vector": 3}.get(rna, 4)
             fill = 1.0 if rna in ("value_color",) else 0.0
-            numbers = list(value) if isinstance(value, (list, tuple)) else []
+            if rna == "value_color" and isinstance(value, dict):
+                numbers = [value.get(channel, 1.0) for channel in "rgba"]
+            else:
+                numbers = list(value) if isinstance(value, (list, tuple)) else []
             padded = [float(n) if isinstance(n, (int, float)) else fill for n in numbers[:count]]
             padded += [0.0 if rna == "value_quaternion" else fill] * (count - len(padded))
             if rna == "value_quaternion":

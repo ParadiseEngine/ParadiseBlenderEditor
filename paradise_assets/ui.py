@@ -1,9 +1,10 @@
 """The "Paradise" sidebar tab. Edits go through the overlay in :mod:`edits`; ``meta`` and
 ``transform`` stay live from Blender, host-baked fields stay locked.
 
-Four sibling panels, one per scope, rather than one tree: the document, the PROJECT it lives in,
-playing it, and the selected object. Project actions are the reason they are siblings -- build,
-verify and the watcher belong to a project whether or not a document is open, and nesting them
+Five sibling panels, one per scope, rather than one tree: the document, the PROJECT it lives in,
+playing it, its object tree, and the selected object. Project actions are the reason they are
+siblings -- build, verify and the watcher belong to a project whether or not a document is open,
+and nesting them
 under the document made them unreachable in the one session where an author most needs them,
 the one that has just opened Blender.
 """
@@ -18,7 +19,7 @@ from bpy.types import Panel
 from . import component_ops, edits, field_widgets, watch
 from .document import assets as asset_index
 from .document import component_schema, well_known
-from .materialize import save, shapes, store, sync, workfile
+from .materialize import save, shapes, store, sync, tagging, workfile
 
 __all__ = ["classes"]
 
@@ -40,6 +41,8 @@ class PARADISE_ASSETS_PT_document(_AssetsPanel, Panel):
         if state is None:
             layout.label(text="No document open.", icon="INFO")
             layout.operator("paradise_assets.open_prefab", text="Open Prefab…", icon="FILE_FOLDER")
+            layout.operator(
+                "paradise_assets.create_prefab", text="Create Prefab from Selection…", icon="EXPORT")
             _draw_openable(layout, context)
             return
 
@@ -48,6 +51,10 @@ class PARADISE_ASSETS_PT_document(_AssetsPanel, Panel):
         box = layout.box()
         box.label(text=os.path.basename(state.path), icon="FILE_TEXT")
         box.label(text=_where(state.path, located))
+        identity = _cached(
+            state.path, "identity", lambda: asset_index.read_sidecar_guid(state.path + ".meta"))
+        if identity:
+            box.label(text=identity)
 
         count = sum(1 for obj in context.scene.collection.all_objects if store.guid_of(obj))
         box.label(text=f"{count} document object(s)")
@@ -79,6 +86,7 @@ class PARADISE_ASSETS_PT_document(_AssetsPanel, Panel):
         row = layout.row(align=True)
         row.operator("paradise_assets.add_prefab_instance", text="Add Prefab…", icon="ADD")
         row.operator("paradise_assets.extract_prefab", text="Extract…", icon="EXPORT")
+        layout.operator("paradise_assets.create_prefab", text="Create Prefab from Selection…", icon="EXPORT")
         layout.operator("paradise_assets.open_prefab", text="Open Another…", icon="FILE_FOLDER")
 
 
@@ -270,6 +278,104 @@ def _draw_session(layout, session, root: str) -> None:
             box.label(text=line)
 
 
+#: How many rows the tree draws before it stops. A ShiningPie level is 300+ objects and a
+#: sidebar panel is not an Outliner; past this the Outliner is the right tool and this one says so.
+_TREE_ROWS = 120
+
+#: Rows are rebuilt no more often than this. A draw runs at redraw rate, and walking every object
+#: and parsing its JSON markers per frame is exactly what the draw rule forbids.
+_TREE_TTL = 0.5
+
+#: scene name -> (taken at, rows)
+_trees: dict[str, tuple[float, list]] = {}
+
+
+class PARADISE_ASSETS_PT_tree(_AssetsPanel, Panel):
+    """The document's objects with what Blender's Outliner cannot say about them.
+
+    Blender exposes no per-row icon for an object, so the Outliner cannot show that something is
+    a prefab instance, one of its children, or overridden -- the name marks say the first two and
+    can only be refreshed when an operator runs. This panel reads live state, so a pending,
+    unsaved override shows here the moment it is made.
+    """
+
+    bl_label = "Document Tree"
+    bl_idname = "PARADISE_ASSETS_PT_tree"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    @classmethod
+    def poll(cls, context):
+        return store.read_state(context.scene) is not None
+
+    def draw(self, context):
+        layout = self.layout
+        rows = _tree_rows(context.scene)
+        if not rows:
+            layout.label(text="No document objects.", icon="DOT")
+            return
+
+        active = context.active_object
+        column = layout.column(align=True)
+        for depth, obj, icon, marked in rows[:_TREE_ROWS]:
+            row = column.row(align=True)
+            if depth:
+                row.separator(factor=depth * 1.4)
+            reveal = row.operator(
+                "paradise_assets.reveal_object",
+                text=store.document_name(obj) or obj.name,
+                icon=icon,
+                emboss=obj is active,
+            )
+            reveal.guid = store.guid_of(obj) or ""
+            if marked:
+                row.label(icon="DECORATE_OVERRIDE")
+
+        if len(rows) > _TREE_ROWS:
+            layout.label(text=f"…and {len(rows) - _TREE_ROWS} more — use the Outliner.", icon="DOT")
+
+
+def _tree_rows(scene) -> list:
+    """``(depth, object, icon, overridden)`` in document order, cached on a short TTL."""
+    cached = _trees.get(scene.name)
+    now = time.monotonic()
+    if cached is not None and now - cached[0] < _TREE_TTL:
+        return cached[1]
+
+    objects = [obj for obj in scene.collection.all_objects if store.guid_of(obj) is not None]
+    children: dict = {}
+    roots = []
+    for obj in objects:
+        if obj.parent is not None and store.guid_of(obj.parent) is not None:
+            children.setdefault(obj.parent.name, []).append(obj)
+        else:
+            roots.append(obj)
+
+    rows: list = []
+
+    def walk(obj, depth: int) -> None:
+        rows.append((depth, obj, _tree_icon(obj), tagging.overridden(obj)))
+        for child in sorted(children.get(obj.name, ()), key=lambda o: o.name):
+            walk(child, depth + 1)
+
+    for root in sorted(roots, key=lambda o: o.name):
+        walk(root, 0)
+
+    _trees[scene.name] = (now, rows)
+    return rows
+
+
+def _tree_icon(obj) -> str:
+    """What this object IS, in one glyph: an instance, one of a prefab's children, a group, or an
+    ordinary object."""
+    if store.prefab_of(obj) is not None:
+        return "PACKAGE"
+    if store.is_derived(obj):
+        return "DECORATE_LINKED"
+    if obj.instance_collection is not None:
+        return "OUTLINER_OB_MESH"
+    return "OUTLINER_OB_EMPTY"
+
+
 class PARADISE_ASSETS_PT_object(_AssetsPanel, Panel):
     bl_label = "Components"
     bl_idname = "PARADISE_ASSETS_PT_object"
@@ -346,10 +452,21 @@ class PARADISE_ASSETS_PT_object(_AssetsPanel, Panel):
         for component, component_id, schema, edited in drawn:
             box = layout.box()
             header = box.row()
+            merged = (
+                _live_payload(obj, component_id, schema, component) if schema is not None
+                else (component.get("data") if isinstance(component.get("data"), dict) else {})
+            )
+            overridden = component_ops.overridden_fields(obj, component_id, merged)
             header.label(
                 text=schema.display_name if schema is not None else _component_label(component),
-                icon="PROPERTIES",
+                icon="DECORATE_OVERRIDE" if overridden else "PROPERTIES",
             )
+            if overridden and not component_schema.is_format_owned(component_id):
+                # The prefab's value is one click away, on the component and on each field.
+                hand_back = header.operator(
+                    "paradise_assets.revert_to_prefab", text="", icon="LOOP_BACK")
+                hand_back.component_id = component_id
+                hand_back.field_name = ""
             if edited:
                 revert = header.operator(
                     "paradise_assets.revert_component_field", text="", icon="LOOP_BACK")
@@ -372,7 +489,7 @@ class PARADISE_ASSETS_PT_object(_AssetsPanel, Panel):
                     box.label(text=line)
                 continue
 
-            _draw_schema_fields(box, context, obj, component, schema, edited)
+            _draw_schema_fields(box, context, obj, component, schema, edited, overridden)
 
 
 def _live_payload(obj, component_id: str, schema, component: dict) -> dict:
@@ -385,7 +502,9 @@ def _live_payload(obj, component_id: str, schema, component: dict) -> dict:
     return shapes.overlay_live(obj, component_id, schema, merged, shapes.default_row)
 
 
-def _draw_schema_fields(box, context, obj, component: dict, schema, edited: dict) -> None:
+def _draw_schema_fields(
+    box, context, obj, component: dict, schema, edited: dict, overridden=frozenset()
+) -> None:
     """One component's fields, editable where the schema says they can be."""
     component_id = str(component.get("id", ""))
     merged = _live_payload(obj, component_id, schema, component)
@@ -454,7 +573,8 @@ def _draw_schema_fields(box, context, obj, component: dict, schema, edited: dict
                 not item.field.fields or component_schema.is_asset_field(item.field, value)
             ):
                 field_widgets.draw_item(
-                    box, context, obj, component_id, item, value, edited, row=row)
+                    box, context, obj, component_id, item, value, edited, row=row,
+                    overridden=overridden)
             else:
                 row.label(text=item.path, icon="DOT")
             drop = row.operator("paradise_assets.remove_array_row", text="", icon="X")
@@ -463,7 +583,8 @@ def _draw_schema_fields(box, context, obj, component: dict, schema, edited: dict
             drop.index = item.index if item.index is not None else 0
             continue
 
-        field_widgets.draw_item(box, context, obj, component_id, item, value, edited)
+        field_widgets.draw_item(
+            box, context, obj, component_id, item, value, edited, overridden=overridden)
 
 
 def _is_shape_row(item) -> bool:
@@ -556,6 +677,7 @@ classes = (
     PARADISE_ASSETS_PT_document,
     PARADISE_ASSETS_PT_project,
     PARADISE_ASSETS_PT_play,
+    PARADISE_ASSETS_PT_tree,
     PARADISE_ASSETS_PT_object,
 )
 

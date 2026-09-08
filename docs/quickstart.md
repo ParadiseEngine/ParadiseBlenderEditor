@@ -42,6 +42,7 @@ Open the **Paradise** tab in the 3D viewport sidebar (`N`). With nothing open yo
 ▾ Prefab Document
     No document open.
     [ Open Prefab… ]
+    [ Create Prefab from Selection… ]
     Recently opened here:
       shiningpie
       triggers
@@ -74,8 +75,26 @@ the dropdown.
 Move, rotate and scale with Blender's own gizmos. The document is Y-up and Blender is Z-up; you
 never see that, because `document/axes.py` rebases on the way in and out.
 
-An instance's *children* are the prefab's, not yours: moving one is refused on save, because the
-document has no way to say it. Move the instance, or edit the prefab it came from.
+An instance's *children* belong to the prefab, but you can change them here: move one, or edit a
+field on it, and the document records an **override** rather than a copy. The prefab still owns
+everything you did not touch, so a later edit to the prefab still reaches this instance.
+
+The Outliner marks what is what — `Crate ▸` is a prefab instance, `Bulb ·` is one of its
+children, and a trailing `*` means something about it is overridden. Those marks are display
+only; the document never sees them. The **Document Tree** panel shows the same thing with real
+icons, and it updates before you save.
+
+Right-click an instance (or anything under one) for the three ways an override ends:
+
+- **Apply Overrides to Prefab…** writes them into the prefab. That changes *every* instance of
+  it, in every level — the confirm says so.
+- **Revert Instance to Prefab** throws them away.
+- **Unpack Prefab Instance** breaks the link: the objects become this document's own. They keep
+  the identities they had, so nothing that referenced them breaks. It is not reversible.
+
+One thing is still the prefab's alone: **collision shapes**. A shape row is a list entry, and an
+override replaces a whole list, so overriding one would silently drop the prefab's other rows.
+The panel says *"the prefab's; edit it there"*.
 
 ## 5. Edit components
 
@@ -115,18 +134,52 @@ If the panel says *"No `[host]` project in assets/project.toml"*, the project ha
 which launcher is its game — that is the project's business, not a preference, so that a script
 and CI run the same game the same way.
 
-## 8. New models
+## 8. Create a prefab
+
+For new Blender geometry:
+
+1. Build the game's launcher once so `.editor/authoring-schema.json` names its static mesh
+   component. Select one or more unrigged mesh objects in **Object Mode**.
+2. Choose **Create Prefab from Selection…** in the Paradise sidebar or the object right-click
+   menu. Pick a new path such as `assets/prefabs/Crate.prefab`.
+3. The addon snapshots the evaluated meshes, including modifiers and glTF-compatible materials,
+   into `Crate.glb` beside that path. The active object's world origin becomes the prefab's
+   origin; relative placement, rotation, scale and parenting effects are baked into the geometry.
+   The CLI creates mesh/material/texture documents using the project's `[extract]` directories,
+   and saves the prefab at the chosen path. Existing files and orphan sidecars are refused.
+4. Open a level and use **Add Prefab…** to place the new prefab, then **Save** or **Ctrl+S**.
+   Use **Open Prefab…** to edit the prefab's components, or **Catalogue** to add its thumbnail.
+5. **Build & Play** compiles those assets and loads the instance in the game.
+
+Creation leaves the source Blender scene and selection intact. It creates a static snapshot;
+later geometry edits require re-exporting the GLB and running `paradise assets extract` on it.
+The meshes become one reusable model; rigged objects, native lights, cameras and gameplay
+components are not copied by this command. Add game components through the prefab's Components
+panel. If extraction fails after export, the error names the saved GLB to recover from.
+
+For objects already in a Paradise document, select the subtree's parent and choose **Create
+Prefab from Object…** in its right-click menu, or **Extract…** in the sidebar. This preserves
+components and child hierarchy, saves the new prefab, and replaces the subtree with an instance.
+For several document objects, **Group Selected** first, save, then extract the group. Save pending
+work before extraction; the document root itself cannot be extracted.
+
+The Prefab Document panel shows the open asset's GUID from its `.meta` sidecar. Keep each asset
+and its sidecar together; use `paradise assets mv` to move or rename asset files. Object renames
+preserve their stored identities. Linked `.blend` libraries are unnecessary: canonical
+`assets/*.prefab` and sidecars survive Blender restarts, while `.editor/blend/` is disposable.
+
+## 9. Import an existing model
 
 Drop a `.glb` under `assets/` and run:
 
 ```bash
-paradise assets extract
+paradise assets extract assets/models/Crate.glb
 ```
 
-It writes a prefab for any model that has none, so the model is placeable straight away. Where
-that prefab lands is `[glb] extract` in the model's own sidecar, else `[extract] directory` in
-`project.toml`, else beside the model — so "is there a prefab beside the model" is the wrong
-question on a project that configures either of the first two.
+Models without prefabs receive one, making them placeable. The destination is the model's
+extraction directory override, then `[extract] prefabs` or `[extract] directory` in
+`project.toml`, then beside the model. Meshes, materials and textures follow their own
+`[extract]` directories.
 
 A generated prefab is a **seed, not a projection**: from the moment it is written it is an
 ordinary document you own. Nothing records which model it came from, nothing updates it, and

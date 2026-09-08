@@ -226,9 +226,10 @@ def main() -> int:
                     "PARADISE_ASSETS_PT_document",
                     "PARADISE_ASSETS_PT_project",
                     "PARADISE_ASSETS_PT_play",
+                    "PARADISE_ASSETS_PT_tree",
                     "PARADISE_ASSETS_PT_object",
                 ],
-                "four panels, in the order they read down the sidebar",
+                "five panels, in the order they read down the sidebar",
             )
             check(
                 not any(getattr(cls, "bl_parent_id", "") for cls in ui.classes),

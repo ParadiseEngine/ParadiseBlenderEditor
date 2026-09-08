@@ -61,8 +61,7 @@ def add_instance(
     # A fresh uuid4: unlike a resolved child, there is nothing to derive it from.
     instance_guid = str(uuid.uuid4())
     store.tag_object(obj, instance_guid, _components(root))
-    store.tag_name(obj, obj.name)
-    store.tag_prefab(obj, guid, relative)
+    _tag_as_instance(obj, guid, relative, root)
 
     try:
         _parent_to_document_root(obj, scene)
@@ -94,12 +93,27 @@ def adopt_template(
         obj.name = root.name or os.path.splitext(os.path.basename(relative))[0]
 
     store.tag_object(obj, str(uuid.uuid4()), _components(root))
-    store.tag_name(obj, obj.name)
-    store.tag_prefab(obj, prefab_guid, relative)
+    _tag_as_instance(obj, prefab_guid, relative, root)
 
     _parent_to_document_root(obj, scene)
     _show_prefab_mesh(obj, document, layout, path)
     return True
+
+
+def _tag_as_instance(obj, prefab_guid: str, relative: str, root) -> None:
+    """The markers a LOADED instance would carry, on one that has just been placed.
+
+    Two of them matter before the first save. Its own entry authors nothing yet -- it is meta,
+    transform and a reference -- so ``tag_authored`` must say so, or an edit made before the
+    first save is routed as a change to a component the entry does not have and dropped. And the
+    baseline is the prefab's own root, which is what the panel diffs against to decide anything
+    is overridden at all.
+    """
+    store.tag_prefab(obj, prefab_guid, relative)
+    store.tag_authored(obj, [])
+    store.tag_base(obj, _components(root))
+    store.tag_children(obj, [])
+    store.mark(obj, obj.name, suffix=store.MARK_INSTANCE)
 
 
 def _components(root) -> list:

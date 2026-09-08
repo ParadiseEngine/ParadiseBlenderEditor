@@ -67,8 +67,13 @@ def refuse_target(path: str, layout: ProjectLayout) -> str:
     """The assets-relative path a new prefab at ``path`` would have, or raise. Separate from
     :func:`create` so an operator can refuse before it starts saving the open scene."""
     absolute = os.path.abspath(path)
+    assets = os.path.realpath(layout.assets)
+    try:
+        inside = os.path.commonpath((os.path.realpath(absolute), assets)) == assets
+    except ValueError:
+        inside = False
     relative = os.path.relpath(absolute, os.path.abspath(layout.assets))
-    if relative.startswith(os.pardir) or os.path.isabs(relative):
+    if not inside:
         raise CreateError(
             f"{absolute} is outside {layout.assets}. A prefab the project cannot reference by "
             "an assets-relative path is a prefab nothing can instantiate."

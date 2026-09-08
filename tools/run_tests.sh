@@ -81,6 +81,14 @@ if command -v "$BLENDER" >/dev/null 2>&1; then
   integration "collision shapes as empties" \
     tests/integration/test_shapes.py "$DEFAULT_NOISE"
 
+  integration "schema-driven light preview and canonical colour edits" \
+    tests/integration/test_light_preview.py "$DEFAULT_NOISE"
+
+  # Prefab-instance overrides: authoring one, and the three gestures that end one. Its own
+  # temporary project throughout -- these operators write two documents.
+  integration "prefab instance overrides" \
+    tests/integration/test_overrides.py "$DEFAULT_NOISE"
+
   # The byte-exact round trip through Blender needs a real asset project; it skips cleanly when
   # PARADISE_ASSETS_PROJECT names nothing.
   integration "open and save an asset-project scene" \
@@ -92,6 +100,10 @@ if command -v "$BLENDER" >/dev/null 2>&1; then
   integration "extract to prefab, and the model prefab seed" \
     tests/integration/test_create_prefab.py \
     '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2}|Info: |.*\| Saved:)' \
+    "${PARADISE_ASSETS_PROJECT:-../shiningpie}"
+
+  integration "create a prefab from raw geometry and reopen in another Blender" \
+    tests/integration/test_geometry_prefab.py "$DEFAULT_NOISE" \
     "${PARADISE_ASSETS_PROJECT:-../shiningpie}"
 
   # Asset Browser thumbnails. Renders, so it wants the same real project -- and its load-bearing

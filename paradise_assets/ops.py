@@ -15,17 +15,21 @@ from __future__ import annotations
 
 import contextlib
 import os
+import shutil
 import subprocess
+import tempfile
 
 import bpy
 from bpy.props import StringProperty
 from bpy.types import Operator
 
 from . import catalogue, watch
-from .document import atomic, extract, new_prefab, project
+from .document import apply as apply_overrides
+from .document import atomic, extract, geometry_prefab, new_prefab, overrides, project, unpack
 from .document import prefab as prefab_document
 from .document.prefab import PrefabDocumentError, loads
-from .materialize import grouping, instancing, load, save, store, workfile
+from .materialize import geometry, grouping, instancing, load, save, store, workfile
+from .play import host
 
 __all__ = ["classes"]
 
@@ -359,6 +363,98 @@ class PARADISE_ASSETS_OT_add_prefab_instance(Operator):
         return {"FINISHED"}
 
 
+class PARADISE_ASSETS_OT_create_prefab(Operator):
+    """Save selected static meshes as a reusable prefab, keeping the source Blender scene"""
+
+    bl_idname = "paradise_assets.create_prefab"
+    bl_label = "Create Prefab from Selection"
+    bl_options = {"REGISTER"}
+
+    filepath: StringProperty(subtype="FILE_PATH")  # type: ignore[valid-type]
+    filter_glob: StringProperty(default="*.prefab", options={"HIDDEN"})  # type: ignore[valid-type]
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == "OBJECT" and any(
+            obj.type == "MESH" and store.guid_of(obj) is None for obj in context.selected_objects
+        )
+
+    def invoke(self, context, event):
+        layout = store.project_of(context.scene)
+        if layout is not None and not self.filepath:
+            name = bpy.path.clean_name(context.active_object.name) if context.active_object else "NewPrefab"
+            self.filepath = layout.resolve(f"prefabs/{name}.prefab")
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        path = os.path.abspath(bpy.path.abspath(self.filepath))
+        if not path.endswith(".prefab"):
+            path += ".prefab"
+        layout = project.locate(path)
+        if layout is None:
+            self.report({"ERROR"}, "Choose a .prefab path under the game's assets/ directory.")
+            return {"CANCELLED"}
+
+        written = False
+        try:
+            members = geometry.selection(context)
+            target = geometry_prefab.prepare(path, layout)
+            if host.resolve_cli_command(layout.root) is None:
+                raise new_prefab.CreateError("Install the Paradise CLI or set its path in addon preferences.")
+
+            with tempfile.TemporaryDirectory(prefix="paradise-geometry-") as temporary:
+                staged = os.path.join(temporary, "selection.glb")
+                geometry.export(context, members, staged)
+                blocked = watch.ensure(layout.root)
+                if blocked:
+                    raise new_prefab.CreateError(blocked)
+                geometry_prefab.prepare(path, layout)
+                os.makedirs(os.path.dirname(target.model), exist_ok=True)
+                # Publish a complete GLB so the watcher cannot observe a partial export. A hard
+                # link refuses a target another author created while Blender was exporting.
+                with tempfile.NamedTemporaryFile(
+                    dir=os.path.dirname(target.model), suffix=".tmp", delete_on_close=False,
+                ) as pending:
+                    with open(staged, "rb") as source:
+                        shutil.copyfileobj(source, pending)
+                    pending.close()
+                    os.link(pending.name, target.model)
+                written = True
+
+            new_prefab.identify(target.model, layout.relative(target.model))
+            _geometry_cli(["assets", "extract", target.model], layout)
+            with open(target.seed, encoding="utf-8") as handle:
+                loads(handle.read(), target.seed)
+            if os.path.normcase(target.seed) != os.path.normcase(target.prefab):
+                new_prefab.refuse_target(target.prefab, layout)
+                _geometry_cli(["assets", "mv", target.seed, target.prefab], layout)
+            reference = new_prefab.identify(target.prefab, layout.relative(target.prefab))
+        except (new_prefab.CreateError, PrefabDocumentError, OSError, ValueError, RuntimeError) as error:
+            recovery = (
+                f" The geometry is saved at {layout.relative(target.model)}; "
+                "resolve the error and run paradise assets extract on that file."
+                if written else ""
+            )
+            self.report({"ERROR"}, f"Could not create prefab: {str(error).rstrip('.')}.{recovery}")
+            return {"CANCELLED"}
+
+        self.report(
+            {"INFO"},
+            f"Saved {reference.path}. Use Add Prefab to place it, or Open Prefab to edit its components. "
+            "The selected source meshes are unchanged.",
+        )
+        return {"FINISHED"}
+
+
+def _geometry_cli(arguments: list[str], layout: project.ProjectLayout) -> None:
+    result = host.run_cli([*arguments, "--project", layout.root], layout.root)
+    if result is None:
+        raise new_prefab.CreateError("The Paradise CLI could not be started.")
+    if result.returncode != 0:
+        raise new_prefab.CreateError((result.stderr or result.stdout).strip()[-1500:])
+
+
 class PARADISE_ASSETS_OT_extract_prefab(Operator):
     """Move the active object and everything under it into a new prefab, leaving an instance"""
 
@@ -650,14 +746,268 @@ class PARADISE_ASSETS_FH_prefab(bpy.types.FileHandler):
         )
 
 
+
+def _instance_of(obj):
+    """The instance ``obj`` belongs to: itself when it is one, else the one it was resolved out
+    of. Clicking a wall of a building and asking to unpack means the building."""
+    while obj is not None:
+        if store.prefab_of(obj) is not None:
+            return obj
+        obj = obj.parent
+    return None
+
+
+class _InstanceOperator(Operator):
+    """Shared shape for the gestures that rewrite a document around one instance.
+
+    Each works on the FILE, exactly as extraction does: the scene is written first, the document
+    re-read, the surgery done on what is actually on disk, and the result rematerialized. None of
+    them needs the watcher -- no asset is created, so there is no identity to wait for, and
+    borrowing extraction's ``watch.ensure`` would refuse the operation for a reason that is not
+    true here.
+    """
+
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context):
+        if store.read_state(context.scene) is None:
+            return False
+        return _instance_of(context.active_object) is not None
+
+    def _prepare(self, context):
+        """``(scene state, layout, instance object)``, or ``None`` after reporting why not."""
+        scene = context.scene
+        state = store.read_state(scene)
+        if state is None:
+            self.report({"ERROR"}, "No prefab document is open.")
+            return None
+
+        layout = project.locate(state.path)
+        if layout is None:
+            self.report({"ERROR"}, f"No asset project above {state.path}")
+            return None
+
+        instance = _instance_of(context.active_object)
+        if instance is None:
+            self.report({"ERROR"}, "This object does not belong to a prefab instance.")
+            return None
+
+        kept = workfile.unsaved_work(scene)
+        if kept is not None:
+            self.report(
+                {"ERROR"},
+                f"This scene has work the document does not: {kept}. Save to the prefab document "
+                "first (Paradise Assets > Save), then try again.",
+            )
+            return None
+
+        try:
+            save.save_prefab(scene)
+        except save.SaveError as error:
+            self.report({"ERROR"}, str(error))
+            return None
+        return state, layout, instance
+
+    def _rematerialize(self, context, state, layout):
+        with open(state.path, encoding="utf-8") as handle:
+            document = loads(handle.read(), state.path)
+        load.load_document(context.scene, document, state.path, layout)
+        workfile.save(layout, state.path)
+
+    def _prefabs(self, layout):
+        def read(reference):
+            try:
+                with open(layout.resolve(reference.path), encoding="utf-8") as handle:
+                    return loads(handle.read(), reference.path)
+            except (OSError, PrefabDocumentError):
+                return None
+        return read
+
+
+class PARADISE_ASSETS_OT_unpack_instance(_InstanceOperator):
+    """Break this prefab instance's link, keeping the objects it was showing"""
+
+    bl_idname = "paradise_assets.unpack_instance"
+    bl_label = "Unpack Prefab Instance"
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_confirm(self, event)
+
+    def execute(self, context):
+        prepared = self._prepare(context)
+        if prepared is None:
+            return {"CANCELLED"}
+        state, layout, instance = prepared
+        guid = store.guid_of(instance)
+
+        try:
+            with open(state.path, encoding="utf-8") as handle:
+                document = loads(handle.read(), state.path)
+            result = unpack.unpack(document, guid, self._prefabs(layout))
+        except (unpack.UnpackError, PrefabDocumentError) as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+        except OSError as error:
+            self.report({"ERROR"}, f"Could not read the document: {error}")
+            return {"CANCELLED"}
+
+        try:
+            atomic.write_text(state.path, prefab_document.dumps(result.document))
+        except OSError as error:
+            self.report({"ERROR"}, f"Could not write the document: {error}")
+            return {"CANCELLED"}
+
+        self._rematerialize(context, state, layout)
+        for warning in result.warnings[:5]:
+            self.report({"WARNING"}, warning)
+        self.report(
+            {"INFO"},
+            f"Unpacked {result.objects} object(s); this document now owns them. "
+            "They keep the identities they had, so nothing that referenced them has broken.",
+        )
+        return {"FINISHED"}
+
+
+class PARADISE_ASSETS_OT_apply_overrides(_InstanceOperator):
+    """Write this instance's overrides into the prefab, changing every instance of it"""
+
+    bl_idname = "paradise_assets.apply_overrides"
+    bl_label = "Apply Overrides to Prefab"
+
+    @classmethod
+    def poll(cls, context):
+        return super().poll(context) and _has_overrides(_instance_of(context.active_object))
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_confirm(self, event)
+
+    def execute(self, context):
+        prepared = self._prepare(context)
+        if prepared is None:
+            return {"CANCELLED"}
+        state, layout, instance = prepared
+        guid = store.guid_of(instance)
+
+        reference = store.prefab_of(instance)
+        prefab_path = layout.resolve(reference[1])
+        try:
+            with open(state.path, encoding="utf-8") as handle:
+                document = loads(handle.read(), state.path)
+            with open(prefab_path, encoding="utf-8") as handle:
+                target = loads(handle.read(), prefab_path)
+            result = apply_overrides.apply_to_prefab(document, guid, target)
+            result.prefab.validate(prefab_path)
+        except (apply_overrides.ApplyError, PrefabDocumentError) as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+        except OSError as error:
+            self.report({"ERROR"}, f"Could not read {reference[1]}: {error}")
+            return {"CANCELLED"}
+
+        if not result.applied:
+            self.report({"INFO"}, "This instance overrides nothing; the prefab is unchanged.")
+            return {"CANCELLED"}
+
+        # The PREFAB first. If the level write then fails the value is applied twice -- the
+        # override and the prefab agree, which looks identical and reloads correctly. The other
+        # order loses the overrides outright.
+        try:
+            atomic.write_text(prefab_path, prefab_document.dumps(result.prefab))
+        except OSError as error:
+            self.report({"ERROR"}, f"Could not write {reference[1]}: {error}")
+            return {"CANCELLED"}
+
+        try:
+            atomic.write_text(state.path, prefab_document.dumps(result.remaining))
+        except OSError as error:
+            self.report(
+                {"ERROR"},
+                f"{reference[1]} was updated but {os.path.basename(state.path)} could not be "
+                f"({error}). Reload: the overrides are still on the instance and now agree with "
+                "the prefab, so nothing is lost.",
+            )
+            return {"CANCELLED"}
+
+        self._rematerialize(context, state, layout)
+        for warning in result.warnings[:5]:
+            self.report({"WARNING"}, warning)
+        self.report(
+            {"INFO"},
+            f"Applied {result.components} component(s) and {result.children} child change(s) to "
+            f"{reference[1]}.",
+        )
+        return {"FINISHED"}
+
+
+class PARADISE_ASSETS_OT_revert_instance(_InstanceOperator):
+    """Throw away this instance's overrides, so it shows exactly what its prefab says"""
+
+    bl_idname = "paradise_assets.revert_instance"
+    bl_label = "Revert Instance to Prefab"
+
+    @classmethod
+    def poll(cls, context):
+        return super().poll(context) and _has_overrides(_instance_of(context.active_object))
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_confirm(self, event)
+
+    def execute(self, context):
+        prepared = self._prepare(context)
+        if prepared is None:
+            return {"CANCELLED"}
+        state, layout, instance = prepared
+        guid = store.guid_of(instance)
+
+        try:
+            with open(state.path, encoding="utf-8") as handle:
+                document = loads(handle.read(), state.path)
+            reverted = overrides.strip_instance(document, guid)
+            atomic.write_text(state.path, prefab_document.dumps(reverted))
+        except PrefabDocumentError as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+        except OSError as error:
+            self.report({"ERROR"}, f"Could not rewrite the document: {error}")
+            return {"CANCELLED"}
+
+        self._rematerialize(context, state, layout)
+        self.report({"INFO"}, "The instance shows its prefab again; its overrides are gone.")
+        return {"FINISHED"}
+
+
+def _has_overrides(instance) -> bool:
+    """Whether this instance's own entry, or one of its children, says anything of its own.
+
+    Read from the .blend's tags rather than the file, because a poll runs at menu-draw rate and
+    must not open a document.
+    """
+    if instance is None:
+        return False
+    from .materialize import tagging
+    if tagging.overridden(instance):
+        return True
+    guid = store.guid_of(instance)
+    for obj in instance.children_recursive:
+        address = store.local_of(obj)
+        if address is not None and address[0] == guid and tagging.overridden(obj):
+            return True
+    return False
+
+
 classes = (
     PARADISE_ASSETS_OT_open_prefab,
     PARADISE_ASSETS_OT_reload_prefab,
     PARADISE_ASSETS_OT_recreate_workfile,
     PARADISE_ASSETS_OT_save_prefab,
+    PARADISE_ASSETS_OT_create_prefab,
     PARADISE_ASSETS_OT_toggle_watch,
     PARADISE_ASSETS_OT_add_prefab_instance,
     PARADISE_ASSETS_OT_extract_prefab,
+    PARADISE_ASSETS_OT_unpack_instance,
+    PARADISE_ASSETS_OT_apply_overrides,
+    PARADISE_ASSETS_OT_revert_instance,
     PARADISE_ASSETS_OT_group_objects,
     PARADISE_ASSETS_OT_refresh_catalogue,
     PARADISE_ASSETS_FH_prefab,

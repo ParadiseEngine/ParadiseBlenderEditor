@@ -146,6 +146,10 @@ A typical loop:
 4. **Build & Play.** The CLI builds `assets/` into `build/`, brings the launcher up to date, and
    runs the game on the open document.
 
+Games can expose point, spot and sun lamps through [schema-driven light previews](docs/light-preview.md).
+Edit their canonical values in **Components**; the native child lamp follows those values and the
+document object's transform without becoming another source of authored data.
+
 ## Testing
 
 ```bash

@@ -13,7 +13,7 @@ from mathutils import Quaternion, Vector
 
 from ..document import axes, component_schema, mesh_document, project, schema, well_known
 from ..document.prefab import PrefabDocument, PrefabObject
-from . import shapes, store, tagging
+from . import light_preview, shapes, store, tagging
 from .meshes import LIBRARY_COLLECTION, MeshLibrary
 
 __all__ = ["LoadResult", "load_document"]
@@ -125,6 +125,8 @@ def load_document(
     result.meshes = library.imported
     result.sources |= library.sources
     store.write_state(scene, scene_path)
+    scene.view_layers[0].update()
+    light_preview.refresh(scene)
     return result
 
 
@@ -263,7 +265,9 @@ def _startup_content(scene: bpy.types.Scene):
     file and links its own camera and key light before materializing -- so a gate that trusted
     ``is_dirty`` alone deleted the camera and rendered every prefab black.
     """
-    if bpy.data.filepath or bpy.data.is_dirty:
+    # An open prefab may own untagged preview lamps and shape helpers. The document clear
+    # removes them; capturing them here would retain freed Blender objects.
+    if bpy.data.filepath or bpy.data.is_dirty or store.read_state(scene) is not None:
         return None
     # Document objects are `_clear_previous`'s, not ours. A pristine GUI session holds none, but
     # a scripted one loading twice does, and capturing those meant handing already-freed
@@ -294,6 +298,7 @@ def _clear_previous(scene: bpy.types.Scene) -> None:
     """Remove a previous load's objects (by GUID marker, so the user's own survive), keeping
     the mesh library so reload does not re-import every GLB. Drops pending edits too, which is
     why ``workfile.refresh_from_document`` refuses to run this over unsaved work."""
+    light_preview.clear(scene)
     doomed = [
         obj for obj in scene.collection.all_objects
         if store.guid_of(obj) is not None or shapes.is_shape(obj)

@@ -81,6 +81,9 @@ if command -v "$BLENDER" >/dev/null 2>&1; then
   integration "collision shapes as empties" \
     tests/integration/test_shapes.py "$DEFAULT_NOISE"
 
+  integration "schema-driven light preview and canonical colour edits" \
+    tests/integration/test_light_preview.py "$DEFAULT_NOISE"
+
   # Prefab-instance overrides: authoring one, and the three gestures that end one. Its own
   # temporary project throughout -- these operators write two documents.
   integration "prefab instance overrides" \

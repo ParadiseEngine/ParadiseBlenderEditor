@@ -25,7 +25,7 @@ from bpy.types import Operator, PropertyGroup
 from . import edits
 from .document import assets as asset_index
 from .document import component_schema, project
-from .materialize import store
+from .materialize import light_preview, store
 
 __all__ = ["attach", "classes", "detach", "draw_item", "sync"]
 
@@ -101,6 +101,7 @@ def _commit(slot, context) -> None:
     finally:
         _SYNCING = False
     edits.set_field(obj, slot.component_id, slot.path, value)
+    light_preview.refresh(context.scene)
 
 
 class ParadiseFieldSlot(PropertyGroup):
@@ -135,7 +136,9 @@ class ParadiseFieldSlot(PropertyGroup):
 
 def _overlay_value(slot, context):
     rna = slot.rna
-    if rna in ("value_vector", "value_vector2", "value_quaternion", "value_color"):
+    if rna == "value_color":
+        return dict(zip("rgba", (float(component) for component in slot.value_color), strict=True))
+    if rna in ("value_vector", "value_vector2", "value_quaternion"):
         return [float(component) for component in getattr(slot, rna)]
     if rna in ("value_float", "value_factor", "value_mass", "value_distance",
                "value_angle", "value_time"):
@@ -375,7 +378,10 @@ def _write_slot(slot, field, value, context) -> None:
         elif rna in ("value_vector2", "value_vector", "value_quaternion", "value_color"):
             count = {"value_vector2": 2, "value_vector": 3}.get(rna, 4)
             fill = 1.0 if rna in ("value_color",) else 0.0
-            numbers = list(value) if isinstance(value, (list, tuple)) else []
+            if rna == "value_color" and isinstance(value, dict):
+                numbers = [value.get(channel, 1.0) for channel in "rgba"]
+            else:
+                numbers = list(value) if isinstance(value, (list, tuple)) else []
             padded = [float(n) if isinstance(n, (int, float)) else fill for n in numbers[:count]]
             padded += [0.0 if rna == "value_quaternion" else fill] * (count - len(padded))
             if rna == "value_quaternion":

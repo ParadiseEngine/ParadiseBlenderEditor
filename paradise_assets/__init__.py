@@ -18,7 +18,7 @@ def register() -> None:
     import bpy
 
     from . import browser, component_ops, context_menu, dropped, field_widgets, ops, prefs, ui, watch
-    from .materialize import sync
+    from .materialize import light_preview, sync
     from .play import ops as play_ops
 
     # Blender keeps whatever a register() that raised had already registered, and every enable
@@ -46,6 +46,7 @@ def register() -> None:
 
         # Ctrl+S writes the document too (materialize/sync.py).
         sync.register_handler()
+        light_preview.register_handler()
         watch.register_handler()
     except Exception:
         unregister()
@@ -56,12 +57,13 @@ def unregister() -> None:
     import bpy
 
     from . import browser, context_menu, dropped, field_widgets, watch
-    from .materialize import sync
+    from .materialize import light_preview, sync
     from .play import session as play_session
     browser.unregister_menu()
     context_menu.unregister_menu()
     dropped.unregister_handler()
     sync.unregister_handler()
+    light_preview.unregister_handler()
     watch.unregister_handler()
     play_session.stop_all()
     field_widgets.detach()

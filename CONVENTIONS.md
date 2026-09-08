@@ -138,8 +138,9 @@ evaluated meshes and supported materials, with matrices baked into vertices rela
 active object's world origin. Baking retains shear from nonuniformly scaled parents; mirrored
 geometry reverses winding. Later prefab saves read canonical documents, never the source meshes.
 
-**It does not convert colour.** The exporter had a whole rule here (Blender's socket colours are
-already linear; do not `srgb_to_linear` them). This addon authors no colour at all.
+**Colour edits preserve the canonical payload.** The Components panel reads and writes the
+engine's `{r,g,b,a}` object. Native light previews decode sRGB for display, but their values never
+write back into the document. See `docs/light-preview.md` for the schema and preview conventions.
 
 **It does not derive identity from names** — see §3. That was the exporter's bargain, made because
 writing a guid into the `.blend` would have dirtied a Git-LFS-locked binary on every export. There

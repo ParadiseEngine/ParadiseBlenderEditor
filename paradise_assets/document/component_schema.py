@@ -71,6 +71,7 @@ class FieldSchema:
         self.name: str = raw.get("name", "")
         self.type: str = raw.get("type", "")
         self.doc: str | None = raw.get("doc")
+        self.light_field: str | None = raw.get("lightField")
         self.default = raw.get("default")
         self.minimum = raw.get("minimum")
         self.maximum = raw.get("maximum")
@@ -118,6 +119,13 @@ class FieldSchema:
     def default_value(self):
         """The dump's default, else a typed zero: a JSON null in the overlay would not
         materialize the way an omitted key does in the generated reader."""
+        if self.type == "color":
+            value = self.default
+            if isinstance(value, dict):
+                return {channel: value.get(channel, 1.0) for channel in "rgba"}
+            if isinstance(value, (list, tuple)) and len(value) == 4:
+                return dict(zip("rgba", value, strict=True))
+            return dict(zip("rgba", (1.0, 1.0, 1.0, 1.0), strict=True))
         if self.default is not None:
             return self.default
         if is_asset_field(self):
@@ -134,8 +142,6 @@ class FieldSchema:
             return [0.0, 0.0, 0.0]
         if self.type == "quaternion":
             return [0.0, 0.0, 0.0, 1.0]
-        if self.type == "color":
-            return [1.0, 1.0, 1.0, 1.0]
         if self.type == "object":
             return {}
         if self.type == "array":
@@ -332,6 +338,7 @@ class ComponentSchema:
     def __init__(self, raw: dict) -> None:
         self.id: str = str(raw.get("id", ""))
         self.type: str | None = raw.get("type")
+        self.preview_light: str | None = raw.get("previewLight")
         self.display_name: str = raw.get("displayName") or _short(self.type) or self.id
         self.fields: list[FieldSchema] = [
             FieldSchema(field) for field in raw.get("fields") or [] if isinstance(field, dict)

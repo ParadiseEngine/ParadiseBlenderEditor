@@ -435,6 +435,8 @@ class PARADISE_ASSETS_OT_remove_component(Operator):
 
 
 def _redraw(context) -> None:
+    from .materialize import light_preview
+    light_preview.refresh(context.scene)
     screen = getattr(context, "screen", None)
     if screen is None:
         return

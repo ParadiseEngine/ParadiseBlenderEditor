@@ -1,7 +1,7 @@
 # Conventions — Blender ↔ the Paradise document format
 
 The format is defined by C# (`Paradise.Assets.Documents`, `Paradise.Export`) and pinned by
-`ParadiseEngine/CONVENTIONS.md` and the fixtures in `Paradise.Assets.Documents.Test`. This
+the engine's `CanonicalTomlWriter` and fixtures in `Paradise.Assets.Documents.Test`. This
 document covers only what is *specific to the Blender host*: where Blender's conventions differ
 from the document's, and what this addon does about it.
 

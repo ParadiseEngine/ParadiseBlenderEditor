@@ -16,9 +16,9 @@ import time
 
 from bpy.types import Panel
 
-from . import component_ops, edits, field_widgets, watch
+from . import clip_ops, component_ops, edits, field_widgets, watch
 from .document import assets as asset_index
-from .document import component_schema, well_known
+from .document import component_schema, glb_clips, well_known
 from .materialize import save, shapes, store, sync, tagging, workfile
 
 __all__ = ["classes"]
@@ -490,6 +490,67 @@ class PARADISE_ASSETS_PT_object(_AssetsPanel, Panel):
                 continue
 
             _draw_schema_fields(box, context, obj, component, schema, edited, overridden)
+
+        _draw_clip_settings(layout, context, obj)
+
+
+def _draw_clip_settings(layout, context, obj) -> None:
+    """The GLB's animation clips and their root-motion settings, when the object has clips.
+
+    The flag and the bone live on the MODEL's sidecar (``document/glb_clips.py``), not on the
+    object: the same GLB placed twice is one rig, and the engine keys the settings off the
+    container. The section is a per-clip row only where the resolved GLB carries animations;
+    a static mesh draws nothing at all.
+    """
+    located = store.project_of(context.scene)
+    if located is None:
+        return
+    glb = clip_ops.glb_for_object(obj, located)
+    if glb is None:
+        return
+    view = glb_clips.view(glb)
+    if view is None:
+        return
+
+    box = layout.box()
+    box.label(text=f"Animation clips — {os.path.basename(glb)}", icon="ACTION")
+    if not view.identified:
+        warning = box.row()
+        warning.alert = True
+        warning.label(
+            text="The watcher has not identified this GLB yet; clip settings cannot be "
+            "written until its .meta exists.", icon="ERROR")
+
+    for clip in view.clips:
+        row = box.row(align=True)
+        toggle = row.operator(
+            "paradise_assets.clip_root_motion",
+            text="",
+            icon="CHECKBOX_HLT" if clip.setting.root_motion else "CHECKBOX_DEHLT",
+        )
+        toggle.glb = glb
+        toggle.index = clip.index
+        toggle.enabled = not clip.setting.root_motion
+        row.label(text=clip.name or f"clip {clip.index}")
+        if view.joints:
+            pick = row.operator(
+                "paradise_assets.clip_root_bone",
+                text=clip.setting.root_bone or f"auto ({view.root_joint or '?'})",
+                icon="BONE_DATA",
+            )
+            pick.glb = glb
+            pick.index = clip.index
+            if clip.setting.root_bone:
+                clear = row.operator(
+                    "paradise_assets.clip_root_bone", text="", icon="X")
+                clear.glb = glb
+                clear.index = clip.index
+                clear.auto = True
+
+    for problem in view.problems:
+        warning = box.row()
+        warning.alert = True
+        warning.label(text=problem, icon="ERROR")
 
 
 def _live_payload(obj, component_id: str, schema, component: dict) -> dict:

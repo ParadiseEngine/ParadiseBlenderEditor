@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "paradise_assets"
-version = "0.1.0"
+version = "0.2.0"
 name = "Paradise Assets"
 tagline = "Open and place Paradise asset-project scenes"
 maintainer = "Paradise Engine"

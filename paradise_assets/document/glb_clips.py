@@ -204,7 +204,7 @@ def view(glb_path: str) -> ClipView | None:
         return None
 
     root = _read_meta_cached(sidecar.path_for(glb_path))
-    identified = root is not None and document_guid.is_text(root.get("guid"))
+    identified = _identified(root)
     stored, orphans = _collect(_stored_entries(root), info.clips)
 
     problems: list[str] = []
@@ -238,6 +238,23 @@ def view(glb_path: str) -> ClipView | None:
         rows.append(ClipRow(index, name, setting, tuple(row_problems)))
 
     return ClipView(tuple(rows), info.joints, info.root_joint, identified, tuple(problems))
+
+
+def _identified(root: dict | None) -> bool:
+    """Whether the sidecar counts as identified — and may therefore be rewritten.
+
+    Same two gates ``sidecar.read`` applies before surfacing an asset's identity: a
+    textual ``guid`` AND a ``schema_version`` this build can read (absent reads as the
+    supported version, the same legacy acceptance). Without the version half, a sidecar
+    minted by a newer pipeline would be canonically rewritten here while ``sidecar.read``
+    reports the asset unidentified everywhere else in the addon.
+    """
+    return (
+        root is not None
+        and document_guid.is_text(root.get("guid"))
+        and root.get("schema_version", sidecar.SUPPORTED_SCHEMA_VERSION)
+        == sidecar.SUPPORTED_SCHEMA_VERSION
+    )
 
 
 def read_settings(meta_path: str) -> dict[int, ClipSetting]:
@@ -292,6 +309,12 @@ def _apply(
             f"{os.path.basename(meta_path)} has no identity yet — the watcher mints it; "
             "start the watch or let it finish")
     original, root = loaded
+    version = root.get("schema_version", sidecar.SUPPORTED_SCHEMA_VERSION)
+    if version != sidecar.SUPPORTED_SCHEMA_VERSION:
+        raise ClipSettingsError(
+            f"{os.path.basename(meta_path)} declares schema_version {version}; this "
+            f"build writes {sidecar.SUPPORTED_SCHEMA_VERSION} — refusing to rewrite a "
+            "sidecar the rest of the addon cannot read")
 
     domain = root.get(DOMAIN)
     if isinstance(domain, canonical_toml.InlineTable):
@@ -434,6 +457,12 @@ def _collect(
 
         found = [i for i, name in enumerate(clip_names) if name and name == setting.name]
         if setting.name and len(found) == 1:
+            displaced = merged.get(found[0])
+            if displaced is not None:
+                # A re-keyed setting landed on a slot another entry already claimed —
+                # only one survives the write, so the loser is reported rather than
+                # silently dropped (stored order alone used to pick the survivor).
+                orphans.append(displaced)
             merged[found[0]] = ClipSetting(
                 found[0], setting.name, setting.root_motion, setting.root_bone)
         elif in_range:

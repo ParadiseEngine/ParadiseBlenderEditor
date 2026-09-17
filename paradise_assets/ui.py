@@ -523,6 +523,9 @@ def _draw_clip_settings(layout, context, obj) -> None:
 
     for clip in view.clips:
         row = box.row(align=True)
+        # An unidentified GLB refuses every write — draw the rows greyed rather
+        # than letting each click report the same refusal.
+        row.enabled = view.identified
         toggle = row.operator(
             "paradise_assets.clip_root_motion",
             text="",

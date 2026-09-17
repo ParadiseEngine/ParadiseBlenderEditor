@@ -188,6 +188,17 @@ class TestWriting:
             glb_clips.set_root_motion(glb, 0, True)
         assert not (tmp_path / "new.glb.meta").exists()
 
+    def test_a_newer_schema_version_is_refused_not_rewritten(self, rigged):
+        # sidecar.read already refuses a declared schema_version it cannot parse;
+        # the writer must not touch a file the rest of the addon treats as unreadable.
+        glb, meta = rigged
+        before = f'schema_version = 2\nguid = "{GUID}"\n'
+        Path(meta).write_text(before, encoding="utf-8")
+
+        with pytest.raises(glb_clips.ClipSettingsError, match="schema_version 2"):
+            glb_clips.set_root_motion(glb, 0, True)
+        assert Path(meta).read_text(encoding="utf-8") == before
+
     def test_an_unparseable_sidecar_is_refused_not_rewritten(self, rigged):
         glb, meta = rigged
         Path(meta).write_text("guid = [not toml", encoding="utf-8")
@@ -244,6 +255,20 @@ class TestReconcile:
         settings = glb_clips.read_settings(meta)
         assert sorted(settings) == [0]
 
+    def test_a_rekeyed_setting_displacing_another_reports_the_loser(self, rigged):
+        # Stored {index=0,name="Idle_Loop"} + {index=1,name="Walk_Loop"}; the GLB comes
+        # back as ("Walk_Loop", "New_Clip") — Walk_Loop re-keys onto index 0 and Idle's
+        # entry loses its slot. The loser must surface as a problem, not vanish.
+        glb, _meta = rigged
+        glb_clips.set_root_motion(glb, 0, True)
+        glb_clips.set_root_motion(glb, 1, True)
+
+        write_glb(Path(glb), clips=("Walk_Loop", "New_Clip"))
+
+        view = glb_clips.view(glb)
+        assert view.clips[0].setting.root_motion is True  # Walk_Loop followed its name
+        assert any("stale" in p and "Idle_Loop" in p for p in view.problems)
+
 
 class TestView:
     def test_no_clips_means_no_section(self, tmp_path):
@@ -273,3 +298,16 @@ class TestView:
     def test_unidentified_glb_reports_it(self, tmp_path):
         glb = write_glb(tmp_path / "fresh.glb", clips=("Run",))
         assert glb_clips.view(glb).identified is False
+
+    def test_a_newer_schema_version_reports_unidentified(self, tmp_path):
+        glb = write_glb(tmp_path / "fresh.glb", clips=("Run",))
+        meta = tmp_path / "fresh.glb.meta"
+        meta.write_text(f'schema_version = 2\nguid = "{GUID}"\n', encoding="utf-8")
+        assert glb_clips.view(glb).identified is False
+
+    def test_a_missing_schema_version_still_identifies(self, tmp_path):
+        # Older mints omit the key entirely; sidecar.read accepts them and so does this.
+        glb = write_glb(tmp_path / "fresh.glb", clips=("Run",))
+        meta = tmp_path / "fresh.glb.meta"
+        meta.write_text(f'guid = "{GUID}"\n', encoding="utf-8")
+        assert glb_clips.view(glb).identified is True

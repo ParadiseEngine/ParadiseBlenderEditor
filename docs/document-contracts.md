@@ -223,6 +223,14 @@ ignored rather than refusing the document. C# refuses because its next rewrite w
 key; refusing here would cost the asset every reference to it — no catalogue entry, no pickable
 reference. A *declared* version this build cannot read is still refused.
 
+The one sidecar domain the addon WRITES is `[glb].clips` — the per-clip root-motion settings
+(`document/glb_clips.py`, ParadiseBlenderEditor#47). It still mints nothing: a write requires
+the sidecar to already carry a guid, merges into whatever `[glb]` and sibling domains the
+pipeline wrote, and leaves a file that only changed in bytes it meant to change. Entries are
+keyed by glTF animation index because that is the slot the engine reads; the recorded `name`
+is a witness that re-keys a setting when the clip moved and warns when it was renamed, not a
+second key.
+
 **A generated model prefab is a SEED, not a projection.** `paradise assets extract` writes one
 beside a newly imported GLB so it is placeable straight away, and from that moment it is an
 ordinary document its author owns: nothing records which model it came from, nothing updates it,

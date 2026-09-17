@@ -15,6 +15,7 @@ paradise_assets/
                   extract_prefab, toggle_watch, refresh_catalogue
   ui.py           the Paradise sidebar tab
   edits.py      ★ the component-edit overlay — no bpy, unit-tested against a plain dict
+  clip_ops.py     the Components panel's clip operators — root-motion flag + root-bone pick
   browser.py      the Asset Browser context menu
   context_menu.py the Outliner's and viewport's object context menus
   catalogue.py    the Asset Browser library and its thumbnails
@@ -39,6 +40,13 @@ They are siblings because **project actions do not need a document**. `store.pro
 the project from the open document, else from `bpy.data.filepath` — a workfile under
 `.editor/blend/` is already inside its project. Nesting Build and the watcher under the document
 panel made them unreachable in the one session that most needs them: the one that just started.
+
+The Components panel gains an **Animation clips** section when the selected object's mesh
+resolves to a GLB that carries animations (`document/glb_clips.py` reads the GLB's JSON
+chunk). Each clip row is a root-motion toggle and a root-bone picker; both write the GLB's
+`.meta` sidecar immediately — the `[glb].clips` domain, keyed by glTF animation index —
+because the setting belongs to the model, not to the open document, and the `.blend` is
+disposable. A static mesh draws nothing at all.
 
 Two entries also hang off the object context menus (`context_menu.py`) — the Outliner's and the
 viewport's, one `_draw` for both — gated on the active object being a DOCUMENT object, since a

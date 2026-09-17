@@ -17,7 +17,18 @@ _REGISTERED: list = []
 def register() -> None:
     import bpy
 
-    from . import browser, component_ops, context_menu, dropped, field_widgets, ops, prefs, ui, watch
+    from . import (
+        browser,
+        clip_ops,
+        component_ops,
+        context_menu,
+        dropped,
+        field_widgets,
+        ops,
+        prefs,
+        ui,
+        watch,
+    )
     from .materialize import light_preview, sync
     from .play import ops as play_ops
 
@@ -29,7 +40,8 @@ def register() -> None:
         # before ui, or the panel draws dead buttons rather than failing loudly.
         for cls in (
             *prefs.classes, *ops.classes, *play_ops.classes, *field_widgets.classes,
-            *component_ops.classes, *ui.classes, *browser.classes, *context_menu.classes,
+            *component_ops.classes, *clip_ops.classes, *ui.classes, *browser.classes,
+            *context_menu.classes,
         ):
             bpy.utils.register_class(cls)
             _REGISTERED.append(cls)

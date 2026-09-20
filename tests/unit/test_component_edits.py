@@ -163,6 +163,14 @@ def test_set_field_drops_descendant_keys_so_a_list_replace_wins():
     assert edits.read(obj) == {"c": {"Slots": ["a", "b"]}}
 
 
+def test_editing_a_remaining_row_keeps_the_prior_row_removal():
+    obj: dict = {}
+    edits.set_field(obj, "c", "Rows", [{"Id": "kept", "Count": 2}])
+    edits.set_field(obj, "c", "Rows/0/Count", 7)
+
+    assert edits.read(obj) == {"c": {"Rows": [{"Id": "kept", "Count": 7}]}}
+
+
 def test_quaternion_and_vector2_keep_their_shape_through_the_overlay():
     obj: dict = {}
     edits.set_field(obj, "c", "Spin", [0.0, 0.0, 0.0, 1.0])
@@ -258,3 +266,14 @@ def test_clearing_the_object_also_drops_pending_add_and_remove():
     assert edits.removed_ids(obj) == []
     assert edits.EDITS_KEY not in obj
     assert edits.STRUCTURE_KEY not in obj
+
+
+def test_reverting_a_container_clears_nested_edits_and_preserves_other_fields():
+    obj = {}
+    edits.set_field(obj, "component", "Items/0/Name", "first")
+    edits.set_field(obj, "component", "Items/1/Name", "second")
+    edits.set_field(obj, "component", "ItemCount", 3)
+
+    edits.clear(obj, "component", "Items")
+
+    assert edits.edited_fields(obj, "component") == {"ItemCount": 3}

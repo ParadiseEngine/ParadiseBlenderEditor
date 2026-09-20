@@ -13,7 +13,7 @@ from mathutils import Quaternion, Vector
 
 from ..document import axes, component_schema, mesh_document, project, schema, well_known
 from ..document.prefab import PrefabDocument, PrefabObject
-from . import light_preview, shapes, store, tagging
+from . import light_preview, shapes, store, tagging, transform_helpers
 from .meshes import LIBRARY_COLLECTION, MeshLibrary
 
 __all__ = ["LoadResult", "load_document"]
@@ -125,6 +125,11 @@ def load_document(
     result.meshes = library.imported
     result.sources |= library.sources
     store.write_state(scene, scene_path)
+    scene.view_layers[0].update()
+    # Nested transform fields store WORLD placement, so all parents must be evaluated first.
+    for entry in document.objects:
+        if entry.guid in created:
+            transform_helpers.materialize(created[entry.guid], tagging.payload(entry), vocabulary)
     scene.view_layers[0].update()
     light_preview.refresh(scene)
     return result
@@ -301,7 +306,7 @@ def _clear_previous(scene: bpy.types.Scene) -> None:
     light_preview.clear(scene)
     doomed = [
         obj for obj in scene.collection.all_objects
-        if store.guid_of(obj) is not None or shapes.is_shape(obj)
+        if store.guid_of(obj) is not None or shapes.is_shape(obj) or transform_helpers.is_helper(obj)
     ]
     for obj in doomed:
         bpy.data.objects.remove(obj, do_unlink=True)

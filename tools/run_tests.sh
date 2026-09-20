@@ -84,6 +84,15 @@ if command -v "$BLENDER" >/dev/null 2>&1; then
   integration "schema-driven light preview and canonical colour edits" \
     tests/integration/test_light_preview.py "$DEFAULT_NOISE"
 
+  integration "wide integer source and component editing" \
+    tests/integration/test_wide_integer.py "$DEFAULT_NOISE"
+
+  integration "project settings and source document editing" \
+    tests/integration/test_project_settings.py "$DEFAULT_NOISE"
+
+  integration "host-authored transform helpers" \
+    tests/integration/test_transform_helpers.py "$DEFAULT_NOISE"
+
   # Prefab-instance overrides: authoring one, and the three gestures that end one. Its own
   # temporary project throughout -- these operators write two documents.
   integration "prefab instance overrides" \

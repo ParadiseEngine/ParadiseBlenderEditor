@@ -16,7 +16,7 @@ from bpy.types import Operator
 from . import edits
 from .document import component_schema, project
 from .document import overrides as document_overrides
-from .materialize import shapes, store
+from .materialize import shapes, store, transform_helpers
 
 __all__ = [
     "base_data",
@@ -124,7 +124,9 @@ class PARADISE_ASSETS_OT_revert_field(Operator):
     field_name: StringProperty(name="Field")
 
     def execute(self, context):
-        obj = context.active_object
+        obj = document_object(context)
+        if obj is None:
+            return {"CANCELLED"}
         if not self.component_id:
             edits.clear(obj)
             self.report({"INFO"}, "Pending edits discarded")
@@ -144,7 +146,9 @@ class PARADISE_ASSETS_OT_add_array_row(Operator):
     field_name: StringProperty(name="Field")
 
     def execute(self, context):
-        obj = context.active_object
+        obj = document_object(context)
+        if obj is None:
+            return {"CANCELLED"}
         schema = schema_for(context, obj, self.component_id)
         field = schema.resolve(self.field_name) if schema is not None else None
         if (
@@ -179,7 +183,9 @@ class PARADISE_ASSETS_OT_remove_array_row(Operator):
     index: IntProperty(name="Index", min=0)
 
     def execute(self, context):
-        obj = context.active_object
+        obj = document_object(context)
+        if obj is None:
+            return {"CANCELLED"}
         rows = _array_value(obj, self.component_id, self.field_name)
         if self.index < 0 or self.index >= len(rows):
             self.report({"ERROR"}, f"{self.field_name} has no row {self.index}")
@@ -190,13 +196,12 @@ class PARADISE_ASSETS_OT_remove_array_row(Operator):
 
 
 def document_object(context):
-    """The document object the panel is about: the active one, or -- when a shape Empty is
-    active, which selecting or adding a shape makes it -- the object it collides for. Without
-    this the add-and-adjust loop blanked the panel after the first click."""
+    """The selected document object or the owner of its shape/placement helper."""
     obj = context.active_object if context is not None else None
     if obj is None:
         return None
-    return obj if store.guid_of(obj) is not None else shapes.owner_of(obj)
+    return (obj if store.guid_of(obj) is not None
+            else shapes.owner_of(obj) or transform_helpers.owner_of(obj))
 
 
 class PARADISE_ASSETS_OT_add_shape(Operator):
@@ -359,7 +364,7 @@ _ADDABLE_CACHE: list[tuple[str, str, str]] = []
 def _addable_items(self, context):
     """Vocabulary types not already on the object, for the panel's one Add button."""
     global _ADDABLE_CACHE
-    obj = context.active_object if context is not None else None
+    obj = document_object(context)
     if obj is None:
         _ADDABLE_CACHE = [("NONE", "(nothing to add)", "")]
         return _ADDABLE_CACHE
@@ -383,7 +388,7 @@ class PARADISE_ASSETS_OT_add_component(Operator):
 
     @classmethod
     def poll(cls, context) -> bool:
-        obj = context.active_object
+        obj = document_object(context)
         return obj is not None and store.guid_of(obj) is not None
 
     def invoke(self, context, _event):
@@ -393,15 +398,17 @@ class PARADISE_ASSETS_OT_add_component(Operator):
     def execute(self, context):
         if not self.component or self.component == "NONE":
             return {"CANCELLED"}
-        obj = context.active_object
+        obj = document_object(context)
         vocabulary = vocabulary_for(context)
-        schema = vocabulary.get(self.component) or component_schema.describe(
-            {"id": self.component, "type": None, "data": {}}, vocabulary)
+        schema = vocabulary.get(self.component)
         if schema is None:
             self.report({"WARNING"}, f"'{self.component}' is not in the authoring schema.")
             return {"CANCELLED"}
         if component_schema.is_format_owned(schema.id) or component_schema.is_host_derived(schema.id):
             self.report({"ERROR"}, f"{schema.display_name} is authored by Blender, not this panel")
+            return {"CANCELLED"}
+        if schema.id.lower() in vocabulary.document_components:
+            self.report({"ERROR"}, f"{schema.display_name} belongs to Project Settings")
             return {"CANCELLED"}
         edits.add_component(obj, {
             "id": schema.id,
@@ -426,7 +433,7 @@ class PARADISE_ASSETS_OT_remove_component(Operator):
         if component_schema.is_format_owned(self.component_id):
             self.report({"ERROR"}, "meta and transform belong to Blender and cannot be removed")
             return {"CANCELLED"}
-        obj = context.active_object
+        obj = document_object(context)
         if obj is None or not self.component_id:
             return {"CANCELLED"}
         edits.remove_component(obj, self.component_id)

@@ -10,6 +10,7 @@ The overlay is cleared once applied, or an old edit could resurrect itself over 
 
 from __future__ import annotations
 
+import copy
 import json
 from typing import TYPE_CHECKING
 
@@ -83,11 +84,16 @@ def _write(obj: bpy.types.Object, edits: dict[str, dict[str, object]]) -> None:
 
 
 def set_field(obj: bpy.types.Object, component_id: str, field: str, value) -> None:
-    """Record *value* at a slash path, dropping overlay keys it contains or is contained by:
-    otherwise a whole-array replace and a cell edit would both apply and ``sort_keys`` would
-    decide which won."""
+    """Record a path, merging into an edited parent so a row edit keeps earlier list changes."""
     edits = read(obj)
     fields = edits.setdefault(component_id, {})
+    ancestor = next((key for key in fields if field.startswith(key + "/")), None)
+    if ancestor is not None and isinstance(fields[ancestor], (dict, list)):
+        changed = copy.deepcopy(fields[ancestor])
+        write_path(changed, field[len(ancestor) + 1:], value)
+        fields[ancestor] = changed
+        _write(obj, edits)
+        return
     stale = [
         key for key in fields
         if key == field or key.startswith(field + "/") or field.startswith(key + "/")
@@ -115,7 +121,9 @@ def clear(obj: bpy.types.Object, component_id: str | None = None, field: str | N
     if field is None:
         del edits[component_id]
     else:
-        edits[component_id].pop(field, None)
+        for key in list(edits[component_id]):
+            if key == field or key.startswith(field + "/"):
+                del edits[component_id][key]
         if not edits[component_id]:
             del edits[component_id]
     _write(obj, edits)

@@ -31,7 +31,7 @@ from ..document import atomic, axes, canonical_toml, component_schema, overrides
 from ..document import prefab as prefab_document
 from ..document.asset_reference import AssetReference
 from ..document.prefab import PrefabComponent, PrefabDocument, PrefabDocumentError, PrefabObject
-from . import shapes, store, tagging
+from . import shapes, store, tagging, transform_helpers
 from .shapes import default_row as shapes_default_row
 
 __all__ = ["SaveError", "SaveResult", "document_trs", "save_prefab"]
@@ -90,7 +90,11 @@ def save_prefab(scene: bpy.types.Scene) -> SaveResult:
     vocabulary = (
         component_schema.load(layout.root) if layout is not None
         else component_schema.Vocabulary({}, None))
-    merged = _merge(scene, base, result, vocabulary)
+    scene.view_layers[0].update()
+    try:
+        merged = _merge(scene, base, result, vocabulary)
+    except ValueError as error:
+        raise SaveError(str(error)) from error
 
     # What the reader will check, checked here: deleting the root (Blender unparents its
     # children) otherwise wrote a multi-root document that reported success and never loaded.
@@ -109,6 +113,7 @@ def save_prefab(scene: bpy.types.Scene) -> SaveResult:
     # would re-apply on the next save over whatever someone else wrote meanwhile. The snapshot
     # is refreshed too, or add/remove vanish from the panel the moment the overlay clears.
     _refresh_snapshots(scene, merged, layout)
+    transform_helpers.refresh(scene, vocabulary)
     for obj in _document_objects(scene) + _derived_objects(scene):
         component_edits.clear(obj)
 
@@ -308,7 +313,7 @@ def _merge(
                 result.removed += 1
                 continue
             key = (entry.parent, entry.target)
-            updated = _carrier_entry(entry, derived.get(key), objects.get(entry.parent), result)
+            updated = _carrier_entry(entry, derived.get(key), objects.get(entry.parent), result, vocabulary)
             if updated is None:
                 result.removed += 1
             else:
@@ -320,13 +325,13 @@ def _merge(
             result.removed += 1
             continue
         merged.objects.append(_object_entry(obj, entry, result, vocabulary))
-        merged.objects.extend(_new_carriers(entry.guid, obj, derived, placed, result))
+        merged.objects.extend(_new_carriers(entry.guid, obj, derived, placed, result, vocabulary))
 
     for obj in sorted(remaining.values(), key=_document_order):
         result.added += 1
         merged.objects.append(_object_entry(obj, None, result, vocabulary))
         merged.objects.extend(
-            _new_carriers(store.guid_of(obj), obj, derived, placed, result))
+            _new_carriers(store.guid_of(obj), obj, derived, placed, result, vocabulary))
 
     return merged
 
@@ -337,7 +342,7 @@ def _document_order(obj: bpy.types.Object) -> str:
     return store.document_name(obj) or obj.name
 
 
-def _new_carriers(instance_guid, obj, derived, placed, result: SaveResult) -> list[PrefabObject]:
+def _new_carriers(instance_guid, obj, derived, placed, result: SaveResult, vocabulary) -> list[PrefabObject]:
     """Carriers this instance needs and the file does not have yet, right after its own entry.
 
     Ordered by the prefab-local guid rather than by anything Blender knows: the next save finds
@@ -372,14 +377,14 @@ def _new_carriers(instance_guid, obj, derived, placed, result: SaveResult) -> li
             made.append(carrier)
             continue
 
-        carrier = _carrier_entry(overrides.new_carrier(instance_guid, local), child, obj, result)
+        carrier = _carrier_entry(overrides.new_carrier(instance_guid, local), child, obj, result, vocabulary)
         if carrier is not None:
             made.append(carrier)
     return made
 
 
 def _carrier_entry(
-    original: PrefabObject, obj, instance, result: SaveResult
+    original: PrefabObject, obj, instance, result: SaveResult, vocabulary
 ) -> PrefabObject | None:
     """One override carrier as Blender now has it, or ``None`` when it says nothing.
 
@@ -399,6 +404,7 @@ def _carrier_entry(
     entry = original
     _write_carrier_transform(entry, obj, result)
     _apply_edits(obj, entry, result)
+    result.edited += transform_helpers.bake(obj, entry, vocabulary)
     return None if overrides.is_empty(entry) else entry
 
 
@@ -483,10 +489,10 @@ def _adopt_new_groups(scene: bpy.types.Scene) -> None:
     while adopted:
         adopted = False
         for obj in scene.collection.all_objects:
-            if obj.type != "EMPTY" or store.guid_of(obj) is not None or shapes.is_shape(obj):
-                # A collision-shape Empty is its owner's handle, never a group: adopted, it would
-                # be written twice, as a group object and as a shape row on the same Empty. Left
-                # alone, the foreign-parent rule names it.
+            if (obj.type != "EMPTY" or store.guid_of(obj) is not None or shapes.is_shape(obj)
+                    or transform_helpers.is_helper(obj)):
+                # A field's handle is never a group: adopting it would write the same placement
+                # both as an entity and as component payload. The foreign-parent rule names it.
                 continue
             if not any(store.guid_of(child) is not None for child in obj.children):
                 continue
@@ -553,6 +559,7 @@ def _object_entry(
     # After the overlay: a typed IsTrigger and a moved Empty land on the same row. ``entry`` is
     # the file's own entry, so for an instance only the lists IT authors are baked.
     result.edited += shapes.bake(obj, entry, vocabulary, _default_row)
+    result.edited += transform_helpers.bake(obj, entry, vocabulary)
     return entry
 
 

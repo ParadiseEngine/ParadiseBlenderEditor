@@ -16,7 +16,7 @@ from bpy.types import Operator
 from . import edits
 from .document import component_schema, project
 from .document import overrides as document_overrides
-from .materialize import shapes, store
+from .materialize import shapes, store, transform_helpers
 
 __all__ = [
     "base_data",
@@ -24,6 +24,7 @@ __all__ = [
     "components_of",
     "document_object",
     "merged_data",
+    "optional_clear_problem",
     "overridden_fields",
     "schema_for",
     "vocabulary_for",
@@ -88,6 +89,59 @@ def overridden_fields(obj, component_id: str, shown: dict) -> set:
     return document_overrides.differs(base, shown)
 
 
+def optional_clear_problem(obj, component_id: str, path: str) -> str | None:
+    if ("/" not in path and (store.prefab_of(obj) is not None or store.is_derived(obj))
+            and edits.read_path(base_data(obj, component_id), path) is not None):
+        return "Inherited optional field: clear it in the prefab"
+    return None
+
+
+class PARADISE_ASSETS_OT_edit_optional_field(Operator):
+    """Assign a declared optional field, or omit its key from the saved component"""
+
+    bl_idname = "paradise_assets.edit_optional_field"
+    bl_label = "Edit Optional Field"
+    bl_options = {"REGISTER", "UNDO", "INTERNAL"}
+
+    component_id: StringProperty(name="Component")
+    field_name: StringProperty(name="Field")
+    action: EnumProperty(items=[("SET", "Set", ""), ("CLEAR", "Clear", "")])
+
+    def execute(self, context):
+        obj = document_object(context)
+        if obj is None:
+            return {"CANCELLED"}
+        schema = schema_for(context, obj, self.component_id)
+        field = schema.resolve(self.field_name) if schema is not None else None
+        if field is None or not field.optional or component_schema.is_host_locked(field):
+            self.report({"ERROR"}, "The field is not a document-authored optional field")
+            return {"CANCELLED"}
+        if self.action == "CLEAR":
+            problem = optional_clear_problem(obj, self.component_id, self.field_name)
+            if problem:
+                self.report({"ERROR"}, problem)
+                return {"CANCELLED"}
+        value = copy.deepcopy(field.default_value()) if self.action == "SET" else None
+        head, separator, tail = self.field_name.partition("/")
+        if (separator and (store.prefab_of(obj) is not None or store.is_derived(obj))
+                and head in base_data(obj, self.component_id)):
+            # Prefab overrides replace a whole top-level field. Seed its current contents
+            # before removing a nested key so its inherited siblings and rows survive.
+            component = next(c for c in components_of(obj)
+                             if str(c.get("id", "")).lower() == self.component_id.lower())
+            data = merged_data(obj, self.component_id, component.get("data", {}))
+            parent = copy.deepcopy(data.get(head))
+            if self.action == "CLEAR":
+                edits.drop_path(parent, tail)
+            else:
+                edits.write_path(parent, tail, value)
+            edits.set_field(obj, self.component_id, head, parent)
+        else:
+            edits.set_field(obj, self.component_id, self.field_name, value)
+        _redraw(context)
+        return {"FINISHED"}
+
+
 class PARADISE_ASSETS_OT_revert_to_prefab(Operator):
     """Hand this field back to the prefab, dropping the override on it"""
 
@@ -124,7 +178,9 @@ class PARADISE_ASSETS_OT_revert_field(Operator):
     field_name: StringProperty(name="Field")
 
     def execute(self, context):
-        obj = context.active_object
+        obj = document_object(context)
+        if obj is None:
+            return {"CANCELLED"}
         if not self.component_id:
             edits.clear(obj)
             self.report({"INFO"}, "Pending edits discarded")
@@ -144,7 +200,9 @@ class PARADISE_ASSETS_OT_add_array_row(Operator):
     field_name: StringProperty(name="Field")
 
     def execute(self, context):
-        obj = context.active_object
+        obj = document_object(context)
+        if obj is None:
+            return {"CANCELLED"}
         schema = schema_for(context, obj, self.component_id)
         field = schema.resolve(self.field_name) if schema is not None else None
         if (
@@ -179,7 +237,9 @@ class PARADISE_ASSETS_OT_remove_array_row(Operator):
     index: IntProperty(name="Index", min=0)
 
     def execute(self, context):
-        obj = context.active_object
+        obj = document_object(context)
+        if obj is None:
+            return {"CANCELLED"}
         rows = _array_value(obj, self.component_id, self.field_name)
         if self.index < 0 or self.index >= len(rows):
             self.report({"ERROR"}, f"{self.field_name} has no row {self.index}")
@@ -190,13 +250,12 @@ class PARADISE_ASSETS_OT_remove_array_row(Operator):
 
 
 def document_object(context):
-    """The document object the panel is about: the active one, or -- when a shape Empty is
-    active, which selecting or adding a shape makes it -- the object it collides for. Without
-    this the add-and-adjust loop blanked the panel after the first click."""
+    """The selected document object or the owner of its shape/placement helper."""
     obj = context.active_object if context is not None else None
     if obj is None:
         return None
-    return obj if store.guid_of(obj) is not None else shapes.owner_of(obj)
+    return (obj if store.guid_of(obj) is not None
+            else shapes.owner_of(obj) or transform_helpers.owner_of(obj))
 
 
 class PARADISE_ASSETS_OT_add_shape(Operator):
@@ -359,7 +418,7 @@ _ADDABLE_CACHE: list[tuple[str, str, str]] = []
 def _addable_items(self, context):
     """Vocabulary types not already on the object, for the panel's one Add button."""
     global _ADDABLE_CACHE
-    obj = context.active_object if context is not None else None
+    obj = document_object(context)
     if obj is None:
         _ADDABLE_CACHE = [("NONE", "(nothing to add)", "")]
         return _ADDABLE_CACHE
@@ -383,7 +442,7 @@ class PARADISE_ASSETS_OT_add_component(Operator):
 
     @classmethod
     def poll(cls, context) -> bool:
-        obj = context.active_object
+        obj = document_object(context)
         return obj is not None and store.guid_of(obj) is not None
 
     def invoke(self, context, _event):
@@ -393,15 +452,17 @@ class PARADISE_ASSETS_OT_add_component(Operator):
     def execute(self, context):
         if not self.component or self.component == "NONE":
             return {"CANCELLED"}
-        obj = context.active_object
+        obj = document_object(context)
         vocabulary = vocabulary_for(context)
-        schema = vocabulary.get(self.component) or component_schema.describe(
-            {"id": self.component, "type": None, "data": {}}, vocabulary)
+        schema = vocabulary.get(self.component)
         if schema is None:
             self.report({"WARNING"}, f"'{self.component}' is not in the authoring schema.")
             return {"CANCELLED"}
         if component_schema.is_format_owned(schema.id) or component_schema.is_host_derived(schema.id):
             self.report({"ERROR"}, f"{schema.display_name} is authored by Blender, not this panel")
+            return {"CANCELLED"}
+        if schema.id.lower() in vocabulary.document_components:
+            self.report({"ERROR"}, f"{schema.display_name} belongs to Project Settings")
             return {"CANCELLED"}
         edits.add_component(obj, {
             "id": schema.id,
@@ -426,7 +487,7 @@ class PARADISE_ASSETS_OT_remove_component(Operator):
         if component_schema.is_format_owned(self.component_id):
             self.report({"ERROR"}, "meta and transform belong to Blender and cannot be removed")
             return {"CANCELLED"}
-        obj = context.active_object
+        obj = document_object(context)
         if obj is None or not self.component_id:
             return {"CANCELLED"}
         edits.remove_component(obj, self.component_id)
@@ -445,6 +506,7 @@ def _redraw(context) -> None:
 
 
 classes = (
+    PARADISE_ASSETS_OT_edit_optional_field,
     PARADISE_ASSETS_OT_revert_field,
     PARADISE_ASSETS_OT_revert_to_prefab,
     PARADISE_ASSETS_OT_add_array_row,

@@ -443,7 +443,7 @@ def test_parent_caption_pairs_the_name_with_the_identity():
     assert well_known.parent_caption("", "") == "— (root)"
 
 
-def test_addable_offers_dump_types_and_rigidbody_but_not_host_derived():
+def test_addable_offers_only_dump_types_and_not_host_derived():
     marker_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
     root = _project([{
         "id": marker_id,
@@ -455,7 +455,7 @@ def test_addable_offers_dump_types_and_rigidbody_but_not_host_derived():
     offered = {schema.id.lower() for schema in component_schema.addable(vocabulary, [])}
 
     assert marker_id in offered
-    assert "b7ab4dd8-c8da-4dc2-9e5e-192fd74deb11" in offered
+    assert "b7ab4dd8-c8da-4dc2-9e5e-192fd74deb11" not in offered
     assert "f2c0357e-94dd-4a5a-9803-518066cb54b2" not in offered
     assert well_known.META_ID.lower() not in offered
     assert well_known.TRANSFORM_ID.lower() not in offered

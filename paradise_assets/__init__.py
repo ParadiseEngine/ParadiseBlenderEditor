@@ -26,6 +26,8 @@ def register() -> None:
         field_widgets,
         ops,
         prefs,
+        project_settings,
+        transform_ops,
         ui,
         watch,
     )
@@ -40,7 +42,8 @@ def register() -> None:
         # before ui, or the panel draws dead buttons rather than failing loudly.
         for cls in (
             *prefs.classes, *ops.classes, *play_ops.classes, *field_widgets.classes,
-            *component_ops.classes, *clip_ops.classes, *ui.classes, *browser.classes,
+            *component_ops.classes, *clip_ops.classes, *transform_ops.classes,
+            *project_settings.classes, *ui.classes, *browser.classes,
             *context_menu.classes,
         ):
             bpy.utils.register_class(cls)

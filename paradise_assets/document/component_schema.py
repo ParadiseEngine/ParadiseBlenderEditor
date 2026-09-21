@@ -22,13 +22,16 @@ __all__ = [
     "ROLE_ARRAY",
     "ROLE_LEAF",
     "ROLE_LOCKED",
+    "ROLE_OPTIONAL",
     "ROLE_ROW",
     "ROLE_SHAPES",
+    "ROLE_TRANSFORM",
     "ComponentSchema",
     "FieldSchema",
     "PlanItem",
     "Vocabulary",
     "addable",
+    "array_header_paths",
     "default_payload",
     "describe",
     "field_caption",
@@ -41,6 +44,7 @@ __all__ = [
     "is_host_locked",
     "join_path",
     "load",
+    "omit_optional",
 ]
 
 
@@ -59,6 +63,8 @@ ROLE_LEAF = "leaf"
 ROLE_ARRAY = "array"
 ROLE_ROW = "row"
 ROLE_LOCKED = "locked"
+ROLE_OPTIONAL = "optional"
+ROLE_TRANSFORM = "transform"
 #: A list of host shapes: rows are Empties in the scene, and only their non-geometry members
 #: are typed here.
 ROLE_SHAPES = "shapes"
@@ -73,6 +79,7 @@ class FieldSchema:
         self.doc: str | None = raw.get("doc")
         self.light_field: str | None = raw.get("lightField")
         self.default = raw.get("default")
+        self.optional: bool = raw.get("optional") is True
         self.minimum = raw.get("minimum")
         self.maximum = raw.get("maximum")
         self.unit: str | None = raw.get("unit")
@@ -143,9 +150,12 @@ class FieldSchema:
         if self.type == "quaternion":
             return [0.0, 0.0, 0.0, 1.0]
         if self.type == "object":
-            return {}
+            return {field.name: copy.deepcopy(field.default_value()) for field in self.fields
+                    if not field.optional and not is_host_locked(field)}
         if self.type == "array":
             return []
+        if self.type == "enum" and self.values:
+            return self.values[0]
         return ""
 
     def clamp(self, value):
@@ -202,6 +212,8 @@ def is_asset_field(field: FieldSchema, value=None) -> bool:
     names = {child.name.lower() for child in field.fields}
     if names >= {"guid", "path"} and len(field.fields) <= 2:
         return True
+    if field.fields:
+        return False
     return is_asset_ref(value)
 
 
@@ -289,6 +301,13 @@ def _walk_field(
     field: FieldSchema, path: str, value, items: list[PlanItem], siblings: dict
 ) -> None:
     if not _is_visible(field, siblings):
+        return
+    if field.optional and not is_host_locked(field):
+        items.append(PlanItem(path, field, ROLE_OPTIONAL))
+        if value is None:
+            return
+    if field.authored_by == "transform":
+        items.append(PlanItem(path, field, ROLE_TRANSFORM))
         return
     # A shape before the host lock: the field IS host-authored, and the Empty is its editor.
     if _shape_row(field) is not None:
@@ -378,9 +397,11 @@ class ComponentSchema:
 class Vocabulary:
     """Every component the game declares, by id."""
 
-    def __init__(self, components: dict[str, ComponentSchema], source: str | None) -> None:
+    def __init__(self, components: dict[str, ComponentSchema], source: str | None,
+                 document_components=frozenset()) -> None:
         self._components = components
         self.source = source
+        self.document_components = frozenset(document_components)
 
     def __bool__(self) -> bool:
         return bool(self._components)
@@ -402,12 +423,20 @@ class Vocabulary:
 
 #: project root -> (dump path, mtime_ns, size, vocabulary). The panel asks on every redraw, and
 #: re-parsing a schema per frame was the redraw's cost; a rebuild changes the stamp.
-_CACHE: dict[str, tuple[str, int, int, Vocabulary]] = {}
+_CACHE: dict[str, tuple[tuple, Vocabulary]] = {}
 
 
 def load(project_root: str) -> Vocabulary:
     """Read the game's dump, or return an empty vocabulary when there is none. Cached on the
     dump's ``(mtime, size)``, so a rebuild still shows up without reopening."""
+    from . import authoring_documents
+
+    manifest = os.path.join(project_root, ".editor", authoring_documents.FILE_NAME)
+    try:
+        changed = os.stat(manifest)
+        manifest_stamp = (changed.st_mtime_ns, changed.st_size)
+    except OSError:
+        manifest_stamp = None
     for candidate in SCHEMA_CANDIDATES:
         path = os.path.join(project_root, candidate.replace("/", os.sep))
         try:
@@ -415,8 +444,9 @@ def load(project_root: str) -> Vocabulary:
         except OSError:
             continue
         cached = _CACHE.get(project_root)
-        if cached is not None and cached[:3] == (path, stat.st_mtime_ns, stat.st_size):
-            return cached[3]
+        stamp = (path, stat.st_mtime_ns, stat.st_size, manifest_stamp)
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
         try:
             with open(path, "rb") as handle:
                 document = json.load(handle)
@@ -434,8 +464,13 @@ def load(project_root: str) -> Vocabulary:
                 continue
             components[component.id.lower()] = component
 
-        vocabulary = Vocabulary(components, path)
-        _CACHE[project_root] = (path, stat.st_mtime_ns, stat.st_size, vocabulary)
+        try:
+            documents = authoring_documents.load(project_root)
+        except (OSError, ValueError):
+            documents = ()
+        vocabulary = Vocabulary(components, path,
+                                {doc.component_id.lower() for doc in documents if doc.component_id})
+        _CACHE[project_root] = (stamp, vocabulary)
         return vocabulary
 
     _CACHE.pop(project_root, None)
@@ -494,14 +529,11 @@ def is_host_derived(component_id: str | None) -> bool:
 
 
 def addable(vocabulary: Vocabulary, present_ids) -> list[ComponentSchema]:
-    """Types the Add button offers: dump plus engine forms, minus present, format-owned and
-    host-derived ids. A dump that redeclares rigidbody wins."""
+    """Declared entity types, excluding present, format-owned, host-derived and document types."""
     present = {str(item).lower() for item in present_ids}
     by_id: dict[str, ComponentSchema] = {}
     for schema in vocabulary:
         by_id[schema.id.lower()] = schema
-    for schema in _ENGINE_FORMS.values():
-        by_id.setdefault(schema.id.lower(), schema)
     return sorted(
         (
             schema for schema in by_id.values()
@@ -509,6 +541,7 @@ def addable(vocabulary: Vocabulary, present_ids) -> list[ComponentSchema]:
             and schema.id.lower() not in present
             and not is_format_owned(schema.id)
             and not is_host_derived(schema.id)
+            and schema.id.lower() not in vocabulary.document_components
         ),
         key=lambda schema: schema.display_name.lower(),
     )
@@ -519,8 +552,35 @@ def default_payload(schema: ComponentSchema) -> dict:
     return {
         field.name: copy.deepcopy(field.default_value())
         for field in schema.fields
-        if field.editable
+        if field.editable and not field.optional
     }
+
+
+def array_header_paths(field: FieldSchema, path: tuple[str, ...]):
+    """Structural object arrays use TOML headers, while asset-reference rows remain inline."""
+    if field.type == "array" and field.items is not None:
+        if field.items.type == "object" and not is_asset_field(field.items):
+            yield path
+        yield from array_header_paths(field.items, path)
+    for child in field.fields:
+        yield from array_header_paths(child, (*path, child.name))
+
+
+def omit_optional(node, fields) -> None:
+    """Drop explicit optional omissions, including those inside an edited object or list."""
+    if not isinstance(node, dict):
+        return
+    for field in fields:
+        if field.name not in node:
+            continue
+        value = node[field.name]
+        if value is None and field.optional:
+            del node[field.name]
+        elif field.type == "array" and isinstance(value, list) and field.items is not None:
+            for row in value:
+                omit_optional(row, field.items.fields)
+        elif field.fields:
+            omit_optional(value, field.fields)
 
 
 def describe(component: dict, vocabulary: Vocabulary | None = None) -> ComponentSchema | None:

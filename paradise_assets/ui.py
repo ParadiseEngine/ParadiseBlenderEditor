@@ -16,7 +16,7 @@ import time
 
 from bpy.types import Panel
 
-from . import clip_ops, component_ops, edits, field_widgets, watch
+from . import clip_ops, component_ops, edits, field_widgets, transform_ops, watch
 from .document import assets as asset_index
 from .document import component_schema, glb_clips, well_known
 from .materialize import save, shapes, store, sync, tagging, workfile
@@ -575,6 +575,27 @@ def _draw_schema_fields(
 
     for item in schema.plan(merged):
         value = edits.read_path(merged, item.path)
+        if item.role == component_schema.ROLE_OPTIONAL:
+            row = box.row(align=True)
+            row.label(text=item.path + (" (unset)" if value is None else ""))
+            problem = component_ops.optional_clear_problem(obj, component_id, item.path)
+            if value is not None and problem:
+                row.label(text=problem, icon="LOCKED")
+            else:
+                operator = row.operator(
+                    "paradise_assets.edit_optional_field",
+                    text="Set" if value is None else "Clear", icon="ADD" if value is None else "X")
+                operator.action = "SET" if value is None else "CLEAR"
+                operator.component_id = component_id
+                operator.field_name = item.path
+            if value is None or not item.field.editable:
+                field_widgets._draw_revert(row, edited, component_id, item.path)
+            if value is None or not item.field.editable or item.field.type == "array":
+                field_widgets._draw_prefab_revert(row, component_id, item.path, overridden)
+            continue
+        if item.role == component_schema.ROLE_TRANSFORM:
+            transform_ops.draw(box, context, obj, component_id, item)
+            continue
         if item.role == component_schema.ROLE_LOCKED:
             row = box.row()
             row.label(
@@ -627,6 +648,7 @@ def _draw_schema_fields(
             add = row.operator("paradise_assets.add_array_row", text="", icon="ADD")
             add.component_id = component_id
             add.field_name = item.path
+            field_widgets._draw_revert(row, edited, component_id, item.path)
             continue
 
         if item.role == component_schema.ROLE_ROW:

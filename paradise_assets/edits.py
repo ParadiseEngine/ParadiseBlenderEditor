@@ -10,10 +10,11 @@ The overlay is cleared once applied, or an old edit could resurrect itself over 
 
 from __future__ import annotations
 
+import copy
 import json
 from typing import TYPE_CHECKING
 
-from .document import canonical_toml
+from .document import canonical_toml, component_schema
 
 if TYPE_CHECKING:
     import bpy
@@ -83,11 +84,16 @@ def _write(obj: bpy.types.Object, edits: dict[str, dict[str, object]]) -> None:
 
 
 def set_field(obj: bpy.types.Object, component_id: str, field: str, value) -> None:
-    """Record *value* at a slash path, dropping overlay keys it contains or is contained by:
-    otherwise a whole-array replace and a cell edit would both apply and ``sort_keys`` would
-    decide which won."""
+    """Record a path, merging into an edited parent so a row edit keeps earlier list changes."""
     edits = read(obj)
     fields = edits.setdefault(component_id, {})
+    ancestor = next((key for key in fields if field.startswith(key + "/")), None)
+    if ancestor is not None and isinstance(fields[ancestor], (dict, list)):
+        changed = copy.deepcopy(fields[ancestor])
+        write_path(changed, field[len(ancestor) + 1:], value)
+        fields[ancestor] = changed
+        _write(obj, edits)
+        return
     stale = [
         key for key in fields
         if key == field or key.startswith(field + "/") or field.startswith(key + "/")
@@ -115,7 +121,9 @@ def clear(obj: bpy.types.Object, component_id: str | None = None, field: str | N
     if field is None:
         del edits[component_id]
     else:
-        edits[component_id].pop(field, None)
+        for key in list(edits[component_id]):
+            if key == field or key.startswith(field + "/"):
+                del edits[component_id][key]
         if not edits[component_id]:
             del edits[component_id]
     _write(obj, edits)
@@ -311,7 +319,7 @@ def visible_components(snapshot: list, structure: dict | None = None) -> list:
     return visible
 
 
-def apply_to(entry, edits: dict[str, dict[str, object]]) -> int:
+def apply_to(entry, edits: dict[str, dict[str, object]], vocabulary=None) -> int:
     """Apply *edits* in place; returns fields written. A component the document no longer
     carries is skipped, never created from a partial payload missing every other field."""
     written = 0
@@ -319,12 +327,30 @@ def apply_to(entry, edits: dict[str, dict[str, object]]) -> int:
         component = entry.component(component_id)
         if component is None:
             continue
+        schema = vocabulary.get(component_id) if vocabulary is not None else None
+        headers = set(canonical_toml.header_array_paths(canonical_toml.dumps(component.data)))
+        if schema is not None:
+            for field in schema.fields:
+                headers.update(component_schema.array_header_paths(field, (field.name,)))
         for path, value in fields.items():
+            field = schema.resolve(path) if schema is not None else None
+            if value is None:
+                if field is None or not field.optional:
+                    raise ValueError(f"{path}: only a schema-declared optional field can be omitted")
+                drop_path(component.data, path)
+                written += 1
+                continue
+            value = copy.deepcopy(value)
+            if field is not None:
+                holder = {field.name: value}
+                component_schema.omit_optional(holder, [field])
+                value = holder[field.name]
             # JSON carries no table form; a table inside an array is inline by rule, and a
             # reference-shaped one anywhere is too (canonical_toml). Restored here, at the door,
             # because the writer picks form by TYPE and would otherwise emit [[headers]] that
             # cannot hold the null row `{}`.
-            write_path(component.data, path, canonical_toml.restore_inline_tables(value))
+            location = tuple(part for part in path.split("/") if not part.isdigit())
+            write_path(component.data, path, canonical_toml.restore_inline_tables(value, headers, location))
             written += 1
     return written
 

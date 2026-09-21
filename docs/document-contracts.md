@@ -205,6 +205,23 @@ merges are first-wins, so a checked-in copy that had drifted would win against t
 directory with no dumped schema therefore has **no components at all**, not just no game
 components, so the panel says so loudly and the fix is "build the launcher".
 
+The game may also emit `.editor/authoring-documents.json` (version 1), containing `documents`
+with unique `id`, `displayName`, and an assets-relative `.toml` `path`. Each declaration has
+either recursive `fields` for a plain root document or `componentId` to edit the `Data` of
+exactly one matching `Components` entry using the existing component vocabulary. These are
+bindings to game-owned types, not addon-maintained setting lists. Component types bound to
+documents are excluded from entity Add Component. No undeclared fallback component is addable.
+
+Project documents use a separate WindowManager edit overlay and RNA widget collection, so
+they need no open prefab or active object. Optional fields use explicit Set/Clear and serialize
+absence by omitting the key. Save rereads disk, checks the touched paths against the loaded
+baseline, and merges only pending changes. Any changed containing array refuses indexed edits
+because array indices do not provide stable row identities. Unknown and unrelated values are
+preserved. Recursive schema array paths retain nested table headers while asset references
+stay inline. No-op saves preserve original bytes; changed saves use canonical TOML and remove
+comments, as other canonical writers do. Project settings are saved explicitly, independently
+of the prefab's save-on-save handler.
+
 **This addon does not mint identities — it writes a file and WAITS for one.** Identity lives
 only in `<asset>.meta`, and `paradise assets watch` runs the C# `SidecarMaintainer`, which writes
 a sidecar for any file under `assets/` lacking one. Two minters race and the loser's guid is
@@ -278,3 +295,27 @@ writer, `Paradise.Export.Data.LevelDocument` for what a build compiles it into. 
    `tests/fixtures/parity/` from `Paradise.Assets.Documents.Test/Fixtures/parity/` — never by
    hand. A hand edit that still parses makes the test pin a form the writer does not produce.
 3. Run `paradise assets prefab-check` over a real project. It compares bytes.
+
+## World-placement handles
+
+`materialize/transform_helpers.py` materializes `authoredBy: transform` component fields as
+arrow Empties. A helper has no document GUID. Its tag identifies its owner, component and field;
+the owner records which slots had helpers so deletion is distinguishable from an untouched
+absent field. Unassigned payloads, including a zero `Scale`, stay unchanged until explicitly
+assigned. Unknown members survive placement edits.
+
+These fields store **world** placement. Evaluate document parenting before creating helpers,
+then convert the complete matrix with `document/axes.py` before decomposition. A parent inverse
+cancels the owner's initial matrix so nonuniform parent scale does not distort a newly loaded
+placement. Save compares each handle to its displayed baseline and retains unchanged authored
+numbers. It does not bake untouched inherited fields into new overrides.
+
+A moved inherited helper writes only its top-level field to the instance or override carrier.
+Clearing an inherited field writes an empty table, which overrides it as unassigned; omitting
+the field would inherit the old destination again. Reverting a field skips the helper bake and
+refreshes its placement after the successful save. Nested-prefab child edits are refused.
+
+Reload sweeps helpers alongside document objects and collider handles. Group adoption excludes
+helpers; parenting a document object under one is an error, never a new authored group.
+`transform_ops.py` provides explicit create/select/clear/object-copy actions. Its panel draw
+only reads existing state. Native coverage is `tests/integration/test_transform_helpers.py`.

@@ -12,6 +12,33 @@ from paradise_assets.document.project import ProjectLayout
 CONFIG = "7349a614-c04e-4e38-813e-d15a84754a24"
 
 
+def test_bound_document_retains_light_field_metadata_recursively():
+    component = component_schema.ComponentSchema({"id": CONFIG, "fields": [
+        {"name": "Power", "type": "float", "lightField": "Intensity"},
+        {"name": "Lamps", "type": "array", "items": {"type": "object", "fields": [
+            {"name": "Tint", "type": "color", "lightField": "Color", "optional": True},
+        ]}},
+    ]})
+    declaration = documents.DocumentSchema("config", "Config", "config.toml", CONFIG, ())
+    rebound = declaration.schema(component_schema.Vocabulary({CONFIG: component}, None))
+    assert rebound.field("Power").light_field == "Intensity"
+    assert rebound.resolve("Lamps/0/Tint").light_field == "Color"
+    assert rebound.resolve("Lamps/0/Tint").optional
+
+
+def test_new_components_leave_optionals_unset_and_optional_host_fields_keep_native_editor():
+    schema = component_schema.ComponentSchema({"id": "test", "fields": [
+        {"name": "Limit", "type": "int", "optional": True, "default": 8},
+        {"name": "Count", "type": "int", "default": 3},
+        {"name": "Destination", "type": "object", "authoredBy": "transform", "optional": True},
+    ]})
+    assert component_schema.default_payload(schema) == {"Count": 3}
+    assert [(row.path, row.role) for row in schema.plan({})] == [
+        ("Limit", component_schema.ROLE_OPTIONAL), ("Count", component_schema.ROLE_LEAF),
+        ("Destination", component_schema.ROLE_TRANSFORM),
+    ]
+
+
 def project(tmp_path, declarations, components=()):
     (tmp_path / "assets").mkdir(exist_ok=True)
     (tmp_path / ".editor").mkdir(exist_ok=True)

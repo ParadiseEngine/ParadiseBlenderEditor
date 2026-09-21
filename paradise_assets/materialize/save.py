@@ -403,7 +403,7 @@ def _carrier_entry(
 
     entry = original
     _write_carrier_transform(entry, obj, result)
-    _apply_edits(obj, entry, result)
+    _apply_edits(obj, entry, result, vocabulary)
     result.edited += transform_helpers.bake(obj, entry, vocabulary)
     return None if overrides.is_empty(entry) else entry
 
@@ -555,7 +555,7 @@ def _object_entry(
     _write_transform(entry, obj, original, result)
 
     # Last, so an overlay edit could never win against the meta/transform writes above.
-    _apply_edits(obj, entry, result)
+    _apply_edits(obj, entry, result, vocabulary)
     # After the overlay: a typed IsTrigger and a moved Empty land on the same row. ``entry`` is
     # the file's own entry, so for an instance only the lists IT authors are baked.
     result.edited += shapes.bake(obj, entry, vocabulary, _default_row)
@@ -567,7 +567,7 @@ def _default_row(field) -> dict:
     return shapes_default_row(field)
 
 
-def _apply_edits(obj: bpy.types.Object, entry: PrefabObject, result: SaveResult) -> None:
+def _apply_edits(obj: bpy.types.Object, entry: PrefabObject, result: SaveResult, vocabulary) -> None:
     """Apply pending add/remove/revert, then field edits.
 
     An edit to a component the object's own entry does not author is an OVERRIDE: the component
@@ -588,7 +588,7 @@ def _apply_edits(obj: bpy.types.Object, entry: PrefabObject, result: SaveResult)
     inherited = {cid: fields for cid, fields in pending.items() if cid not in own}
 
     missing = [cid for cid in own if entry.component(cid) is None]
-    result.edited += component_edits.apply_to(entry, own)
+    result.edited += component_edits.apply_to(entry, own, vocabulary)
     for component_id in missing:
         result.warnings.append(
             f"{obj.name}: an edit to component {component_id} was dropped -- the document no "
@@ -599,7 +599,7 @@ def _apply_edits(obj: bpy.types.Object, entry: PrefabObject, result: SaveResult)
         if component is None:
             component = PrefabComponent(component_id, _shown_type(obj, component_id), {})
             entry.components.append(component)
-        result.edited += component_edits.apply_to(entry, {component_id: fields})
+        result.edited += component_edits.apply_to(entry, {component_id: fields}, vocabulary)
 
 
 def _shown_type(obj: bpy.types.Object, component_id: str) -> str | None:

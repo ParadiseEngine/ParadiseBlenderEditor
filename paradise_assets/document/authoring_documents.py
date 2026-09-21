@@ -8,7 +8,7 @@ import os
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
-from . import atomic, canonical_toml
+from . import atomic, canonical_toml, component_schema
 from .project import ProjectLayout
 
 FILE_NAME = "authoring-documents.json"
@@ -52,6 +52,7 @@ def _field_raw(field) -> dict:
         "maximum": field.maximum,
         "unit": field.unit,
         "authoredBy": field.authored_by,
+        "lightField": field.light_field,
         "assetKinds": field.asset_kinds,
         "values": field.values,
         "fields": [_field_raw(child) for child in field.fields],
@@ -170,7 +171,7 @@ def save(
     prefix = ("Components", "Data") if document.component_id else ()
     header_arrays = set(canonical_toml.header_array_paths(text))
     for field in schema.fields:
-        header_arrays.update(_schema_array_paths(field, (*prefix, field.name)))
+        header_arrays.update(component_schema.array_header_paths(field, (*prefix, field.name)))
     if baseline is not None:
         for field_path in fields:
             if _conflicts(baseline, payload, field_path.split("/")):
@@ -194,20 +195,9 @@ def save(
             )
             edits.write_path(payload, field_path, restored)
     if fields:
-        _omit_optional(payload, schema.fields)
+        component_schema.omit_optional(payload, schema.fields)
         atomic.write_text(path, canonical_toml.dumps(root))
     return copy.deepcopy(payload)
-
-
-def _schema_array_paths(field, path):
-    from .component_schema import is_asset_field
-
-    if field.type == "array" and field.items is not None:
-        if field.items.type == "object" and not is_asset_field(field.items):
-            yield path
-        yield from _schema_array_paths(field.items, path)
-    for child in field.fields:
-        yield from _schema_array_paths(child, (*path, child.name))
 
 
 def _conflicts(before, current, path: list[str]) -> bool:
@@ -223,19 +213,3 @@ def _conflicts(before, current, path: list[str]) -> bool:
         return before != current
     key, *rest = path
     return _conflicts(before.get(key, _MISSING), current.get(key, _MISSING), rest)
-
-
-def _omit_optional(node, fields) -> None:
-    if not isinstance(node, dict):
-        return
-    for field in fields:
-        if field.name not in node:
-            continue
-        value = node[field.name]
-        if value is None and field.optional:
-            del node[field.name]
-        elif field.type == "array" and isinstance(value, list) and field.items is not None:
-            for row in value:
-                _omit_optional(row, field.items.fields)
-        elif field.fields:
-            _omit_optional(value, field.fields)

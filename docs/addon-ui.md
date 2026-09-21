@@ -63,6 +63,10 @@ is explicit and independent of Ctrl+S for the prefab workfile.
 types bound to project documents. Existing unknown component payloads remain inspectable and
 survive saves; they do not become extra Add Component choices.
 
+Optional component fields also have **Set** and **Clear** controls. Clear omits an owned field
+when the prefab is saved. An inherited top-level field cannot be omitted by an instance override;
+edit its source prefab to clear it, or use **Revert to Prefab** to restore the inherited value.
+
 The Components panel gains an **Animation clips** section when the selected object's mesh
 resolves to a GLB that carries animations (`document/glb_clips.py` reads the GLB's JSON
 chunk). Each clip row is a root-motion toggle and a root-bone picker; both write the GLB's
@@ -97,7 +101,10 @@ change the copied destination. **Clear**, or deleting the handle, unassigns the 
 Selecting a handle keeps its owner's Components panel visible. An inherited placement can be
 edited on a prefab instance or a directly resolved child; only that field becomes an override.
 **Revert to Prefab** restores the inherited placement when the document is saved. A child from
-a nested prefab must be edited in its own document.
+a nested prefab has an inspection-only handle: Select remains available, but changes to that
+handle do not write an override or prevent saving other edits. Saving restores its authored
+placement, including recreating a deleted handle. To change the field, open the prefab that
+authors the component.
 
 The document object's own `transform` component remains edited through Blender's transform
 gizmo. These handles edit nested component fields such as a transport's `Destination`.

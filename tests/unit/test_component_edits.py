@@ -13,7 +13,10 @@ the interface the overlay uses (``get``, ``in``, ``__setitem__``, ``__delitem__`
 
 from __future__ import annotations
 
+import pytest
+
 from paradise_assets import edits
+from paradise_assets.document import canonical_toml, component_schema
 
 
 class FakeComponent:
@@ -277,3 +280,34 @@ def test_reverting_a_container_clears_nested_edits_and_preserves_other_fields():
     edits.clear(obj, "component", "Items")
 
     assert edits.edited_fields(obj, "component") == {"ItemCount": 3}
+
+
+def test_optional_component_fields_omit_keys_inside_owned_and_whole_array_edits():
+    schema = component_schema.ComponentSchema({"id": "component", "fields": [
+        {"name": "Limit", "type": "int", "optional": True},
+        {"name": "Rows", "type": "array", "items": {"type": "object", "fields": [
+            {"name": "Name", "type": "string"},
+            {"name": "Bonus", "type": "int", "optional": True},
+        ]}},
+    ]})
+    vocabulary = component_schema.Vocabulary({"component": schema}, None)
+    entry = FakeEntry([FakeComponent("component", {"Limit": 7, "Unknown": "from current file"})])
+    pending = {"Limit": None, "Rows": [{"Name": "retained", "Bonus": None, "Future": 9}]}
+
+    assert edits.apply_to(entry, {"component": pending}, vocabulary) == 2
+
+    data = entry.component("component").data
+    assert data == {"Unknown": "from current file", "Rows": [{"Name": "retained", "Future": 9}]}
+    assert "[[Rows]]" in canonical_toml.dumps(data)
+    assert pending["Rows"][0]["Bonus"] is None
+
+
+def test_component_omission_requires_optional_schema_metadata():
+    schema = component_schema.ComponentSchema({
+        "id": "component", "fields": [{"name": "Count", "type": "int"}],
+    })
+    entry = FakeEntry([FakeComponent("component", {"Count": 4})])
+    with pytest.raises(ValueError, match="optional"):
+        edits.apply_to(entry, {"component": {"Count": None}},
+                       component_schema.Vocabulary({"component": schema}, None))
+    assert entry.component("component").data == {"Count": 4}

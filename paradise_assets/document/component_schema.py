@@ -31,6 +31,7 @@ __all__ = [
     "PlanItem",
     "Vocabulary",
     "addable",
+    "array_header_paths",
     "default_payload",
     "describe",
     "field_caption",
@@ -43,6 +44,7 @@ __all__ = [
     "is_host_locked",
     "join_path",
     "load",
+    "omit_optional",
 ]
 
 
@@ -300,7 +302,7 @@ def _walk_field(
 ) -> None:
     if not _is_visible(field, siblings):
         return
-    if field.optional:
+    if field.optional and not is_host_locked(field):
         items.append(PlanItem(path, field, ROLE_OPTIONAL))
         if value is None:
             return
@@ -550,8 +552,35 @@ def default_payload(schema: ComponentSchema) -> dict:
     return {
         field.name: copy.deepcopy(field.default_value())
         for field in schema.fields
-        if field.editable
+        if field.editable and not field.optional
     }
+
+
+def array_header_paths(field: FieldSchema, path: tuple[str, ...]):
+    """Structural object arrays use TOML headers, while asset-reference rows remain inline."""
+    if field.type == "array" and field.items is not None:
+        if field.items.type == "object" and not is_asset_field(field.items):
+            yield path
+        yield from array_header_paths(field.items, path)
+    for child in field.fields:
+        yield from array_header_paths(child, (*path, child.name))
+
+
+def omit_optional(node, fields) -> None:
+    """Drop explicit optional omissions, including those inside an edited object or list."""
+    if not isinstance(node, dict):
+        return
+    for field in fields:
+        if field.name not in node:
+            continue
+        value = node[field.name]
+        if value is None and field.optional:
+            del node[field.name]
+        elif field.type == "array" and isinstance(value, list) and field.items is not None:
+            for row in value:
+                omit_optional(row, field.items.fields)
+        elif field.fields:
+            omit_optional(value, field.fields)
 
 
 def describe(component: dict, vocabulary: Vocabulary | None = None) -> ComponentSchema | None:

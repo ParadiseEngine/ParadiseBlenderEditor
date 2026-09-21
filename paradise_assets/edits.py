@@ -14,7 +14,7 @@ import copy
 import json
 from typing import TYPE_CHECKING
 
-from .document import canonical_toml
+from .document import canonical_toml, component_schema
 
 if TYPE_CHECKING:
     import bpy
@@ -319,7 +319,7 @@ def visible_components(snapshot: list, structure: dict | None = None) -> list:
     return visible
 
 
-def apply_to(entry, edits: dict[str, dict[str, object]]) -> int:
+def apply_to(entry, edits: dict[str, dict[str, object]], vocabulary=None) -> int:
     """Apply *edits* in place; returns fields written. A component the document no longer
     carries is skipped, never created from a partial payload missing every other field."""
     written = 0
@@ -327,12 +327,30 @@ def apply_to(entry, edits: dict[str, dict[str, object]]) -> int:
         component = entry.component(component_id)
         if component is None:
             continue
+        schema = vocabulary.get(component_id) if vocabulary is not None else None
+        headers = set(canonical_toml.header_array_paths(canonical_toml.dumps(component.data)))
+        if schema is not None:
+            for field in schema.fields:
+                headers.update(component_schema.array_header_paths(field, (field.name,)))
         for path, value in fields.items():
+            field = schema.resolve(path) if schema is not None else None
+            if value is None:
+                if field is None or not field.optional:
+                    raise ValueError(f"{path}: only a schema-declared optional field can be omitted")
+                drop_path(component.data, path)
+                written += 1
+                continue
+            value = copy.deepcopy(value)
+            if field is not None:
+                holder = {field.name: value}
+                component_schema.omit_optional(holder, [field])
+                value = holder[field.name]
             # JSON carries no table form; a table inside an array is inline by rule, and a
             # reference-shaped one anywhere is too (canonical_toml). Restored here, at the door,
             # because the writer picks form by TYPE and would otherwise emit [[headers]] that
             # cannot hold the null row `{}`.
-            write_path(component.data, path, canonical_toml.restore_inline_tables(value))
+            location = tuple(part for part in path.split("/") if not part.isdigit())
+            write_path(component.data, path, canonical_toml.restore_inline_tables(value, headers, location))
             written += 1
     return written
 

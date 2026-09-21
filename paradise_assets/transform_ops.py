@@ -51,7 +51,7 @@ class PARADISE_ASSETS_OT_transform_slot(Operator):
             self.report({"ERROR"}, "This field is not a transform placement")
             return {"CANCELLED"}
         if self.action != "SELECT" and not transform_helpers.editable(owner):
-            self.report({"ERROR"}, "Edit this nested prefab in its own document")
+            self.report({"ERROR"}, "Open the prefab that authors this component to edit it")
             return {"CANCELLED"}
         context.view_layer.update()
         empty = transform_helpers.helper_for(owner, self.component_id, self.field_name)
@@ -90,19 +90,21 @@ def draw(box, context, obj, component_id: str, item) -> None:
     row.label(text=f"{item.field.name}: {empty.name if empty is not None else 'Not assigned'}",
               icon="EMPTY_ARROWS")
     buttons = box.row(align=True)
-    buttons.enabled = transform_helpers.editable(obj)
+    editable = transform_helpers.editable(obj)
     actions = [("SELECT", "Select Handle")] if empty is not None else [("CREATE", "Create Handle")]
     actions.append(("PICK", "Pick Object"))
     if empty is not None:
         actions.append(("CLEAR", "Clear"))
     for action, label in actions:
-        op = buttons.operator(PARADISE_ASSETS_OT_transform_slot.bl_idname, text=label)
+        control = buttons.row(align=True)
+        control.enabled = action == "SELECT" or editable
+        op = control.operator(PARADISE_ASSETS_OT_transform_slot.bl_idname, text=label)
         op.owner_guid = store.guid_of(obj) or ""
         op.component_id = component_id
         op.field_name = item.path
         op.action = action
-    if not buttons.enabled:
-        box.label(text="Edit this nested prefab in its own document", icon="INFO")
+    if not editable:
+        box.label(text="Open the prefab that authors this component to edit it", icon="INFO")
 
 
 classes = (PARADISE_ASSETS_OT_transform_slot,)

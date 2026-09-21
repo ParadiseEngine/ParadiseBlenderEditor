@@ -575,6 +575,24 @@ def _draw_schema_fields(
 
     for item in schema.plan(merged):
         value = edits.read_path(merged, item.path)
+        if item.role == component_schema.ROLE_OPTIONAL:
+            row = box.row(align=True)
+            row.label(text=item.path + (" (unset)" if value is None else ""))
+            problem = component_ops.optional_clear_problem(obj, component_id, item.path)
+            if value is not None and problem:
+                row.label(text=problem, icon="LOCKED")
+            else:
+                operator = row.operator(
+                    "paradise_assets.edit_optional_field",
+                    text="Set" if value is None else "Clear", icon="ADD" if value is None else "X")
+                operator.action = "SET" if value is None else "CLEAR"
+                operator.component_id = component_id
+                operator.field_name = item.path
+            if value is None or not item.field.editable:
+                field_widgets._draw_revert(row, edited, component_id, item.path)
+            if value is None or not item.field.editable or item.field.type == "array":
+                field_widgets._draw_prefab_revert(row, component_id, item.path, overridden)
+            continue
         if item.role == component_schema.ROLE_TRANSFORM:
             transform_ops.draw(box, context, obj, component_id, item)
             continue

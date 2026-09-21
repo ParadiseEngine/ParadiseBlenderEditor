@@ -90,6 +90,9 @@ if command -v "$BLENDER" >/dev/null 2>&1; then
   integration "project settings and source document editing" \
     tests/integration/test_project_settings.py "$DEFAULT_NOISE"
 
+  integration "optional component fields and omissions" \
+    tests/integration/test_optional_components.py "$DEFAULT_NOISE"
+
   integration "host-authored transform helpers" \
     tests/integration/test_transform_helpers.py "$DEFAULT_NOISE"
 

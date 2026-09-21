@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import tempfile
+from types import SimpleNamespace
 
 import bpy
 from mathutils import Matrix, Quaternion, Vector
@@ -14,7 +15,7 @@ from mathutils import Matrix, Quaternion, Vector
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import paradise_assets
-from paradise_assets import component_ops, edits
+from paradise_assets import component_ops, edits, transform_ops
 from paradise_assets.document import axes, project
 from paradise_assets.document import prefab as prefab_document
 from paradise_assets.document.asset_reference import AssetReference
@@ -79,6 +80,104 @@ def named(name):
 
 def open_document(path, layout):
     return load.load_document(bpy.context.scene, prefab_document.loads(read(path), path), path, layout)
+
+
+class InspectionLayout:
+    """Record whether each nested transform action is reachable through its layout parents."""
+
+    def __init__(self, parent=None):
+        self.parent = parent
+        self.enabled = True
+        self.actions = [] if parent is None else parent.actions
+
+    def row(self, **_kwargs):
+        return InspectionLayout(self)
+
+    def label(self, **_kwargs):
+        pass
+
+    def operator(self, _idname, **_kwargs):
+        props = SimpleNamespace()
+        row, enabled = self, True
+        while row is not None:
+            enabled &= row.enabled
+            row = row.parent
+        self.actions.append((props, enabled))
+        return props
+
+
+def nested_helpers(root, layout):
+    outer_guid = "dddddddd-4444-4444-8444-444444444444"
+    level_guid = "eeeeeeee-5555-4555-8555-555555555555"
+    inner_path = os.path.join(root, "assets", "levels", "inner.prefab")
+    outer_path = os.path.join(root, "assets", "levels", "outer.prefab")
+    level_path = os.path.join(root, "assets", "levels", "nested.prefab")
+    door = entry(OWNER, "Nested Door", ROOT)
+    door.components.append(PrefabComponent(MARKER, "Game.TransportTrigger", {
+        "Destination": copy.deepcopy(PLACEMENT), "Other": "inherited"}))
+    write(inner_path, PrefabDocument(objects=[entry(ROOT, "Inner"), door]))
+    nested = entry(TARGET, "Nested Parent", outer_guid)
+    nested.prefab = AssetReference(ROOT, "levels/inner.prefab")
+    write(outer_path, PrefabDocument(objects=[entry(outer_guid, "Outer"), nested]))
+    level = entry(level_guid, "Nested Level")
+    level.prefab = AssetReference(outer_guid, "levels/outer.prefab")
+    write(level_path, PrefabDocument(objects=[level]))
+    source_bytes = [read(inner_path), read(outer_path)]
+    open_document(level_path, layout)
+    owner = named("Nested Door")
+    handle = transform_helpers.helper_for(owner, MARKER, "Destination")
+    check(store.local_of(owner)[2] is False, "fixture resolves a child owned by a nested prefab")
+    schema = component_ops.schema_for(bpy.context, owner, MARKER)
+    item = next(i for i in schema.plan({"Destination": PLACEMENT}) if i.path == "Destination")
+    recorded = InspectionLayout()
+    transform_ops.draw(recorded, bpy.context, owner, MARKER, item)
+    actions = {props.action: enabled for props, enabled in recorded.actions}
+    check(actions.get("SELECT") and not actions.get("PICK") and not actions.get("CLEAR"),
+          "nested helper inspection stays enabled while placement changes are disabled")
+    check(all(handle.lock_location) and all(handle.lock_rotation) and all(handle.lock_scale),
+          "nested helper transform controls are locked for inspection")
+    result = bpy.ops.paradise_assets.transform_slot(
+        action="SELECT", owner_guid=store.guid_of(owner), component_id=MARKER, field_name="Destination")
+    check(result == {"FINISHED"} and bpy.context.active_object is handle,
+          "the registered Select action can inspect a nested placement")
+
+    handle.name = "Renamed nested destination"
+    check(transform_helpers.helper_for(owner, MARKER, "Destination") is handle,
+          "helper lookup survives a Blender rename")
+    owner.parent.location.x += 3
+    save.save_prefab(bpy.context.scene)
+    written = prefab_document.loads(read(level_path), level_path)
+    check(any(o.target is not None and o.component(TRANSFORM_ID) is not None for o in written.objects)
+          and all(o.component(MARKER) is None for o in written.objects),
+          "moving a nested helper's parent saves its transform carrier without copying the nested payload")
+    named("Nested Level").location.y += 2
+    save.save_prefab(bpy.context.scene)
+    unchanged = read(level_path)
+    expected_position = (PLACEMENT["Position"][0], -PLACEMENT["Position"][2], PLACEMENT["Position"][1])
+    handle.location.x += 10
+    save.save_prefab(bpy.context.scene)
+    bpy.context.view_layer.update()
+    check(read(level_path) == unchanged and close(handle.matrix_world.translation, expected_position),
+          "incidental or scripted nested helper edits restore inherited placement without changing the level")
+    bpy.data.objects.remove(handle, do_unlink=True)
+    save.save_prefab(bpy.context.scene)
+    handle = transform_helpers.helper_for(owner, MARKER, "Destination")
+    bpy.context.view_layer.update()
+    check(handle is not None and read(level_path) == unchanged
+          and close(handle.matrix_world.translation, expected_position),
+          "deleting a display-only nested helper recreates it without blocking save or clearing payload")
+    duplicate = handle.copy()
+    bpy.context.scene.collection.objects.link(duplicate)
+    save.save_prefab(bpy.context.scene)
+    check(len([o for o in bpy.context.scene.collection.all_objects if transform_helpers.is_helper(o)]) == 1
+          and read(level_path) == unchanged,
+          "duplicated nested display helpers collapse to one without affecting the document")
+    check([read(inner_path), read(outer_path)] == source_bytes,
+          "all nested helper gestures preserve the source prefab files")
+    open_document(level_path, layout)
+    save.save_prefab(bpy.context.scene)
+    check(read(level_path) == unchanged,
+          "nested parent edits and preserved placements remain stable after reload")
 
 
 def main():
@@ -273,6 +372,8 @@ def main():
             save.save_prefab(bpy.context.scene)
             check(not any(transform_helpers.is_helper(o) for o in bpy.context.scene.collection.all_objects),
                   "removing the owner removes its orphaned placement helper")
+
+            nested_helpers(root, layout)
 
             large = PrefabDocument(objects=[entry(ROOT, "Large scene")] + [
                 entry(f"{i:08x}-4444-4444-8444-444444444444", f"Object {i}", ROOT)

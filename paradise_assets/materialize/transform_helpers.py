@@ -22,6 +22,7 @@ from . import store
 
 HELPER_KEY = "paradise_transform_helper"
 SLOTS_KEY = "paradise_transform_slots"
+LINKS_KEY = "paradise_transform_links"
 _EPSILON = 1e-6
 
 
@@ -48,8 +49,24 @@ def editable(obj) -> bool:
 
 
 def helper_for(obj, component_id: str, path: str):
-    found = _helpers(obj, component_id, path)
-    return found[0] if found else None
+    """Read an owner-local Blender ID link; panel redraws never scan the scene.
+
+    ID links survive renames and become null on deletion. Load, assignment and successful save
+    synchronize them alongside the slot list; the full helper scan remains on explicit edits
+    and save, where it also detects duplicated handles.
+    """
+    links = obj.get(LINKS_KEY) if obj is not None else None
+    if links is None:
+        return None
+    for index, slot in enumerate(_slots(obj)):
+        if slot["component"].lower() != component_id.lower() or slot["field"] != path:
+            continue
+        empty = links.get(str(index))
+        tag = _tag(empty)
+        if (tag is not None and tag["owner"] == store.guid_of(obj)
+                and tag["component"].lower() == component_id.lower() and tag["field"] == path):
+            return empty
+    return None
 
 
 def _helpers(obj, component_id: str, path: str) -> list:
@@ -82,7 +99,7 @@ def materialize(obj, components: list, vocabulary) -> int:
 def assign(obj, component_id: str, path: str, field, matrix):
     """Place this field's handle at an explicitly chosen Blender world matrix."""
     if not editable(obj):
-        raise ValueError("Edit this nested prefab in its own document")
+        raise ValueError("Open the prefab that authors this component to edit it")
     empty = helper_for(obj, component_id, path)
     if empty is None:
         empty = _create(obj, component_id, path, field, matrix)
@@ -103,6 +120,11 @@ def clear(obj, component_id: str, path: str) -> None:
 
 def bake(obj, entry, vocabulary) -> int:
     """Apply changed handles to an object's own entry or a prefab-child override carrier."""
+    if not editable(obj):
+        # A nested helper is a preview of its prefab's payload. Ancestor movement also moves
+        # the preview, so treating that as an edit would reject legitimate parent transforms.
+        # The successful-save refresh restores/recreates the preview from the resolved value.
+        return 0
     changed = 0
     visible = edits.visible_components(store.component_json(obj), edits.read_structure(obj))
     by_id = {str(c.get("id", "")).lower(): c for c in visible}
@@ -125,9 +147,6 @@ def bake(obj, entry, vocabulary) -> int:
         empty = found[0] if found else None
         if empty is not None and not _moved(empty):
             continue
-        if not editable(obj):
-            raise ValueError(f"{obj.name}: edit this nested prefab in its own document")
-
         component = entry.component(component_id)
         shown = copy.deepcopy(source.get("data", {}))
         if component is not None:
@@ -171,6 +190,8 @@ def refresh(scene, vocabulary) -> None:
         helpers = helpers_by_owner.get(owner, [])
         by_field = {(tag["component"].lower(), tag["field"]): empty for empty, tag in helpers}
         expected = []
+        links = {}
+        kept = set()
         for component in store.component_json(obj):
             schema = vocabulary.describe(component)
             if schema is None:
@@ -189,16 +210,19 @@ def refresh(scene, vocabulary) -> None:
                     if empty.parent is not None:
                         empty.matrix_parent_inverse = empty.parent.matrix_world.inverted_safe()
                     empty.matrix_world = matrix
+                    _lock_channels(empty, obj, field)
+                links[str(len(expected) - 1)] = empty
+                kept.add(empty.name)
                 tag = _tag(empty)
                 tag["baseline"] = _matrix_rows(matrix)
                 tag.pop("assigned", None)
                 empty[HELPER_KEY] = json.dumps(tag)
-        wanted = {(s["component"].lower(), s["field"]) for s in expected}
-        for empty, tag in helpers:
-            if (tag["component"].lower(), tag["field"]) not in wanted:
+        for empty, _tagged in helpers:
+            if empty.name not in kept:
                 bpy.data.objects.remove(empty, do_unlink=True)
         if expected or SLOTS_KEY in obj:
             obj[SLOTS_KEY] = json.dumps(expected)
+            obj[LINKS_KEY] = links
 
 
 def _fields(fields, data, prefix=""):
@@ -287,10 +311,7 @@ def _create(owner, component_id, path, field, matrix):
     empty.matrix_parent_inverse = owner.matrix_world.inverted_safe()
     empty.rotation_mode = "QUATERNION"
     empty.matrix_world = matrix.copy()
-    names = {child.name for child in field.fields}
-    empty.lock_location = ("Position" not in names,) * 3
-    empty.lock_rotation = ("Rotation" not in names and "Yaw" not in names,) * 3
-    empty.lock_scale = ("Scale" not in names,) * 3
+    _lock_channels(empty, owner, field)
     empty[HELPER_KEY] = json.dumps({"owner": store.guid_of(owner), "component": component_id,
                                     "field": path, "baseline": _matrix_rows(matrix)})
     slots = _slots(owner)
@@ -298,7 +319,20 @@ def _create(owner, component_id, path, field, matrix):
     if slot not in slots:
         slots.append(slot)
         owner[SLOTS_KEY] = json.dumps(slots)
+    if LINKS_KEY not in owner:
+        owner[LINKS_KEY] = {}
+    owner[LINKS_KEY][str(slots.index(slot))] = empty
     return empty
+
+
+def _lock_channels(empty, owner, field):
+    names = {child.name for child in field.fields}
+    read_only = not editable(owner)
+    empty.lock_location = (read_only or "Position" not in names,) * 3
+    empty.lock_rotation = (read_only or ("Rotation" not in names and "Yaw" not in names),) * 3
+    empty.lock_scale = (read_only or "Scale" not in names,) * 3
+    empty.lock_rotation_w = read_only
+    empty.lock_rotations_4d = read_only
 
 
 def _moved(empty) -> bool:

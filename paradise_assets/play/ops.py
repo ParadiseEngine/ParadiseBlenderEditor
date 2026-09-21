@@ -1,7 +1,7 @@
-"""Build, Play, Stop, Verify and Clean as buttons. Play is ``paradise host play``: the CLI builds
-the assets, brings the launcher up to date, runs the game and waits for it, so a failed build
-stops the launch (nothing else keeps ``.editor/play/`` fresh) and a Stop is one terminate. The
-open document plays; every prefab is playable (§2.9).
+"""Build, Play, Stop, Verify and Clean as buttons. Play is ``paradise host play --no-assets``:
+the asset watcher keeps the build fresh while the CLI brings the launcher up to date, runs the
+game and waits for it, so a failed launcher build stops the launch and a Stop is one terminate.
+The open document plays; every prefab is playable (§2.9).
 """
 
 from __future__ import annotations

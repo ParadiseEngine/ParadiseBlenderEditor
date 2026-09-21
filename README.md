@@ -143,8 +143,8 @@ A typical loop:
    rebuilds the scene from the document — the way out of a workfile that has accumulated
    something you do not want, a stuck viewport included. **Reload** keeps what the working file
    holds; Recreate does not, which is why it asks first.
-4. **Build & Play.** The CLI builds `assets/` into `build/`, brings the launcher up to date, and
-   runs the game on the open document.
+4. **Build & Play.** The asset watcher keeps `build/` current; the CLI brings the launcher up to
+   date without rebuilding assets and runs the game on the open document.
 
 Games can expose point, spot and sun lamps through [schema-driven light previews](docs/light-preview.md).
 Edit their canonical values in **Components**; the native child lamp follows those values and the

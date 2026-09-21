@@ -1,11 +1,11 @@
-"""The running game, supervised by Blender: ``paradise host play`` as a child.
+"""The running game, supervised by Blender: ``paradise host play --no-assets`` as a child.
 
-One session per project root. The CLI is the process Blender holds -- it builds the assets, brings
-the launcher up to date, runs the game and waits for it, and a SIGTERM to it takes the game down
-with it (``dotnet watch`` included) -- so "Stop" is one ``terminate()`` and a second Play replaces
-the first instead of stacking a window on it. Output goes to a log the panel reads the first
-error from: a launcher prints its cause first and hints after, unlike the asset watcher's log,
-whose latest rebuild is the interesting one.
+One session per project root. The asset watcher keeps the build current, so Play tells the CLI not
+to rebuild assets; the held process brings the launcher up to date, runs the game and waits for it,
+and a SIGTERM to it takes the game down with it (``dotnet watch`` included) -- so "Stop" is one
+``terminate()`` and a second Play replaces the first instead of stacking a window on it. Output
+goes to a log the panel reads the first error from: a launcher prints its cause first and hints
+after, unlike the asset watcher's log, whose latest rebuild is the interesting one.
 """
 
 from __future__ import annotations
@@ -53,12 +53,13 @@ def log_path(project_root: str) -> str:
 
 def play_command(cli_argv: list[str], project_root: str, document_path: str, *, watch: bool) -> list[str]:
     """The verb: the DOCUMENT's path, not its built twin -- the CLI knows the play tree's
-    layout and this extension need not. ``--watch`` hands the launcher to ``dotnet watch run``."""
+    layout and this extension need not. The asset watcher owns asset builds; ``--watch`` hands the
+    launcher to ``dotnet watch run``."""
     from .host import _preference
 
     profile = _preference("build_profile", "dev") or "dev"
     argv = [
-        *cli_argv, "host", "play",
+        *cli_argv, "host", "play", "--no-assets",
         "--profile", profile,
         "--scene", document_path,
         "--project", project_root,

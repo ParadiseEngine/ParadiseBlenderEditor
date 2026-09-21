@@ -123,9 +123,9 @@ your work stays in the working file. Reload, then redo the edit.
 
 ## 7. Play
 
-**Build & Play** runs `paradise host play`: the CLI compiles `assets/` into `build/`, brings the
-game's launcher up to date, and runs it on the open document. A failed build therefore stops the
-launch rather than running the last good one.
+**Build & Play** runs `paradise host play --no-assets`: the asset watcher keeps `build/` current,
+while the CLI brings the game's launcher up to date and runs it on the open document. A failed
+launcher build therefore stops the launch rather than running the last good one.
 
 **Watch & Play** does the same under `dotnet watch`, so a C# edit is hot-patched into the running
 game. Slower to start; no rebuild afterwards.
@@ -149,7 +149,8 @@ For new Blender geometry:
    and saves the prefab at the chosen path. Existing files and orphan sidecars are refused.
 4. Open a level and use **Add Prefab…** to place the new prefab, then **Save** or **Ctrl+S**.
    Use **Open Prefab…** to edit the prefab's components, or **Catalogue** to add its thumbnail.
-5. **Build & Play** compiles those assets and loads the instance in the game.
+5. Wait for the asset watcher to compile those assets, then **Build & Play** loads the instance in
+   the game.
 
 Creation leaves the source Blender scene and selection intact. It creates a static snapshot;
 later geometry edits require re-exporting the GLB and running `paradise assets extract` on it.

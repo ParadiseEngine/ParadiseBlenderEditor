@@ -17,7 +17,7 @@ def test_play_command_names_the_document_not_its_built_twin(monkeypatch):
 
     # The CLI maps assets/ to .editor/play/; this extension must not know that layout.
     assert argv == [
-        "paradise", "host", "play",
+        "paradise", "host", "play", "--no-assets",
         "--profile", "dev",
         "--scene", "/game/assets/levels/arena.prefab",
         "--project", "/game",

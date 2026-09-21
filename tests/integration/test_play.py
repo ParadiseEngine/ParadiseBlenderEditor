@@ -6,7 +6,8 @@ Launching an actual game is not a test -- it needs a display, a built engine and
 everything BEFORE the process is exactly where this feature can go wrong, so the CLI is replaced
 with a script that records its argv and exits with whatever it is told.
 
-Play is ONE child: ``paradise host play`` builds the assets, builds the launcher and runs the game.
+Play is ONE child: ``paradise host play --no-assets`` builds the launcher and runs the game while
+the asset watcher keeps the asset build current.
 What the addon owes is the right verb on the right document from the right directory, a report
 when that child dies early, and a Stop that ends it. The check that matters most is that a
 failed build is REPORTED: a Play that quietly showed last build's world would be indistinguishable
@@ -183,6 +184,7 @@ def main() -> int:
             if record:
                 argv = record["argv"]
                 check(argv[:2] == ["host", "play"], f"with the host play verb ({argv})")
+                check("--no-assets" in argv, "without rebuilding watcher-managed assets")
                 check(
                     argv[argv.index("--scene") + 1] == document,
                     "--scene is the DOCUMENT (the CLI maps it to the play tree)",

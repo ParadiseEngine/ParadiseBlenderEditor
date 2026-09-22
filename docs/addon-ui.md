@@ -114,32 +114,29 @@ use a decimal text field. This includes unsigned renderer seeds through `4294967
 remain integers in the saved document. Invalid text or values outside the declared range show
 an error and restore the last accepted value; ordinary integer fields keep their spinners.
 
-## Scene navigation
+## Authored actions
 
-A string field marked `authoredBy: navmesh` displays a read-only path and navigation controls.
-The path always follows the open level: `assets/levels/battlefield.prefab` produces
-`assets/levels/battlefield.navmesh`, referenced as `levels/battlefield.navmesh`. Saving updates
-that generated field while preserving the rest of the component payload.
+Components may declare C# authored actions in the game schema. Buttons and toggles appear below
+that component's fields, using its action names, labels and documentation. The editor saves
+pending document edits before invoking a button or toggle. It then calls the generic
+`paradise assets invoke-action` command; the game owns the behavior, generated paths, mesh
+selection, baking and any other domain rules.
 
-- **Bake** saves the current level, then runs the CLI's Recast bake on evaluated static document
-  mesh instances. World placement, modifiers, and mirrored winding are included. Animated or
-  skinned objects and dynamic/kinematic rigid bodies are excluded. A game schema can mark a
-  boolean field `authoredBy: navmesh-geometry`; false excludes that object and its descendants.
-  ShiningPie's cars default to excluded, with an opt-in for stationary scenery.
-- **Preview** shows or hides the baked walkable triangles as a green viewport overlay. It can
-  read an existing `.navmesh` without rebaking. Reloading or switching documents clears the
-  overlay; no preview objects or preview state are written into the level.
-- **Auto-bake on Save** is off by default. When enabled, both Save and Ctrl+S bake after a
-  successful document save. The setting belongs to this level's working `.blend`. Repeated
-  saves queue the latest snapshot while the current bake finishes. A failed bake retains the
-  previous binary and shows the error in Scene navigation; the document save still succeeds.
+Actions marked `onSave` run after a successful Save or Ctrl+S. Every declared save action is
+invoked; the C# method decides which work its toggle state enables. Manual invocation suppresses
+this hook for its preliminary save so an action cannot recursively invoke itself. Toggle state
+is keyed by document, entity and component in the disposable working file, never written into
+a prefab payload. Reopening or reloading a document replays its enabled toggle callbacks to
+restore their effects; it runs no save actions. A failed restoration leaves that toggle off.
 
-Baking runs in the background in interactive Blender. Disabling the addon or loading another
-document cancels and cleans up its pending work. The CLI owns `.meta` creation through its
-normal asset watcher; the addon only writes the baked binary. Build assets to copy it into the
-game's runtime `build/` tree.
+Actions run asynchronously in interactive Blender. The component shows progress and failures,
+and another document save waits until the action finishes. Triangle overlays returned by an
+action render in the viewport without adding scene objects. Reloading a document or unloading
+the addon cancels pending jobs and clears the overlays. If an action changes the canonical
+document, the editor refreshes its view only when no local edits were made during the job;
+otherwise it preserves those edits and reports that the changes need reconciliation.
 
-These controls require a CLI with `assets bake-navmesh` and `assets preview-navmesh`. During
-local development, build `ParadiseEngine/src/Paradise.Cli/Paradise.Cli.csproj` and select that
-project in the addon's **Paradise CLI** preference. Published CLI 0.51.0 predates these commands
-and the `.navmesh` importer.
+Scene navigation is one client of this mechanism: the game declares Bake, Preview and Auto-bake
+on Save, and a locked `NavMeshFile` field. The editor has no navigation-specific operators or
+geometry extraction. Use a CLI and rebuilt game schema that support authored actions; the
+published CLI predating these commands cannot invoke them.

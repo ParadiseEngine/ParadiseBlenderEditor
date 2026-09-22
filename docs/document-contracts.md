@@ -28,6 +28,20 @@ registered, and every enable after that dies on "already registered as a subclas
 cannot be turned back on without restarting Blender. `__init__.register` wraps the whole thing
 and calls `unregister()` on failure.
 
+**Authored actions belong to C#.** `document/actions.py` reads the generic action protocol;
+`action_ops.py` presents schema-declared buttons and toggles and invokes the CLI. Save hooks
+dispatch every declared `onSave` action and pass the component's toggle state. Domain choices
+such as geometry selection, output names and whether to bake live in the C# callback. Manual
+invocation saves edits with save-action dispatch suppressed to avoid recursion.
+
+Action jobs serialize per scene. A document-changing response may rematerialize the scene only
+if its live-object fingerprint still matches the job's starting state; otherwise the author’s
+new edits stay intact and the stale document is reported. Viewport overlays are keyed by their
+document/entity/component owner and overlay id, and never become scene objects. Reload cancels
+jobs, clears overlays and replays enabled toggle callbacks. A refresh caused by an action skips
+that replay, preventing recursive invocation. Unregister closes child processes and removes
+both timers and draw handlers.
+
 ## Canonical serialization
 
 **The canonical TOML writer is a CROSS-LANGUAGE contract, and it is checked by bytes.**

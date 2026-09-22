@@ -84,8 +84,8 @@ if command -v "$BLENDER" >/dev/null 2>&1; then
   integration "schema-driven light preview and canonical colour edits" \
     tests/integration/test_light_preview.py "$DEFAULT_NOISE"
 
-  integration "scene navigation bake, preview, and auto-bake on save" \
-    tests/integration/test_navigation.py "$DEFAULT_NOISE"
+  integration "generic authored buttons, toggles, overlays, and save actions" \
+    tests/integration/test_authored_actions.py "$DEFAULT_NOISE"
 
   integration "wide integer source and component editing" \
     tests/integration/test_wide_integer.py "$DEFAULT_NOISE"

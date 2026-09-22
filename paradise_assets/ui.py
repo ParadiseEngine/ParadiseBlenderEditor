@@ -16,7 +16,7 @@ import time
 
 from bpy.types import Panel
 
-from . import clip_ops, component_ops, edits, field_widgets, navigation_ops, transform_ops, watch
+from . import clip_ops, component_ops, edits, field_widgets, action_ops, transform_ops, watch
 from .document import assets as asset_index
 from .document import component_schema, glb_clips, well_known
 from .materialize import save, shapes, store, sync, tagging, workfile
@@ -490,6 +490,7 @@ class PARADISE_ASSETS_PT_object(_AssetsPanel, Panel):
                 continue
 
             _draw_schema_fields(box, context, obj, component, schema, edited, overridden)
+            action_ops.draw(box, context, obj, component_id, schema)
 
         _draw_clip_settings(layout, context, obj)
 
@@ -575,9 +576,6 @@ def _draw_schema_fields(
 
     for item in schema.plan(merged):
         value = edits.read_path(merged, item.path)
-        if item.field.authored_by == "navmesh":
-            navigation_ops.draw(box, context, item.path)
-            continue
         if item.role == component_schema.ROLE_OPTIONAL:
             row = box.row(align=True)
             row.label(text=item.path + (" (unset)" if value is None else ""))

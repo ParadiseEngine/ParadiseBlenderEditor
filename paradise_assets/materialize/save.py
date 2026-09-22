@@ -32,7 +32,6 @@ from ..document import (
     axes,
     canonical_toml,
     component_schema,
-    navigation,
     overrides,
     project,
     well_known,
@@ -69,8 +68,11 @@ class SaveResult:
         self.warnings: list[str] = []
 
 
-def save_prefab(scene: bpy.types.Scene, *, bake_navigation: bool = True) -> SaveResult:
+def save_prefab(scene: bpy.types.Scene, *, invoke_actions: bool = True) -> SaveResult:
     """Write ``scene`` back to the document it was materialized from."""
+    from .. import action_ops
+    if action_ops.busy(scene):
+        raise SaveError("An authored action is still running; wait before saving this document")
     state = store.read_state(scene)
     if state is None:
         raise SaveError("this scene was not opened from a scene document")
@@ -102,8 +104,6 @@ def save_prefab(scene: bpy.types.Scene, *, bake_navigation: bool = True) -> Save
     scene.view_layers[0].update()
     try:
         merged = _merge(scene, base, result, vocabulary)
-        if layout is not None:
-            result.edited += navigation.normalize(merged, vocabulary, state.path, layout.assets)
     except ValueError as error:
         raise SaveError(str(error)) from error
 
@@ -129,11 +129,10 @@ def save_prefab(scene: bpy.types.Scene, *, bake_navigation: bool = True) -> Save
         component_edits.clear(obj)
 
     result.written = len(merged.objects)
-    if bake_navigation:
-        from .. import navigation_ops
-        problem = navigation_ops.after_save(scene)
+    if invoke_actions:
+        problem = action_ops.after_save(scene)
         if problem:
-            result.warnings.append(f"Document saved, but navigation bake failed: {problem}")
+            result.warnings.append(f"Document saved, but an authored action failed: {problem}")
     return result
 
 

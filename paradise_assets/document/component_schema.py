@@ -365,7 +365,7 @@ class ComponentSchema:
         from .actions import ActionSchema
         self.actions = [ActionSchema(action) for action in raw.get("actions") or []
                         if isinstance(action, dict) and action.get("name")
-                        and action.get("kind", "button") in {"button", "toggle"}]
+                        and action.get("kind", "button") in {"button", "toggle", "preview"}]
 
     def field(self, name: str) -> FieldSchema | None:
         for field in self.fields:

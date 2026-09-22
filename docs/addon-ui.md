@@ -116,7 +116,7 @@ an error and restore the last accepted value; ordinary integer fields keep their
 
 ## Authored actions
 
-Components may declare C# authored actions in the game schema. Buttons and toggles appear below
+Components may declare C# authored actions in the game schema. Buttons, toggles and preview controls appear below
 that component's fields, using its action names, labels and documentation. The editor saves
 pending document edits before invoking a button or toggle. It then calls the generic
 `paradise assets invoke-action` command; the game owns the behavior, generated paths, mesh
@@ -128,6 +128,19 @@ this hook for its preliminary save so an action cannot recursively invoke itself
 is keyed by document, entity and component in the disposable working file, never written into
 a prefab payload. Reopening or reloading a document replays its enabled toggle callbacks to
 restore their effects; it runs no save actions. A failed restoration leaves that toggle off.
+
+Preview providers use `kind: "preview"` and return viewport geometry. Their eye controls keep
+visibility in the working file, separately for each document, entity, component and provider.
+Enabling a preview saves pending document edits and requests its geometry without passing a
+toggle value to C#. Hiding it is immediate and local, including while a request is running.
+Preview visibility never enters the business toggle state sent to authored actions.
+
+Enabled providers refresh after successful actions and save hooks, including a Bake that only
+changes a binary asset. Reload restores enabled previews. Refresh requests are deduplicated,
+and providers with the same overlay id remain independent. Removing a provider, component or
+entity clears its preview; late results cannot restore a hidden or removed preview. A failed
+or stale result clears that provider's geometry while retaining the visibility preference so
+the next save can retry. Newer local edits always survive a pending request.
 
 Actions run asynchronously in interactive Blender. The component shows progress and failures,
 and another document save waits until the action finishes. Triangle overlays returned by an

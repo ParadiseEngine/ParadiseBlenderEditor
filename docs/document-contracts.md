@@ -29,7 +29,7 @@ cannot be turned back on without restarting Blender. `__init__.register` wraps t
 and calls `unregister()` on failure.
 
 **Authored actions belong to C#.** `document/actions.py` reads the generic action protocol;
-`action_ops.py` presents schema-declared buttons and toggles and invokes the CLI. Save hooks
+`action_ops.py` presents schema-declared buttons, toggles and preview providers and invokes the CLI. Save hooks
 dispatch every declared `onSave` action and pass the component's toggle state. Domain choices
 such as geometry selection, output names and whether to bake live in the C# callback. Manual
 invocation saves edits with save-action dispatch suppressed to avoid recursion.
@@ -41,6 +41,20 @@ document/entity/component owner and overlay id, and never become scene objects. 
 jobs, clears overlays and replays enabled toggle callbacks. A refresh caused by an action skips
 that replay, preventing recursive invocation. Unregister closes child processes and removes
 both timers and draw handlers.
+
+`kind: "preview"` has a separate editor-owned lifecycle. Visibility lives under
+`paradise_action_previews`, keyed by document/entity/component/provider, and never enters the
+business `ToggleValues` transport. Enable saves canonical edits before invoking the provider
+without `--value` or `--on-save`; disable only hides locally. Provider overlays add the provider
+name to their ownership, so matching overlay ids do not collide with each other or ordinary
+action overlays. Every provider response replaces its previous geometry. Enabled providers
+refresh after successful actions and save hooks, even when `documentChanged` is false. Queued
+refreshes deduplicate per provider and run after pending business actions; preview responses do
+not trigger further refreshes. A response must still match the live document stamp, object
+fingerprint, declared provider and visibility generation before it can display. Failure clears
+stale geometry but retains the visibility preference for a later refresh. Component, entity
+and provider removal prune visibility and overlays, while reload cancels jobs and restores the
+remaining enabled providers.
 
 ## Canonical serialization
 

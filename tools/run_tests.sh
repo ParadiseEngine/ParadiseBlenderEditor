@@ -87,6 +87,9 @@ if command -v "$BLENDER" >/dev/null 2>&1; then
   integration "generic authored buttons, toggles, overlays, and save actions" \
     tests/integration/test_authored_actions.py "$DEFAULT_NOISE"
 
+  integration "editor-owned authored preview visibility and refresh" \
+    tests/integration/test_authored_previews.py "$DEFAULT_NOISE"
+
   integration "wide integer source and component editing" \
     tests/integration/test_wide_integer.py "$DEFAULT_NOISE"
 

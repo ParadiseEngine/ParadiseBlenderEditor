@@ -35,6 +35,20 @@ def is_visible(scene, owner, overlay_id):
     return (scene.as_pointer(), owner, overlay_id) in _OVERLAYS
 
 
+def clear_owner(scene, owner):
+    key = scene.as_pointer()
+    for address in list(_OVERLAYS):
+        if address[:2] == (key, owner):
+            del _OVERLAYS[address]
+    _remove_unused_handler()
+    redraw()
+
+
+def replace(scene, owner, overlays):
+    clear_owner(scene, owner)
+    apply(scene, owner, overlays)
+
+
 def clear(scene):
     key = scene.as_pointer()
     for address in list(_OVERLAYS):

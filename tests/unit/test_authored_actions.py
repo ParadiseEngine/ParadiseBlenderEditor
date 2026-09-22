@@ -9,14 +9,15 @@ import pytest
 from paradise_assets.document import actions, component_schema
 
 
-def test_component_describes_unrelated_buttons_toggles_and_save_actions():
+def test_component_describes_unrelated_buttons_toggles_previews_and_save_actions():
     schema = component_schema.ComponentSchema({"id": "example", "actions": [
         {"name": "Reindex", "displayName": "Refresh Search", "doc": "Index this shelf", "onSave": True},
         {"name": "Highlight", "kind": "toggle"},
+        {"name": "Surface", "kind": "preview", "doc": "Inspect generated surface"},
         {"name": "Unsupported", "kind": "unknown"},
     ]})
     assert [(item.name, item.kind, item.on_save) for item in schema.actions] == [
-        ("Reindex", "button", True), ("Highlight", "toggle", False)]
+        ("Reindex", "button", True), ("Highlight", "toggle", False), ("Surface", "preview", False)]
     assert schema.actions[0].display_name == "Refresh Search"
     assert schema.actions[0].doc == "Index this shelf"
 
@@ -27,6 +28,12 @@ def test_action_arguments_preserve_paths_and_toggle_values():
     assert command == ["assets", "invoke-action", "/my project/scene.prefab", "component", "Highlight",
                        "--entity", "entity", "--state", "/state file.json", "--response", "/response file.json",
                        "--value", "false", "--on-save"]
+
+
+def test_preview_arguments_request_geometry_without_business_toggle_or_save_flags():
+    command = actions.arguments("scene.prefab", "component", "Surface", "entity", "state.json", "response.json")
+    assert command == ["assets", "invoke-action", "scene.prefab", "component", "Surface",
+                       "--entity", "entity", "--state", "state.json", "--response", "response.json"]
 
 
 def test_overlay_coordinates_keep_winding_and_convert_to_blender():

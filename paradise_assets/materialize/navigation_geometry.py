@@ -44,9 +44,9 @@ def _moving(obj, vocabulary):
                             value = item.field.default_value()
                         if value is False:
                             return True
-            if str(component.get("id", "")).lower() == _RIGIDBODY_ID:
-                if data.get("BodyType", "Dynamic") in ("Dynamic", "Kinematic"):
-                    return True
+            if (str(component.get("id", "")).lower() == _RIGIDBODY_ID
+                    and data.get("BodyType", "Dynamic") in ("Dynamic", "Kinematic")):
+                return True
         obj = obj.parent
     return False
 

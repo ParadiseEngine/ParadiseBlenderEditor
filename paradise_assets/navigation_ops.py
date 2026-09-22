@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import tempfile
@@ -130,10 +131,8 @@ def _finish(request, result):
 
 def _record_failure(scene, exception):
     message = f"Navigation: {exception}"
-    try:
+    with contextlib.suppress(ReferenceError):
         scene[_ERROR] = message
-    except ReferenceError:
-        pass
     print(f"[paradise_assets] {message}")
 
 

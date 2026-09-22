@@ -27,7 +27,16 @@ import bpy
 from mathutils import Matrix, Quaternion
 
 from .. import edits as component_edits
-from ..document import atomic, axes, canonical_toml, component_schema, navigation, overrides, project, well_known
+from ..document import (
+    atomic,
+    axes,
+    canonical_toml,
+    component_schema,
+    navigation,
+    overrides,
+    project,
+    well_known,
+)
 from ..document import prefab as prefab_document
 from ..document.asset_reference import AssetReference
 from ..document.prefab import PrefabComponent, PrefabDocument, PrefabDocumentError, PrefabObject

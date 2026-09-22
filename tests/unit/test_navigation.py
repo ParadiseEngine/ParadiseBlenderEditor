@@ -30,7 +30,7 @@ def test_level_outside_assets_is_refused_including_symlinks(tmp_path):
     outside.mkdir()
     (assets / "link").symlink_to(outside, target_is_directory=True)
     for path in (outside / "scene.prefab", assets / "../scene.prefab", assets / "link/scene.prefab"):
-        with pytest.raises(ValueError, match="inside.*assets"):
+        with pytest.raises(ValueError, match=r"inside.*assets"):
             navigation.asset_path(str(path), str(assets))
 
 

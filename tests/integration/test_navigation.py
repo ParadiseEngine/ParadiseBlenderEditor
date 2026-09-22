@@ -15,14 +15,23 @@ from types import SimpleNamespace
 import bpy
 from mathutils import Vector
 
-REPO = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import paradise_assets
 from paradise_assets import component_ops, navigation_ops, ui
 from paradise_assets.document import component_schema, prefab, project, well_known
-from paradise_assets.materialize import load, navigation_geometry, navigation_preview, save, store, sync, workfile
+from paradise_assets.materialize import (
+    load,
+    navigation_geometry,
+    navigation_preview,
+    save,
+    store,
+    sync,
+    workfile,
+)
 from paradise_assets.play import host
+
+REPO = Path(__file__).resolve().parents[2]
 
 NAV = "11111111-1111-4111-8111-111111111111"
 ROOT = "aaaaaaaa-1111-4111-8111-111111111111"
@@ -155,7 +164,8 @@ def read_component(path):
 
 
 def materialize(scene, path, layout):
-    load.load_document(scene, prefab.loads(path.read_text(), str(path)), str(path), layout, clear_startup=True)
+    load.load_document(scene, prefab.loads(path.read_text(), str(path)), str(path), layout,
+                       clear_startup=True)
     owner = store.object_with_guid(scene, ROOT)
     bpy.context.view_layer.objects.active = owner
     owner.select_set(True)
@@ -207,11 +217,13 @@ def check_skinned_placeholder_exclusion(scene, owner):
         for data in ({}, {"Mesh": None}, {"Mesh": {}}, {"Mesh": {"path": "models/actor.glb"}}):
             store.tag_object(instance, guid, [{"id": SKINNED, "data": data}])
             check(len(navigation_geometry.snapshot(scene)["vertices"]) == 4,
-                  f"strict skinned schema excludes rigid placeholders, including missing optional/default references ({data=})")
+                  "strict skinned schema excludes rigid placeholders, including missing"
+                  f" optional/default references ({data=})")
         for reference in ("models/actor.skinnedmesh", {"path": "models/actor.SKINNEDMESH"}):
             store.tag_object(instance, guid, [{"id": MIXED_MESH, "data": {"Mesh": reference}}])
             check(len(navigation_geometry.snapshot(scene)["vertices"]) == 4,
-                  "a skinned reference excludes rigid placeholder geometry when the schema also allows static meshes")
+                  "a skinned reference excludes rigid placeholder geometry when the schema"
+                  " also allows static meshes")
         for component_id in (STATIC_MESH, MIXED_MESH):
             store.tag_object(instance, guid, [{
                 "id": component_id, "data": {"Mesh": {"path": "models/walkway.mesh"}},
@@ -226,7 +238,8 @@ def check_skinned_placeholder_exclusion(scene, owner):
 def check_async_queue(scene, path, project_layout):
     original_bpy, original_start = navigation_ops.bpy, host.start_cli
     navigation_ops.bpy = SimpleNamespace(
-        app=SimpleNamespace(background=False, timers=bpy.app.timers, handlers=bpy.app.handlers), data=bpy.data)
+        app=SimpleNamespace(background=False, timers=bpy.app.timers, handlers=bpy.app.handlers),
+        data=bpy.data)
     output = path.with_suffix(".navmesh")
     previous = b"previous complete navmesh"
     output.write_bytes(previous)
@@ -269,11 +282,13 @@ def check_async_queue(scene, path, project_layout):
         jobs[0].finish(b"obsolete result")
         navigation_ops._poll()
         check(output.read_bytes() == previous and len(jobs) == 2 and not first_directory.exists(),
-              "an obsolete in-flight bake cannot overwrite the previous binary; only the newest queued save starts")
+              "an obsolete in-flight bake cannot overwrite the previous binary;"
+              " only the newest queued save starts")
         latest_directory = jobs[1].output.parent
         jobs[1].finish(b"latest result")
         check(navigation_ops._poll() is None and output.read_bytes() == b"latest result"
-              and not latest_directory.exists(), "the latest queued bake is promoted and its temporary files are removed")
+              and not latest_directory.exists(),
+              "the latest queued bake is promoted and its temporary files are removed")
         navigation_ops.clear(scene)
 
         navigation_ops.request(scene, bake=True)
@@ -286,7 +301,8 @@ def check_async_queue(scene, path, project_layout):
               "a newer save reports missing bake geometry while an older bake is running")
         jobs[-1].finish(b"stale result after newer save")
         navigation_ops._poll()
-        check(output.read_bytes() == b"latest result" and "No static document mesh geometry" in navigation_ops.error(scene),
+        check(output.read_bytes() == b"latest result"
+              and "No static document mesh geometry" in navigation_ops.error(scene),
               "an older bake cannot publish or clear the error when a newer save failed to prepare its bake")
         bpy.ops.paradise_assets.toggle_navigation_auto_bake()
         floor(scene, store.object_with_guid(scene, ROOT))
@@ -298,8 +314,10 @@ def check_async_queue(scene, path, project_layout):
         queued_directory = navigation_ops._QUEUED[scene.as_pointer()].directory
         materialize(scene, path, project_layout)
         check(jobs[-1].closed and not active_directory.exists() and not queued_directory.exists()
-              and not navigation_ops.busy(scene), "reload terminates active baking and removes active and queued temporary data")
-        check(not bpy.app.timers.is_registered(navigation_ops._poll), "reload removes the idle CLI polling timer")
+              and not navigation_ops.busy(scene),
+              "reload terminates active baking and removes active and queued temporary data")
+        check(not bpy.app.timers.is_registered(navigation_ops._poll),
+              "reload removes the idle CLI polling timer")
 
         navigation_ops.request(scene, bake=True)
         active_directory = jobs[-1].output.parent
@@ -324,7 +342,8 @@ def check_async_queue(scene, path, project_layout):
             count = len(jobs)
             check(navigation_ops._poll() is None and output.read_bytes() == b"latest result"
                   and not active_directory.exists() and len(jobs) == count,
-                  f"completing a deleted scene's bake discards its output without starting queued work ({queued=})")
+                  "completing a deleted scene's bake discards its output"
+                  f" without starting queued work ({queued=})")
             check(queued_directory is None or not queued_directory.exists(),
                   "deleted-scene completion also removes its pending snapshot")
             navigation_ops.clear(scene)
@@ -361,7 +380,8 @@ def check_workflow(scene, root, cli):
     ui._draw_schema_fields(drawn, bpy.context, owner, component, schema, {})
     check(dict(scene.items()) == before, "drawing the navigation controls does not modify scene properties")
     labels = [options for name, options in drawn.records if name == "label"]
-    check(any(item.get("icon") == "LOCKED" and "levels/nested/arena.navmesh" in item["text"] for item in labels),
+    check(any(item.get("icon") == "LOCKED" and "levels/nested/arena.navmesh" in item["text"]
+              for item in labels),
           "the read-only field displays the path derived from the level filename")
     controls = {name: options for name, options in drawn.records if name != "label"}
     check(set(controls) == {"paradise_assets.bake_navigation", "paradise_assets.toggle_navigation_preview",
@@ -386,23 +406,28 @@ def check_workflow(scene, root, cli):
     def bake_count():
         return sum(arguments[:2] == ["assets", "bake-navmesh"] for arguments in calls)
 
-    host._preference = lambda name, default="": str(cli) if name == "cli" else original_preference(name, default)
+    host._preference = (lambda name, default="": str(cli) if name == "cli"
+                        else original_preference(name, default))
     host.run_cli = run
     output = path.with_suffix(".navmesh")
     try:
         save.save_prefab(scene)
-        check(bake_count() == 0 and not output.exists(), "ordinary Save does not bake while auto-bake is disabled")
+        check(bake_count() == 0 and not output.exists(),
+              "ordinary Save does not bake while auto-bake is disabled")
         check(read_component(path)["Unrecognized"] == {"Value": 1.234567890123},
               "saving the generated path preserves unknown navigation payload fields")
-        check(bpy.ops.paradise_assets.bake_navigation() == {"FINISHED"}, "Bake succeeds using the real engine CLI")
+        check(bpy.ops.paradise_assets.bake_navigation() == {"FINISHED"},
+              "Bake succeeds using the real engine CLI")
         check(output.is_file() and output.stat().st_size > 100 and bake_count() == 1,
               "Bake creates a nonempty .navmesh beside the canonical level")
         check(not navigation_preview.is_visible(scene), "baking leaves a disabled preview disabled")
 
         objects_before = set(scene.objects.keys())
         check(bpy.ops.paradise_assets.toggle_navigation_preview() == {"FINISHED"}
-              and navigation_preview.is_visible(scene), "Preview reads the baked Detour binary through the CLI")
-        check(set(scene.objects.keys()) == objects_before, "enabling navigation preview creates no scene objects")
+              and navigation_preview.is_visible(scene),
+              "Preview reads the baked Detour binary through the CLI")
+        check(set(scene.objects.keys()) == objects_before,
+              "enabling navigation preview creates no scene objects")
         bpy.ops.paradise_assets.toggle_navigation_preview()
         check(not navigation_preview.is_visible(scene), "Preview toggles back off")
 
@@ -413,12 +438,15 @@ def check_workflow(scene, root, cli):
         check(bake_count() == count + 1, "Save performs exactly one automatic bake")
         count = bake_count()
         bpy.ops.paradise_assets.bake_navigation()
-        check(bake_count() == count + 1, "the explicit Bake button does not recursively auto-bake its own save")
+        check(bake_count() == count + 1,
+              "the explicit Bake button does not recursively auto-bake its own save")
         count = bake_count()
-        check(workfile.save(project_layout, str(path)) is not None, "the disposable working blend can be saved")
+        check(workfile.save(project_layout, str(path)) is not None,
+              "the disposable working blend can be saved")
         check(bake_count() == count, "internal working-blend saves do not trigger another bake")
         bpy.ops.wm.save_mainfile()
-        check(bake_count() == count + 1 and sync.refusal(scene) is None, "Ctrl+S performs exactly one automatic bake")
+        check(bake_count() == count + 1 and sync.refusal(scene) is None,
+              "Ctrl+S performs exactly one automatic bake")
 
         previous_output = output.read_bytes()
         original_host_run = host.run_cli
@@ -443,14 +471,16 @@ def check_workflow(scene, root, cli):
 
         navigation_preview.show(scene, {"vertices": [[0, 0, 0], [1, 0, 0], [0, 0, 1]], "indices": [0, 1, 2]})
         materialize(scene, path, project_layout)
-        check(not navigation_preview.is_visible(scene), "reloading the document clears the transient navigation preview")
+        check(not navigation_preview.is_visible(scene),
+              "reloading the document clears the transient navigation preview")
         check(len(prefab.loads(path.read_text(), str(path)).objects) == 1,
               "preview and geometry helpers are never serialized as document objects")
 
         other = path.with_name("second.prefab")
         other.write_text(path.read_text())
         materialize(scene, other, project_layout)
-        check(not navigation_ops.auto_bake(scene), "a newly opened document does not inherit another level's auto-bake toggle")
+        check(not navigation_ops.auto_bake(scene),
+              "a newly opened document does not inherit another level's auto-bake toggle")
         save.save_prefab(scene)
         check(read_component(other)["NavMeshFile"] == "levels/nested/second.navmesh",
               "renaming a level derives a new navigation filename on save")

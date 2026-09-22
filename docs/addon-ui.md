@@ -113,3 +113,33 @@ Integer fields whose declared range or current value exceeds Blender's signed 32
 use a decimal text field. This includes unsigned renderer seeds through `4294967295`. Edits
 remain integers in the saved document. Invalid text or values outside the declared range show
 an error and restore the last accepted value; ordinary integer fields keep their spinners.
+
+## Scene navigation
+
+A string field marked `authoredBy: navmesh` displays a read-only path and navigation controls.
+The path always follows the open level: `assets/levels/battlefield.prefab` produces
+`assets/levels/battlefield.navmesh`, referenced as `levels/battlefield.navmesh`. Saving updates
+that generated field while preserving the rest of the component payload.
+
+- **Bake** saves the current level, then runs the CLI's Recast bake on evaluated static document
+  mesh instances. World placement, modifiers, and mirrored winding are included. Animated or
+  skinned objects and dynamic/kinematic rigid bodies are excluded. A game schema can mark a
+  boolean field `authoredBy: navmesh-geometry`; false excludes that object and its descendants.
+  ShiningPie's cars default to excluded, with an opt-in for stationary scenery.
+- **Preview** shows or hides the baked walkable triangles as a green viewport overlay. It can
+  read an existing `.navmesh` without rebaking. Reloading or switching documents clears the
+  overlay; no preview objects or preview state are written into the level.
+- **Auto-bake on Save** is off by default. When enabled, both Save and Ctrl+S bake after a
+  successful document save. The setting belongs to this level's working `.blend`. Repeated
+  saves queue the latest snapshot while the current bake finishes. A failed bake retains the
+  previous binary and shows the error in Scene navigation; the document save still succeeds.
+
+Baking runs in the background in interactive Blender. Disabling the addon or loading another
+document cancels and cleans up its pending work. The CLI owns `.meta` creation through its
+normal asset watcher; the addon only writes the baked binary. Build assets to copy it into the
+game's runtime `build/` tree.
+
+These controls require a CLI with `assets bake-navmesh` and `assets preview-navmesh`. During
+local development, build `ParadiseEngine/src/Paradise.Cli/Paradise.Cli.csproj` and select that
+project in the addon's **Paradise CLI** preference. Published CLI 0.51.0 predates these commands
+and the `.navmesh` importer.

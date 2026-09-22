@@ -303,6 +303,8 @@ def _clear_previous(scene: bpy.types.Scene) -> None:
     """Remove a previous load's objects (by GUID marker, so the user's own survive), keeping
     the mesh library so reload does not re-import every GLB. Drops pending edits too, which is
     why ``workfile.refresh_from_document`` refuses to run this over unsaved work."""
+    from .. import navigation_ops
+    navigation_ops.clear(scene)
     light_preview.clear(scene)
     doomed = [
         obj for obj in scene.collection.all_objects

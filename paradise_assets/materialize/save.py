@@ -27,7 +27,7 @@ import bpy
 from mathutils import Matrix, Quaternion
 
 from .. import edits as component_edits
-from ..document import atomic, axes, canonical_toml, component_schema, overrides, project, well_known
+from ..document import atomic, axes, canonical_toml, component_schema, navigation, overrides, project, well_known
 from ..document import prefab as prefab_document
 from ..document.asset_reference import AssetReference
 from ..document.prefab import PrefabComponent, PrefabDocument, PrefabDocumentError, PrefabObject
@@ -60,7 +60,7 @@ class SaveResult:
         self.warnings: list[str] = []
 
 
-def save_prefab(scene: bpy.types.Scene) -> SaveResult:
+def save_prefab(scene: bpy.types.Scene, *, bake_navigation: bool = True) -> SaveResult:
     """Write ``scene`` back to the document it was materialized from."""
     state = store.read_state(scene)
     if state is None:
@@ -93,6 +93,8 @@ def save_prefab(scene: bpy.types.Scene) -> SaveResult:
     scene.view_layers[0].update()
     try:
         merged = _merge(scene, base, result, vocabulary)
+        if layout is not None:
+            result.edited += navigation.normalize(merged, vocabulary, state.path, layout.assets)
     except ValueError as error:
         raise SaveError(str(error)) from error
 
@@ -118,6 +120,11 @@ def save_prefab(scene: bpy.types.Scene) -> SaveResult:
         component_edits.clear(obj)
 
     result.written = len(merged.objects)
+    if bake_navigation:
+        from .. import navigation_ops
+        problem = navigation_ops.after_save(scene)
+        if problem:
+            result.warnings.append(f"Document saved, but navigation bake failed: {problem}")
     return result
 
 

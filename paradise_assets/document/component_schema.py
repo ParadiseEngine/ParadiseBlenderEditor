@@ -55,7 +55,7 @@ EDITABLE_TYPES = frozenset({
 
 #: ``asset`` and ``entity`` are NOT here: the document stores those and this addon picks them.
 _HOST_LOCKED = frozenset({
-    "mesh", "shape", "sprite", "light", "camera", "transform",
+    "mesh", "shape", "sprite", "light", "camera", "transform", "navmesh",
     "parent", "id", "name", "local-position", "local-rotation", "local-scale",
 })
 

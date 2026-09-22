@@ -424,11 +424,18 @@ def _poll():
 
 def after_save(scene):
     prune(scene)
-    scheduled = [(entity, schema.id, action.name) for entity, schema in _components(scene)
-                 for action in schema.actions if action.on_save and action.kind != "preview"]
+    scheduled = []
+    for entity, schema in _components(scene):
+        values = toggle_values(scene, entity, schema.id)
+        # A marked toggle is re-invoked with its stored value; buttons and save hooks take none.
+        scheduled += [(entity, schema.id, action.name,
+                       values.get(action.name, False) if action.kind == "toggle" else None)
+                      for action in schema.actions if action.on_save and action.kind != "preview"]
+        scheduled += [(entity, schema.id, name, None) for name in schema.saves]
     try:
-        for entity, component, action in scheduled:
-            request(scene, entity, component, action, on_save=True, refresh_previews=False)
+        for entity, component, action, value in scheduled:
+            request(scene, entity, component, action, value=value, on_save=True,
+                    refresh_previews=False)
     except (OSError, ValueError, RuntimeError) as exception:
         _record_failure(scene, exception)
         return str(exception)

@@ -366,6 +366,9 @@ class ComponentSchema:
         self.actions = [ActionSchema(action) for action in raw.get("actions") or []
                         if isinstance(action, dict) and action.get("name")
                         and action.get("kind", "button") in {"button", "toggle", "preview"}]
+        # Save hooks are not actions: they run after document saves and draw no control.
+        self.saves = [str(name) for name in raw.get("saves") or []
+                      if isinstance(name, str) and name]
 
     def field(self, name: str) -> FieldSchema | None:
         for field in self.fields:

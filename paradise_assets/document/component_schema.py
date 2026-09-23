@@ -15,6 +15,7 @@ import json
 import os
 
 from . import well_known
+from .actions import ActionSchema
 from .project import SCHEMA_CANDIDATES
 
 __all__ = [
@@ -362,7 +363,6 @@ class ComponentSchema:
         self.fields: list[FieldSchema] = [
             FieldSchema(field) for field in raw.get("fields") or [] if isinstance(field, dict)
         ]
-        from .actions import ActionSchema
         # Kind "save" is a save hook: dispatched post-save, drawn as no control.
         self.actions = [ActionSchema(action) for action in raw.get("actions") or []
                         if isinstance(action, dict) and action.get("name")

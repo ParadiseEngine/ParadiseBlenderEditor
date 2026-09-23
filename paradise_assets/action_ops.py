@@ -161,8 +161,8 @@ def prune(scene):
 def _prune_pending():
     watching = False
     for scene in bpy.data.scenes:
-        if scene.get(_STATE) or scene.get(_PREVIEW_STATE) or any(
-                key[0] == scene.as_pointer() for key in action_preview._OVERLAYS):
+        if (scene.get(_STATE) or scene.get(_PREVIEW_STATE)
+                or action_preview.has_overlays(scene.as_pointer())):
             prune(scene)
             providers = _live_previews(scene)
             watching |= any(key in providers and value is True
@@ -395,25 +395,31 @@ def _refresh_previews(scene):
 
 def _poll():
     for key, active in list(_JOBS.items()):
-        result = active.job.poll()
-        if result is None:
-            continue
         try:
-            _finish(active, result)
-        except (OSError, ValueError, ReferenceError, RuntimeError) as exception:
+            result = active.job.poll()
+            finished = result is not None
+            if finished:
+                _finish(active, result)
+        except Exception as exception:
+            finished = True
+            # A poll() raise can leave the child running; it must not outlive its
+            # temporary directory, which _cleanup removes below.
+            with contextlib.suppress(Exception):
+                active.job.close()
             _failed(active)
             _record_failure(active.scene, exception)
             if not active.restoring and not active.preview:
                 _QUEUED.pop(key, None)
-        finally:
-            del _JOBS[key]
-            _cleanup(active)
+        if not finished:
+            continue
+        del _JOBS[key]
+        _cleanup(active)
         while pending := _QUEUED.get(key):
             following = pending.pop(0)
             try:
                 if _start(following):
                     break
-            except (OSError, ValueError, ReferenceError, RuntimeError) as exception:
+            except Exception as exception:
                 _failed(following)
                 _cleanup(following)
                 _record_failure(following.scene, exception)
@@ -586,7 +592,9 @@ class PARADISE_ASSETS_OT_toggle_preview(Operator):
         from .materialize import save
         scene, state = context.scene, store.read_state(context.scene)
         if not self.value:
-            _set_preview(scene, state.path, self.entity_id, self.component_id, self.action_name, False)
+            if state is not None:
+                _set_preview(scene, state.path, self.entity_id, self.component_id,
+                             self.action_name, False)
             return {"FINISHED"}
         try:
             if busy(scene):

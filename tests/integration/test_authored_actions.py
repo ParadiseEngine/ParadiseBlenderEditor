@@ -88,6 +88,9 @@ class Server:
             data.objects[0].component(component).data["Generated"] = "C# owns this value"
             path.write_text(prefab.dumps(data))
             result["documentChanged"] = True
+        if action == "Corrupt":
+            path.write_text("this is not toml [[[")
+            result["documentChanged"] = True
         Path(command[command.index("--response") + 1]).write_text(json.dumps(result))
         return host.CliResult(0, "", "")
 
@@ -178,8 +181,11 @@ def check_async(scene, path, layout):
             self.arguments, self.cwd = arguments, cwd
             self.result = None
             self.closed = False
+            self.raise_on_poll = None
 
         def poll(self):
+            if self.raise_on_poll is not None:
+                raise self.raise_on_poll
             return self.result
 
         def complete(self):
@@ -267,6 +273,21 @@ def check_async(scene, path, layout):
         check(jobs[-1].closed and not action_ops._JOBS and not action_ops._QUEUED,
               "addon cleanup cancels all remaining jobs")
         action_ops.register_handler()
+
+        action_ops.request(scene, ENTITY, COMPONENT, "Highlight", value=True)
+        jobs[-1].raise_on_poll = OSError("pipe closed")
+        action_ops._poll()
+        check(not action_ops.busy(scene) and jobs[-1].closed
+              and "pipe closed" in action_ops.error(scene),
+              "a poll error closes the child, records the failure and releases the scene")
+
+        original = path.read_bytes()
+        action_ops.request(scene, ENTITY, COMPONENT, "Corrupt")
+        jobs[-1].complete()
+        action_ops._poll()
+        check(not action_ops.busy(scene) and action_ops.error(scene),
+              "a malformed document rewrite fails the action and releases the scene")
+        path.write_bytes(original)
 
 
 def check_removed_owners(scene, path, layout):

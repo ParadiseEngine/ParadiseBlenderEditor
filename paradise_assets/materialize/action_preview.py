@@ -35,6 +35,11 @@ def is_visible(scene, owner, overlay_id):
     return (scene.as_pointer(), owner, overlay_id) in _OVERLAYS
 
 
+def has_overlays(scene_pointer):
+    """Whether the scene still has any drawn overlay, so a pruner can tell it is live."""
+    return any(address[0] == scene_pointer for address in _OVERLAYS)
+
+
 def clear_owner(scene, owner):
     key = scene.as_pointer()
     for address in list(_OVERLAYS):

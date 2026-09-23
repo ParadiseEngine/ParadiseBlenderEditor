@@ -430,8 +430,7 @@ def after_save(scene):
         # A marked toggle is re-invoked with its stored value; buttons and save hooks take none.
         scheduled += [(entity, schema.id, action.name,
                        values.get(action.name, False) if action.kind == "toggle" else None)
-                      for action in schema.actions if action.on_save and action.kind != "preview"]
-        scheduled += [(entity, schema.id, name, None) for name in schema.saves]
+                      for action in schema.actions if action.on_save]
     try:
         for entity, component, action, value in scheduled:
             request(scene, entity, component, action, value=value, on_save=True,
@@ -539,7 +538,7 @@ class PARADISE_ASSETS_OT_invoke_action(Operator):
         try:
             schema = component_ops.vocabulary_for(context).get(self.component_id)
             action = next((item for item in schema.actions if item.name == self.action_name), None) if schema else None
-            if action is None or action.kind == "preview":
+            if action is None or action.kind not in {"button", "toggle"}:
                 raise ValueError("This action is no longer declared; rebuild the game schema")
             obj = store.object_with_guid(context.scene, self.entity_id)
             if obj is None or not store.authors(obj, self.component_id):
@@ -609,6 +608,8 @@ def draw(layout, context, obj, component, schema):
     controls = layout.column(align=True)
     owned = store.authors(obj, component)
     for action in schema.actions:
+        if action.kind == "save":
+            continue
         preview = action.kind == "preview"
         enabled = preview_enabled(scene, entity, component, action.name) if preview else values.get(action.name, False)
         row = controls.row(align=True)

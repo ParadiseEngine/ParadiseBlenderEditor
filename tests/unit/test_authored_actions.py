@@ -10,17 +10,18 @@ from paradise_assets.document import actions, component_schema
 
 
 def test_component_describes_unrelated_buttons_toggles_previews_and_save_actions():
-    schema = component_schema.ComponentSchema({"id": "example", "saves": ["Sweep", 4, ""], "actions": [
+    schema = component_schema.ComponentSchema({"id": "example", "actions": [
         {"name": "Reindex", "displayName": "Refresh Search", "doc": "Index this shelf", "onSave": True},
         {"name": "Highlight", "kind": "toggle"},
         {"name": "Surface", "kind": "preview", "doc": "Inspect generated surface"},
+        {"name": "Sweep", "kind": "save", "onSave": True},
         {"name": "Unsupported", "kind": "unknown"},
     ]})
     assert [(item.name, item.kind, item.on_save) for item in schema.actions] == [
-        ("Reindex", "button", True), ("Highlight", "toggle", False), ("Surface", "preview", False)]
+        ("Reindex", "button", True), ("Highlight", "toggle", False), ("Surface", "preview", False),
+        ("Sweep", "save", True)]
     assert schema.actions[0].display_name == "Refresh Search"
     assert schema.actions[0].doc == "Index this shelf"
-    assert schema.saves == ["Sweep"]
 
 
 def test_action_arguments_preserve_paths_and_toggle_values():

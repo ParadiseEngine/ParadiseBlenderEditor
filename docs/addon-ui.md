@@ -122,10 +122,11 @@ pending document edits before invoking a button or toggle. It then calls the gen
 `paradise assets invoke-action` command; the game owns the behavior, generated paths, mesh
 selection, baking and any other domain rules.
 
-After a successful Save or Ctrl+S the addon invokes the component's save hooks: every action
-declared `onSave`, including save-only methods of `kind: "save"` that draw no control — a
-marked toggle is re-invoked with its stored value. The C# method decides which work its toggle
-state enables. Manual invocation
+After a successful Save or Ctrl+S the addon invokes the component's save hooks: every action of
+`kind: "save"`, which draws no control — a button or toggle that also runs on save publishes a
+second save entry under the same method name, and a marked toggle is re-invoked with its stored
+value. (Schemas from older engine packages spell this `onSave` on the action itself; both forms
+dispatch.) The C# method decides which work its toggle state enables. Manual invocation
 suppresses this dispatch for its preliminary save so an action cannot recursively invoke itself.
 Toggle state is keyed by document, entity and component in the disposable working file, never
 written into a prefab payload. Reopening or reloading a document replays its enabled toggle

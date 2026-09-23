@@ -27,7 +27,8 @@ ENTITY = "aaaaaaaa-1111-4111-8111-111111111111"
 SCHEMA = {"components": [{"id": COMPONENT, "type": "Example.Shelf", "fields": [
     {"name": "Title", "type": "string"},
 ], "actions": [
-    {"name": "Reindex", "displayName": "Refresh Search", "kind": "button", "onSave": True},
+    {"name": "Reindex", "displayName": "Refresh Search", "kind": "button"},
+    {"name": "Reindex", "displayName": "Refresh Search", "kind": "save"},
     {"name": "Highlight", "displayName": "Show Bounds", "kind": "toggle"},
     {"name": "BackgroundIndex", "displayName": "Index on Save", "kind": "toggle"},
 ]}]}

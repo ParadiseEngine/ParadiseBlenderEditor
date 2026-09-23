@@ -12,6 +12,8 @@ class ActionSchema:
         self.display_name = raw.get("displayName") or self.name
         self.doc = raw.get("doc") or ""
         self.kind = raw.get("kind", "button")
+        # onSave is the pre-"save"-kind spelling emitted by engine packages before the unified
+        # action schema; either form marks the action for post-save dispatch.
         self.on_save = raw.get("onSave") is True
 
 

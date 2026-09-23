@@ -30,8 +30,8 @@ and calls `unregister()` on failure.
 
 **Authored actions belong to C#.** `document/actions.py` reads the generic action protocol;
 `action_ops.py` presents schema-declared buttons, toggles and preview providers and invokes the CLI. A save
-dispatches every action declared `onSave` — including `kind: "save"` hooks, which draw no
-control — passing the component's toggle state. Domain choices
+dispatches every `kind: "save"` action — a marked button or toggle carries a second save entry
+under its method name — plus the older `onSave` spelling, passing the component's toggle state. Domain choices
 such as geometry selection, output names and whether to bake live in the C# callback. Manual
 invocation saves edits with save-action dispatch suppressed to avoid recursion.
 

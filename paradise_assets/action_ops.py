@@ -427,10 +427,12 @@ def after_save(scene):
     scheduled = []
     for entity, schema in _components(scene):
         values = toggle_values(scene, entity, schema.id)
+        controls = {action.name: action.kind for action in schema.actions if action.kind != "save"}
         # A marked toggle is re-invoked with its stored value; buttons and save hooks take none.
         scheduled += [(entity, schema.id, action.name,
-                       values.get(action.name, False) if action.kind == "toggle" else None)
-                      for action in schema.actions if action.on_save]
+                       values.get(action.name, False) if controls.get(action.name) == "toggle" else None)
+                      for action in schema.actions
+                      if action.kind == "save" or action.on_save]
     try:
         for entity, component, action, value in scheduled:
             request(scene, entity, component, action, value=value, on_save=True,
@@ -537,8 +539,9 @@ class PARADISE_ASSETS_OT_invoke_action(Operator):
         from .materialize import save
         try:
             schema = component_ops.vocabulary_for(context).get(self.component_id)
-            action = next((item for item in schema.actions if item.name == self.action_name), None) if schema else None
-            if action is None or action.kind not in {"button", "toggle"}:
+            action = next((item for item in schema.actions
+                           if item.name == self.action_name and item.kind in {"button", "toggle"}), None) if schema else None
+            if action is None:
                 raise ValueError("This action is no longer declared; rebuild the game schema")
             obj = store.object_with_guid(context.scene, self.entity_id)
             if obj is None or not store.authors(obj, self.component_id):

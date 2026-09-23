@@ -18,13 +18,13 @@ def register() -> None:
     import bpy
 
     from . import (
+        action_ops,
         browser,
         clip_ops,
         component_ops,
         context_menu,
         dropped,
         field_widgets,
-        action_ops,
         ops,
         prefs,
         project_settings,
@@ -32,7 +32,7 @@ def register() -> None:
         ui,
         watch,
     )
-    from .materialize import light_preview, action_preview, sync
+    from .materialize import action_preview, light_preview, sync
     from .play import ops as play_ops
 
     # Blender keeps whatever a register() that raised had already registered, and every enable
@@ -74,8 +74,8 @@ def register() -> None:
 def unregister() -> None:
     import bpy
 
-    from . import browser, context_menu, dropped, field_widgets, action_ops, watch
-    from .materialize import light_preview, action_preview, sync
+    from . import action_ops, browser, context_menu, dropped, field_widgets, watch
+    from .materialize import action_preview, light_preview, sync
     from .play import session as play_session
     browser.unregister_menu()
     context_menu.unregister_menu()

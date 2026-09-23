@@ -16,7 +16,7 @@ import time
 
 from bpy.types import Panel
 
-from . import clip_ops, component_ops, edits, field_widgets, action_ops, transform_ops, watch
+from . import action_ops, clip_ops, component_ops, edits, field_widgets, transform_ops, watch
 from .document import assets as asset_index
 from .document import component_schema, glb_clips, well_known
 from .materialize import save, shapes, store, sync, tagging, workfile

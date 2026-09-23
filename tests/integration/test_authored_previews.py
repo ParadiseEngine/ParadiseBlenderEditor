@@ -77,7 +77,8 @@ def toggle(name, value):
 
 
 def visible(scene, path, provider, overlay="shared"):
-    return action_preview.is_visible(scene, action_ops._preview_owner(str(path), ENTITY, COMPONENT, provider), overlay)
+    owner = action_ops._preview_owner(str(path), ENTITY, COMPONENT, provider)
+    return action_preview.is_visible(scene, owner, overlay)
 
 
 def names(server):
@@ -145,7 +146,8 @@ def check_workflow(scene, path, layout):
         check(names(server) == ["AutoBake", "Edges"] and visible(scene, path, "Edges")
               and not action_ops.preview_enabled(scene, ENTITY, COMPONENT, "Surface")
               and not any(call[2] for call in server.calls),
-              "reload restores enabled preview visibility separately from business toggles without save hooks")
+              "reload restores enabled preview visibility separately from business toggles "
+              "without save hooks")
 
         other = path.with_name("other.prefab")
         other.write_text(path.read_text())
@@ -193,7 +195,8 @@ def check_async(scene, path, layout):
         action_ops._poll()
 
     runtime = SimpleNamespace(app=SimpleNamespace(background=False, timers=bpy.app.timers,
-                                                handlers=bpy.app.handlers), context=bpy.context, data=bpy.data)
+                                                  handlers=bpy.app.handlers),
+                              context=bpy.context, data=bpy.data)
     with patch.object(action_ops, "bpy", runtime), patch.object(host, "start_cli", start):
         toggle("Surface", True)
         action_ops._refresh_previews(scene)
@@ -215,7 +218,8 @@ def check_async(scene, path, layout):
         save.save_prefab(scene, invoke_actions=False)
         action_ops._refresh_previews(scene)
         complete()
-        check(visible(scene, path, "Surface"), "a fresh request draws the saved edit after stale-result rejection")
+        check(visible(scene, path, "Surface"),
+              "a fresh request draws the saved edit after stale-result rejection")
 
         server.calls.clear()
         action_ops.request(scene, ENTITY, COMPONENT, "Bake")

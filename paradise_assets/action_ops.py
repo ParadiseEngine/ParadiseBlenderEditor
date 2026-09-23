@@ -155,7 +155,7 @@ def prune(scene):
     key = scene.as_pointer()
     if key in _QUEUED:
         _QUEUED[key] = [item for item in _QUEUED[key] if not item.preview or
-                        item.preview_owner in previews and item.preview_owner in enabled]
+                        (item.preview_owner in previews and item.preview_owner in enabled)]
 
 
 def _prune_pending():
@@ -230,7 +230,8 @@ def _prepare(request):
     state = store.read_state(request.scene)
     if state is None or state.path != request.document or state.is_stale:
         raise ValueError("The document changed before the authored action could start; reload it first")
-    if request.preview and (state.stamp != request.stamp or _fingerprint(request.scene) != request.fingerprint):
+    if request.preview and (state.stamp != request.stamp
+                            or _fingerprint(request.scene) != request.fingerprint):
         raise ValueError("Local edits changed before the preview could start; save to refresh it")
     cache = Path(request.root, ".editor", "actions")
     cache.mkdir(parents=True, exist_ok=True)
@@ -278,7 +279,8 @@ def _finish(request, result):
             active = layer.objects.active
             selections.append((layer, selected, store.guid_of(active) if active else None))
         with bpy.context.temp_override(scene=scene, view_layer=scene.view_layers[0]):
-            load.load_document(scene, document, request.document, store.project_of(scene), preserve_actions=True)
+            load.load_document(scene, document, request.document, store.project_of(scene),
+                               preserve_actions=True)
         for layer, selected, active_guid in selections:
             for obj in layer.objects:
                 if store.guid_of(obj):
@@ -362,7 +364,8 @@ def request(scene, entity, component, action, *, value=None, on_save=False, rest
     if busy(scene):
         queue = _QUEUED.setdefault(scene.as_pointer(), [])
         if preview:
-            queue[:] = [item for item in queue if not item.preview or item.preview_owner != pending.preview_owner]
+            queue[:] = [item for item in queue
+                        if not item.preview or item.preview_owner != pending.preview_owner]
             queue.append(pending)
         else:
             # Business actions finish before providers query their resulting geometry.
@@ -532,7 +535,8 @@ class PARADISE_ASSETS_OT_invoke_action(Operator):
     @classmethod
     def description(cls, context, properties):
         schema = component_ops.vocabulary_for(context).get(properties.component_id)
-        action = next((item for item in schema.actions if item.name == properties.action_name), None) if schema else None
+        action = next((item for item in schema.actions if item.name == properties.action_name),
+                      None) if schema else None
         return action.doc if action and action.doc else cls.bl_description
 
     def execute(self, context):
@@ -540,7 +544,8 @@ class PARADISE_ASSETS_OT_invoke_action(Operator):
         try:
             schema = component_ops.vocabulary_for(context).get(self.component_id)
             action = next((item for item in schema.actions
-                           if item.name == self.action_name and item.kind in {"button", "toggle"}), None) if schema else None
+                           if item.name == self.action_name and item.kind in {"button", "toggle"}),
+                          None) if schema else None
             if action is None:
                 raise ValueError("This action is no longer declared; rebuild the game schema")
             obj = store.object_with_guid(context.scene, self.entity_id)
@@ -573,7 +578,8 @@ class PARADISE_ASSETS_OT_toggle_preview(Operator):
     @classmethod
     def description(cls, context, properties):
         schema = component_ops.vocabulary_for(context).get(properties.component_id)
-        action = next((item for item in schema.actions if item.name == properties.action_name), None) if schema else None
+        action = next((item for item in schema.actions if item.name == properties.action_name),
+                      None) if schema else None
         return action.doc if action and action.doc else cls.bl_description
 
     def execute(self, context):
@@ -614,16 +620,17 @@ def draw(layout, context, obj, component, schema):
         if action.kind == "save":
             continue
         preview = action.kind == "preview"
-        enabled = preview_enabled(scene, entity, component, action.name) if preview else values.get(action.name, False)
+        enabled = (preview_enabled(scene, entity, component, action.name) if preview
+                   else values.get(action.name, False))
         row = controls.row(align=True)
-        row.enabled = owned and (not busy(scene) or preview and enabled)
+        row.enabled = owned and (not busy(scene) or (preview and enabled))
         options = {"text": action.display_name}
         if preview:
             options.update(icon="HIDE_OFF" if enabled else "HIDE_ON", depress=enabled)
         elif action.kind == "toggle":
             options.update(icon="CHECKBOX_HLT" if enabled else "CHECKBOX_DEHLT", depress=enabled)
-        operator = row.operator("paradise_assets.toggle_preview" if preview else "paradise_assets.invoke_action",
-                                **options)
+        operator = row.operator("paradise_assets.toggle_preview" if preview
+                                else "paradise_assets.invoke_action", **options)
         operator.component_id, operator.entity_id = component, entity
         operator.action_name, operator.value = action.name, not enabled
     if not owned:

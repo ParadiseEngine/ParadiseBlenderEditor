@@ -29,13 +29,15 @@ def test_component_describes_unrelated_buttons_toggles_previews_and_save_actions
 def test_action_arguments_preserve_paths_and_toggle_values():
     command = actions.arguments("/my project/scene.prefab", "component", "Highlight", "entity",
                                 "/state file.json", "/response file.json", value=False, on_save=True)
-    assert command == ["assets", "invoke-action", "/my project/scene.prefab", "component", "Highlight",
-                       "--entity", "entity", "--state", "/state file.json", "--response", "/response file.json",
-                       "--value", "false", "--on-save"]
+    assert command == [
+        "assets", "invoke-action", "/my project/scene.prefab", "component", "Highlight",
+        "--entity", "entity", "--state", "/state file.json", "--response", "/response file.json",
+        "--value", "false", "--on-save"]
 
 
 def test_preview_arguments_request_geometry_without_business_toggle_or_save_flags():
-    command = actions.arguments("scene.prefab", "component", "Surface", "entity", "state.json", "response.json")
+    command = actions.arguments("scene.prefab", "component", "Surface", "entity", "state.json",
+                                "response.json")
     assert command == ["assets", "invoke-action", "scene.prefab", "component", "Surface",
                        "--entity", "entity", "--state", "state.json", "--response", "response.json"]
 

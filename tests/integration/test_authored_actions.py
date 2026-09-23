@@ -141,9 +141,11 @@ def check_workflow(scene, path, layout):
               "reload replays enabled toggle callbacks and restores effects without save hooks")
         save.save_prefab(scene)
         check(server.calls[-1][0] == "Reindex" and server.calls[-1][2]
-              and server.calls[-1][3]["BackgroundIndex"], "save dispatches declared hook and current toggle state")
+              and server.calls[-1][3]["BackgroundIndex"],
+              "save dispatches declared hook and current toggle state")
         sync._sync(scene)
-        check(server.calls[-1][2] and sync.refusal(scene) is None, "Ctrl+S follows the same generic save hook")
+        check(server.calls[-1][2] and sync.refusal(scene) is None,
+              "Ctrl+S follows the same generic save hook")
         check("BackgroundIndex" not in path.read_text(), "toggle state never enters canonical component data")
 
         server.fail = True
@@ -246,7 +248,8 @@ def check_async(scene, path, layout):
         jobs[-1].complete()
         action_ops._poll()
         check(edits.read(owner(scene))[COMPONENT]["Title"] == "While running"
-              and owner(scene).location.x == 2, "completed action never overwrites newer fields or transforms")
+              and owner(scene).location.x == 2,
+              "completed action never overwrites newer fields or transforms")
         check(store.read_state(scene).is_stale and "preserved" in action_ops.error(scene),
               "conflicting view refresh reports reconciliation instead of clearing new edits")
         check(not directory.exists(), "completed actions clean temporary transport files")

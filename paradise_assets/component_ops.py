@@ -491,6 +491,8 @@ class PARADISE_ASSETS_OT_remove_component(Operator):
         if obj is None or not self.component_id:
             return {"CANCELLED"}
         edits.remove_component(obj, self.component_id)
+        from . import action_ops
+        action_ops.prune(context.scene)
         _redraw(context)
         return {"FINISHED"}
 

@@ -15,6 +15,7 @@ import json
 import os
 
 from . import well_known
+from .actions import ActionSchema
 from .project import SCHEMA_CANDIDATES
 
 __all__ = [
@@ -55,7 +56,7 @@ EDITABLE_TYPES = frozenset({
 
 #: ``asset`` and ``entity`` are NOT here: the document stores those and this addon picks them.
 _HOST_LOCKED = frozenset({
-    "mesh", "shape", "sprite", "light", "camera", "transform",
+    "mesh", "shape", "sprite", "light", "camera", "transform", "navmesh",
     "parent", "id", "name", "local-position", "local-rotation", "local-scale",
 })
 
@@ -362,6 +363,10 @@ class ComponentSchema:
         self.fields: list[FieldSchema] = [
             FieldSchema(field) for field in raw.get("fields") or [] if isinstance(field, dict)
         ]
+        # Kind "save" is a save hook: dispatched post-save, drawn as no control.
+        self.actions = [ActionSchema(action) for action in raw.get("actions") or []
+                        if isinstance(action, dict) and action.get("name")
+                        and action.get("kind", "button") in {"button", "toggle", "preview", "save"}]
 
     def field(self, name: str) -> FieldSchema | None:
         for field in self.fields:

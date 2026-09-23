@@ -18,6 +18,7 @@ def register() -> None:
     import bpy
 
     from . import (
+        action_ops,
         browser,
         clip_ops,
         component_ops,
@@ -31,7 +32,7 @@ def register() -> None:
         ui,
         watch,
     )
-    from .materialize import light_preview, sync
+    from .materialize import action_preview, light_preview, sync
     from .play import ops as play_ops
 
     # Blender keeps whatever a register() that raised had already registered, and every enable
@@ -42,7 +43,7 @@ def register() -> None:
         # before ui, or the panel draws dead buttons rather than failing loudly.
         for cls in (
             *prefs.classes, *ops.classes, *play_ops.classes, *field_widgets.classes,
-            *component_ops.classes, *clip_ops.classes, *transform_ops.classes,
+            *component_ops.classes, *clip_ops.classes, *transform_ops.classes, *action_ops.classes,
             *project_settings.classes, *ui.classes, *browser.classes,
             *context_menu.classes,
         ):
@@ -62,6 +63,8 @@ def register() -> None:
         # Ctrl+S writes the document too (materialize/sync.py).
         sync.register_handler()
         light_preview.register_handler()
+        action_preview.register_handler()
+        action_ops.register_handler()
         watch.register_handler()
     except Exception:
         unregister()
@@ -71,14 +74,16 @@ def register() -> None:
 def unregister() -> None:
     import bpy
 
-    from . import browser, context_menu, dropped, field_widgets, watch
-    from .materialize import light_preview, sync
+    from . import action_ops, browser, context_menu, dropped, field_widgets, watch
+    from .materialize import action_preview, light_preview, sync
     from .play import session as play_session
     browser.unregister_menu()
     context_menu.unregister_menu()
     dropped.unregister_handler()
     sync.unregister_handler()
     light_preview.unregister_handler()
+    action_ops.unregister_handler()
+    action_preview.unregister_handler()
     watch.unregister_handler()
     play_session.stop_all()
     field_widgets.detach()

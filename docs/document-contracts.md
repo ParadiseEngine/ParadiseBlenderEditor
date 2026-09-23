@@ -28,6 +28,35 @@ registered, and every enable after that dies on "already registered as a subclas
 cannot be turned back on without restarting Blender. `__init__.register` wraps the whole thing
 and calls `unregister()` on failure.
 
+**Authored actions belong to C#.** `document/actions.py` reads the generic action protocol;
+`action_ops.py` presents schema-declared buttons, toggles and preview providers and invokes the CLI. A save
+dispatches every `kind: "save"` action — a marked button or toggle carries a second save entry
+under its method name — plus the older `onSave` spelling, passing the component's toggle state. Domain choices
+such as geometry selection, output names and whether to bake live in the C# callback. Manual
+invocation saves edits with save-action dispatch suppressed to avoid recursion.
+
+Action jobs serialize per scene. A document-changing response may rematerialize the scene only
+if its live-object fingerprint still matches the job's starting state; otherwise the author’s
+new edits stay intact and the stale document is reported. Viewport overlays are keyed by their
+document/entity/component owner and overlay id, and never become scene objects. Reload cancels
+jobs, clears overlays and replays enabled toggle callbacks. A refresh caused by an action skips
+that replay, preventing recursive invocation. Unregister closes child processes and removes
+both timers and draw handlers.
+
+`kind: "preview"` has a separate editor-owned lifecycle. Visibility lives under
+`paradise_action_previews`, keyed by document/entity/component/provider, and never enters the
+business `ToggleValues` transport. Enable saves canonical edits before invoking the provider
+without `--value` or `--on-save`; disable only hides locally. Provider overlays add the provider
+name to their ownership, so matching overlay ids do not collide with each other or ordinary
+action overlays. Every provider response replaces its previous geometry. Enabled providers
+refresh after successful actions and save hooks, even when `documentChanged` is false. Queued
+refreshes deduplicate per provider and run after pending business actions; preview responses do
+not trigger further refreshes. A response must still match the live document stamp, object
+fingerprint, declared provider and visibility generation before it can display. Failure clears
+stale geometry but retains the visibility preference for a later refresh. Component, entity
+and provider removal prune visibility and overlays, while reload cancels jobs and restores the
+remaining enabled providers.
+
 ## Canonical serialization
 
 **The canonical TOML writer is a CROSS-LANGUAGE contract, and it is checked by bytes.**

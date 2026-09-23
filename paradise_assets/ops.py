@@ -537,7 +537,9 @@ class PARADISE_ASSETS_OT_extract_prefab(Operator):
             return {"CANCELLED"}
 
         try:
-            save.save_prefab(scene)
+            # A transport save, not the author's: a save hook's job would be killed by the
+            # rematerialize below, or race this operator's own rewrite of the document.
+            save.save_prefab(scene, invoke_actions=False)
             with open(state.path, encoding="utf-8") as handle:
                 document = loads(handle.read(), state.path)
         except (save.SaveError, PrefabDocumentError) as error:
@@ -803,7 +805,9 @@ class _InstanceOperator(Operator):
             return None
 
         try:
-            save.save_prefab(scene)
+            # A transport save, not the author's: the rematerialize after it would kill a
+            # save hook's job mid-write.
+            save.save_prefab(scene, invoke_actions=False)
         except save.SaveError as error:
             self.report({"ERROR"}, str(error))
             return None

@@ -113,3 +113,47 @@ Integer fields whose declared range or current value exceeds Blender's signed 32
 use a decimal text field. This includes unsigned renderer seeds through `4294967295`. Edits
 remain integers in the saved document. Invalid text or values outside the declared range show
 an error and restore the last accepted value; ordinary integer fields keep their spinners.
+
+## Authored actions
+
+Components may declare C# authored actions in the game schema. Buttons, toggles and preview controls appear below
+that component's fields, using its action names, labels and documentation. The editor saves
+pending document edits before invoking a button or toggle. It then calls the generic
+`paradise assets invoke-action` command; the game owns the behavior, generated paths, mesh
+selection, baking and any other domain rules.
+
+After a successful Save or Ctrl+S the addon invokes the component's save hooks: every action of
+`kind: "save"`, which draws no control — a button or toggle that also runs on save publishes a
+second save entry under the same method name, and a marked toggle is re-invoked with its stored
+value. (Schemas from older engine packages spell this `onSave` on the action itself; both forms
+dispatch.) The C# method decides which work its toggle state enables. Manual invocation
+suppresses this dispatch for its preliminary save so an action cannot recursively invoke itself.
+Toggle state is keyed by document, entity and component in the disposable working file, never
+written into a prefab payload. Reopening or reloading a document replays its enabled toggle
+callbacks to restore their effects; it runs no save hooks. A failed restoration leaves that
+toggle off.
+
+Preview providers use `kind: "preview"` and return viewport geometry. Their eye controls keep
+visibility in the working file, separately for each document, entity, component and provider.
+Enabling a preview saves pending document edits and requests its geometry without passing a
+toggle value to C#. Hiding it is immediate and local, including while a request is running.
+Preview visibility never enters the business toggle state sent to authored actions.
+
+Enabled providers refresh after successful actions and save hooks, including a Bake that only
+changes a binary asset. Reload restores enabled previews. Refresh requests are deduplicated,
+and providers with the same overlay id remain independent. Removing a provider, component or
+entity clears its preview; late results cannot restore a hidden or removed preview. A failed
+or stale result clears that provider's geometry while retaining the visibility preference so
+the next save can retry. Newer local edits always survive a pending request.
+
+Actions run asynchronously in interactive Blender. The component shows progress and failures,
+and another document save waits until the action finishes. Triangle overlays returned by an
+action render in the viewport without adding scene objects. Reloading a document or unloading
+the addon cancels pending jobs and clears the overlays. If an action changes the canonical
+document, the editor refreshes its view only when no local edits were made during the job;
+otherwise it preserves those edits and reports that the changes need reconciliation.
+
+Scene navigation is one client of this mechanism: the game declares Bake, Preview and Auto-bake
+on Save, and a locked `NavMeshFile` field. The editor has no navigation-specific operators or
+geometry extraction. Use a CLI and rebuilt game schema that support authored actions; the
+published CLI predating these commands cannot invoke them.

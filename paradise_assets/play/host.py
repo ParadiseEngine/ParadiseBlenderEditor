@@ -333,6 +333,19 @@ class CliJob:
         if self._process is not None and self._process.poll() is None:
             self._process.terminate()
 
+    def close(self) -> None:
+        """Stop and reap a job before its temporary input/output directory is removed."""
+        self.cancel()
+        if self._process is not None:
+            try:
+                self._process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self._process.kill()
+                self._process.wait(timeout=2)
+            if self._process.stdout is not None:
+                self._process.stdout.close()
+        self._stages.clear()
+
 
 def start_cli(arguments: list[str], cwd: str) -> CliJob | None:
     """Start the CLI in ``cwd`` without waiting; ``None`` when there is no CLI to run."""

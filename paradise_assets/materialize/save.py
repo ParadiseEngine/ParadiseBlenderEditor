@@ -27,7 +27,15 @@ import bpy
 from mathutils import Matrix, Quaternion
 
 from .. import edits as component_edits
-from ..document import atomic, axes, canonical_toml, component_schema, overrides, project, well_known
+from ..document import (
+    atomic,
+    axes,
+    canonical_toml,
+    component_schema,
+    overrides,
+    project,
+    well_known,
+)
 from ..document import prefab as prefab_document
 from ..document.asset_reference import AssetReference
 from ..document.prefab import PrefabComponent, PrefabDocument, PrefabDocumentError, PrefabObject
@@ -60,8 +68,11 @@ class SaveResult:
         self.warnings: list[str] = []
 
 
-def save_prefab(scene: bpy.types.Scene) -> SaveResult:
+def save_prefab(scene: bpy.types.Scene, *, invoke_actions: bool = True) -> SaveResult:
     """Write ``scene`` back to the document it was materialized from."""
+    from .. import action_ops
+    if action_ops.busy(scene):
+        raise SaveError("An authored action is still running; wait before saving this document")
     state = store.read_state(scene)
     if state is None:
         raise SaveError("this scene was not opened from a scene document")
@@ -118,6 +129,10 @@ def save_prefab(scene: bpy.types.Scene) -> SaveResult:
         component_edits.clear(obj)
 
     result.written = len(merged.objects)
+    if invoke_actions:
+        problem = action_ops.after_save(scene)
+        if problem:
+            result.warnings.append(f"Document saved, but an authored action failed: {problem}")
     return result
 
 

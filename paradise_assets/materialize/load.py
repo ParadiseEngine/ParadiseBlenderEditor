@@ -49,6 +49,7 @@ def load_document(
     layout: project.ProjectLayout,
     *,
     clear_startup: bool = False,
+    preserve_actions: bool = False,
 ) -> LoadResult:
     """Materialize ``document`` into ``scene``, replacing anything already loaded there.
 
@@ -62,7 +63,7 @@ def load_document(
     # the clear owns the document objects, and doing it in this order means no captured
     # reference can have been freed under us and no name is taken when the document wants it.
     startup = _startup_content(scene) if clear_startup else None
-    _clear_previous(scene)
+    _clear_previous(scene, preserve_actions=preserve_actions)
     _drop_startup_content(startup)
 
     mesh_fields = schema.load(layout.root)
@@ -132,6 +133,9 @@ def load_document(
             transform_helpers.materialize(created[entry.guid], tagging.payload(entry), vocabulary)
     scene.view_layers[0].update()
     light_preview.refresh(scene)
+    if not preserve_actions:
+        from .. import action_ops
+        action_ops.after_load(scene)
     return result
 
 
@@ -299,10 +303,13 @@ def _drop_startup_content(captured) -> None:
         bpy.data.collections.remove(collection)
 
 
-def _clear_previous(scene: bpy.types.Scene) -> None:
+def _clear_previous(scene: bpy.types.Scene, *, preserve_actions: bool = False) -> None:
     """Remove a previous load's objects (by GUID marker, so the user's own survive), keeping
     the mesh library so reload does not re-import every GLB. Drops pending edits too, which is
     why ``workfile.refresh_from_document`` refuses to run this over unsaved work."""
+    from .. import action_ops
+    if not preserve_actions:
+        action_ops.clear(scene)
     light_preview.clear(scene)
     doomed = [
         obj for obj in scene.collection.all_objects

@@ -114,6 +114,21 @@ class TestUnsupported:
     def test_a_static_triangle_mesh_is_supported(self):
         assert ownership.unsupported(nodes_document([{"mesh": 0}], roots=[0])) is None
 
+    @pytest.mark.parametrize("node", [
+        {"mesh": 0, "translation": ["a", "b", "c"]},
+        {"mesh": 0, "matrix": [None] * 16},
+        {"mesh": 0, "scale": [1, float("nan"), 1]},
+    ])
+    def test_a_transform_that_is_not_numbers_is_refused_not_raised(self, node):
+        # A GLB is untrusted: a hand edit or a bad merge must be a refusal the operator reports,
+        # not a traceback out of it.
+        assert "malformed" in ownership.unsupported(nodes_document([node], roots=[0]))
+
+    def test_a_model_with_no_mesh_in_its_scene_is_refused(self):
+        document = {"scenes": [{"nodes": [0]}], "nodes": [{}], "buffers": [{"byteLength": 4}]}
+
+        assert "no mesh" in ownership.unsupported(document)
+
 
 class TestOwnership:
     def owned(self, tmp_path, owner, name="wall.glb"):

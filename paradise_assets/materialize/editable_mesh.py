@@ -87,12 +87,23 @@ _ATTRIBUTES = {
 
 def build_mesh(path: str, name: str) -> bpy.types.Mesh:
     """The GLB at ``path`` as one mesh in the model's own space: every mesh node baked by its
-    world transform, one material slot per primitive in the engine's slot order."""
+    world transform, one material slot per primitive in the engine's slot order.
+
+    Raises only :class:`contract.EditableMeshError`: the file is untrusted, and every caller
+    turns that one error into a refusal or the read-only fallback."""
     document, binary = gltf.read_glb(path)
     problem = contract.unsupported(document)
     if problem is not None:
         raise contract.EditableMeshError(f"{os.path.basename(path)} cannot be edited here: {problem}.")
+    try:
+        return _build_mesh(document, binary, path, name)
+    except (TypeError, ValueError, KeyError, IndexError, AttributeError) as error:
+        raise contract.EditableMeshError(
+            f"{os.path.basename(path)} cannot be edited here: its geometry is malformed ({error})."
+        ) from error
 
+
+def _build_mesh(document: dict, binary: bytes, path: str, name: str) -> bpy.types.Mesh:
     accessors = _Accessors(document, binary)
     positions, normals, uvs, corners, slots = [], [], [], [], []
     has_normals = True
@@ -186,14 +197,15 @@ class _Accessors:
         if view.get("buffer", 0) != 0:
             raise self._malformed()
 
-        count = int(accessor.get("count", 0))
+        count = self._int(accessor.get("count", 0))
         dtype = np.dtype(kind)
         element = dtype.itemsize * width
-        stride = int(view.get("byteStride") or element)
-        start = int(view.get("byteOffset", 0)) + int(accessor.get("byteOffset", 0))
+        stride = self._int(view.get("byteStride") or element)
+        view_start = self._int(view.get("byteOffset", 0))
+        start = view_start + self._int(accessor.get("byteOffset", 0))
         end = start + (stride * (count - 1) + element if count else 0)
-        limit = min(len(self._binary), int(view.get("byteOffset", 0)) + int(view.get("byteLength", 0)))
-        if count < 0 or stride < element or end > limit:
+        limit = min(len(self._binary), view_start + self._int(view.get("byteLength", 0)))
+        if stride < element or end > limit:
             raise self._malformed()
 
         if stride == element:
@@ -215,6 +227,14 @@ class _Accessors:
         return items[index]
 
     @staticmethod
+    def _int(value) -> int:
+        """A size or offset: a non-negative integer, or the file is refused. A string, a float
+        or a negative offset would otherwise reach ``np.frombuffer`` as something else."""
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise _Accessors._malformed()
+        return value
+
+    @staticmethod
     def _malformed() -> contract.EditableMeshError:
         return contract.EditableMeshError(
             "the model's geometry is stored in a form this reader does not take")
@@ -234,7 +254,12 @@ def _display_name(path: str | None) -> str:
     if len(name.encode("utf-8")) <= _NAME_LIMIT:
         return name
     digest = hashlib.sha1(label.encode("utf-8")).hexdigest()[:8]
-    return f"{DISPLAY_PREFIX}…{label[-(_NAME_LIMIT - len(DISPLAY_PREFIX) - 16):]}#{digest}"
+    # The limit is in BYTES: a character slice of a multi-byte tail would overrun it, Blender
+    # would store a truncated name, and every lookup by the full one would miss.
+    head, tail = f"{DISPLAY_PREFIX}…", f"#{digest}"
+    budget = _NAME_LIMIT - len(head.encode("utf-8")) - len(tail.encode("utf-8"))
+    kept = label.encode("utf-8")[-budget:].decode("utf-8", errors="ignore")
+    return f"{head}{kept}{tail}"
 
 
 def _assign_display_materials(mesh: bpy.types.Mesh, payloads, layout: ProjectLayout) -> None:
@@ -460,11 +485,13 @@ def begin_shared(obj: bpy.types.Object, source: str, layout: ProjectLayout) -> b
 
 # -- save ------------------------------------------------------------------------------------------
 
-def publish(scene: bpy.types.Scene, layout: ProjectLayout | None) -> int:
+def publish(scene: bpy.types.Scene, layout: ProjectLayout | None, warn=None) -> int:
     """Write every edited mesh whose geometry changed back to its GLB; how many were written.
 
     All-or-nothing up to the final replace: every refusal is checked and every export staged
-    before any GLB is touched, so a save that refuses has written nothing.
+    before any GLB is touched, so a save that refuses has written nothing. ``warn`` hears about
+    slots rearranged with no geometry change: nothing is written, and the display refresh after
+    the save puts them back, so the author is told rather than silently reverted.
     """
     owned = _editing_objects(scene)
     if not owned or layout is None:
@@ -483,6 +510,10 @@ def publish(scene: bpy.types.Scene, layout: ProjectLayout | None) -> int:
         state = store.editable_of(obj)
         geometry = fingerprint(obj, depsgraph)
         if geometry == state.geometry:
+            if warn is not None and _slots_changed(obj, state):
+                warn(f"'{obj.name}': its material slots were rearranged; the game binds materials by "
+                     "slot order, so they were put back. Change a slot's material in the Components "
+                     "panel.")
             continue
         _refuse_changed_on_disk(obj, state, layout)
         _refuse_changed_slots(obj, state)
@@ -558,12 +589,16 @@ def _refuse_changed_on_disk(obj, state: store.EditableMesh, layout: ProjectLayou
         )
 
 
-def _refuse_changed_slots(obj, state: store.EditableMesh) -> None:
+def _slots_changed(obj, state: store.EditableMesh) -> bool:
     expected = display_names(_payloads(obj), state.slots)
-    actual = [slot.material.name if slot.material is not None else None for slot in obj.material_slots]
-    if actual != expected:
+    shown = [slot.material.name if slot.material is not None else None for slot in obj.material_slots]
+    return shown != expected
+
+
+def _refuse_changed_slots(obj, state: store.EditableMesh) -> None:
+    if _slots_changed(obj, state):
         raise contract.EditableMeshError(
-            f"'{obj.name}': its material slots changed ({len(actual)} now, {len(expected)} when it "
+            f"'{obj.name}': its material slots changed ({len(obj.material_slots)} now, {state.slots} when it "
             "was loaded, or in another order). The game binds its Materials entries to the mesh "
             "by slot order, so keep the slots as they were -- one per entry, each showing its "
             "entry's material -- and change a slot's material in the Components panel."

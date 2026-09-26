@@ -168,6 +168,7 @@ class TestSplice:
 
     def test_materials_textures_images_nodes_and_extras_are_kept(self):
         original = shared_model()
+        original[0]["buffers"][0].update({"name": "geometry", "extras": {"tool": "dcc"}})
         document, binary = spliced(original, EDITED)
 
         for key in ("materials", "textures", "samplers", "scenes", "scene"):
@@ -177,6 +178,8 @@ class TestSplice:
         assert [p["material"] for m in document["meshes"] for p in m["primitives"]] == [0, 1, 1]
         view = document["bufferViews"][document["images"][0]["bufferView"]]
         assert binary[view["byteOffset"]:view["byteOffset"] + view["byteLength"]] == IMAGE
+        assert document["buffers"] == [
+            {"byteLength": len(binary), "name": "geometry", "extras": {"tool": "dcc"}}]
 
     def test_normals_and_tangents_are_carried_into_the_nodes_space(self):
         document, binary = spliced(shared_model(), EDITED)
@@ -241,6 +244,20 @@ class TestUnsupported:
         change(document)
 
         assert words in (shared_mesh.unsupported(document) or "")
+
+    def test_a_model_without_meshes_is_refused_not_raised(self):
+        # The reviewer's reproduction: one embedded buffer, an image, no ``meshes`` member.
+        document = {"scenes": [{"nodes": [0]}], "nodes": [{}], "buffers": [{"byteLength": 4}],
+                    "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 4}],
+                    "images": [{"bufferView": 0, "mimeType": "image/png"}]}
+
+        assert shared_mesh.unsupported(document) is not None
+
+    def test_primitives_of_the_wrong_shape_are_refused_not_raised(self):
+        document = shared_model()[0]
+        document["meshes"][0]["primitives"][0]["attributes"] = ["POSITION"]
+
+        assert shared_mesh.unsupported(document) is not None
 
 
 OWNER = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"

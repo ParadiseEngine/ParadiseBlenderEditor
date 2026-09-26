@@ -51,11 +51,19 @@ _BIN_CHUNK = b"BIN\x00"
 _REBUILT = frozenset({"attributes", "indices", "mode", "targets"})
 
 
-def unsupported(document: dict) -> str | None:
-    """Why the shared model ``document`` cannot be edited in place, or ``None``."""
+def unsupported(document) -> str | None:
+    """Why the shared model ``document`` cannot be edited in place, or ``None``. Never raises:
+    a GLB is untrusted input, and a malformed one is a refusal like any other."""
     problem = editable_mesh.unsupported(document)
     if problem is not None:
         return problem
+    try:
+        return _unsupported(document)
+    except (TypeError, ValueError, KeyError, IndexError, AttributeError):
+        return "its structure is malformed"
+
+
+def _unsupported(document: dict) -> str | None:
     if editable_mesh.owner_of_document(document) is not None:
         return "it is the mesh of one object; edit it on that object"
 
@@ -70,7 +78,7 @@ def unsupported(document: dict) -> str | None:
         if isinstance(node, dict) and "mesh" in node and index not in reached:
             return f"node {index} holds a mesh the default scene does not show"
 
-    meshes = document["meshes"]
+    meshes = document.get("meshes") or []
     geometry: set = set()
     for _node, mesh, world in instances:
         if abs(_determinant(world)) < 1e-12:
@@ -146,7 +154,8 @@ def splice(original: tuple[dict, bytes], exported: tuple[dict, bytes]) -> bytes:
     out["meshes"] = meshes
     out["accessors"] = accessors
     out["bufferViews"] = views
-    out["buffers"] = [{"byteLength": len(writer.data)}]
+    # The one buffer keeps its name, extras and extensions; only its length is the new chunk's.
+    out["buffers"] = [{**document["buffers"][0], "byteLength": len(writer.data)}]
     return _container(out, bytes(writer.data))
 
 

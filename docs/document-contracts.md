@@ -243,7 +243,14 @@ is that walk, and `materialize/editable_mesh.build_mesh` rebuilds a GLB as one m
 per primitive in that order. Blender's importer cannot do it: it merges primitives that share a
 material, and names objects after nodes that ShiningPie's multi-part models reuse by the dozen,
 so neither slots nor parts could be matched afterwards. Slot materials in Blender are display
-only (`Paradise/<material document>`), assigned from `Slots` on load and after every save.
+only (`Paradise/<material document>`, cut to Blender's 63-byte name limit by UTF-8 bytes with a
+digest), assigned from `Slots` on load and after every save.
+
+**A GLB is untrusted input.** A merge, a teammate or a hand edit can put anything in it, so
+`unsupported`, `shared_mesh.unsupported` and `build_mesh` answer a malformed field -- a transform
+that is not finite numbers, a string or negative offset, a missing `meshes`, a primitive of the
+wrong shape -- with a refusal (`EditableMeshError`), never a raw exception: the operators report
+it, and a load shows that object as the read-only instance instead of aborting.
 
 **The GLB is written with placeholder materials.** `export_materials='PLACEHOLDER'` keeps one
 primitive per used slot and writes no `materials` array, and `AssetExtractor.HasAuthoredParts`
@@ -260,7 +267,8 @@ every document check and before the document is written. An unchanged fingerprin
 nothing, so an untouched scene writes zero bytes. A changed one is refused when the GLB's bytes
 moved on disk, when the slots no longer show `Slots` in order, or when a slot lost all its faces
 (the exporter drops that slot's primitive, shifting every binding after it). Every export is
-staged before any GLB is renamed into place, so a refusal writes nothing.
+staged before any GLB is renamed into place, so a refusal writes nothing. Slots rearranged with
+no geometry change write nothing either; the display refresh puts them back and the save warns.
 
 **A reload keeps the author's object while its GLB is unchanged.** `load_document` takes owned
 objects out of the scene before clearing it (`editable_mesh.stash`) and hands each back when the

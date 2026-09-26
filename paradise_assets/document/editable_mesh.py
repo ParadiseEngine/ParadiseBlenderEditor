@@ -127,10 +127,20 @@ def _default_scene(document: dict) -> dict | None:
     return scene if isinstance(scene, dict) else None
 
 
-def unsupported(document: dict) -> str | None:
-    """Why this GLB's geometry cannot be rebuilt primitive by primitive, or ``None``."""
-    if not document:
+def unsupported(document) -> str | None:
+    """Why this GLB's geometry cannot be rebuilt primitive by primitive, or ``None``.
+
+    A GLB on disk is untrusted -- a merge, a teammate, a hand edit -- so a field of the wrong
+    shape is an answer here, never an exception for the caller to miss."""
+    if not isinstance(document, dict) or not document:
         return "it is not a readable GLB"
+    try:
+        return _unsupported(document)
+    except (TypeError, ValueError, KeyError, IndexError, AttributeError):
+        return "its structure is malformed"
+
+
+def _unsupported(document: dict) -> str | None:
     if document.get("skins"):
         return "it is rigged; a skinned mesh is edited in its source file"
     if document.get("animations"):
@@ -139,7 +149,10 @@ def unsupported(document: dict) -> str | None:
     if required:
         return f"it stores geometry compressed ({', '.join(sorted(required))})"
     meshes = document.get("meshes") or []
-    for node, mesh, _world in mesh_instances(document):
+    instances = mesh_instances(document)
+    if not instances:
+        return "its default scene shows no mesh"
+    for node, mesh, _world in instances:
         primitives = meshes[mesh].get("primitives") if isinstance(meshes[mesh], dict) else None
         if not isinstance(primitives, list):
             return f"node {node} names a mesh with no primitives list"
@@ -189,10 +202,11 @@ def mesh_instances(document: dict) -> list[tuple[int, int, tuple[float, ...]]]:
 
 
 def _local_matrix(node: dict) -> tuple[float, ...]:
-    """A node's local transform, column-major: its ``matrix``, else T * R * S."""
+    """A node's local transform, column-major: its ``matrix``, else T * R * S. ``ValueError``
+    for a transform that is not numbers: a guessed one would put the geometry somewhere else."""
     matrix = node.get("matrix")
     if isinstance(matrix, list) and len(matrix) == 16:
-        return tuple(float(value) for value in matrix)
+        return tuple(_number(value) for value in matrix)
 
     tx, ty, tz = _numbers(node.get("translation"), 3, (0.0, 0.0, 0.0))
     x, y, z, w = _numbers(node.get("rotation"), 4, (0.0, 0.0, 0.0, 1.0))
@@ -211,7 +225,13 @@ def _local_matrix(node: dict) -> tuple[float, ...]:
 def _numbers(value, count: int, default: tuple[float, ...]) -> tuple[float, ...]:
     if not isinstance(value, list) or len(value) != count:
         return default
-    return tuple(float(item) for item in value)
+    return tuple(_number(item) for item in value)
+
+
+def _number(value) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ValueError(f"{value!r} is not a finite number")
+    return float(value)
 
 
 def _multiply(a: tuple[float, ...], b: tuple[float, ...]) -> tuple[float, ...]:

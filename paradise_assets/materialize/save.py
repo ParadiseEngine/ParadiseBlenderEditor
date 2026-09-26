@@ -127,7 +127,7 @@ def save_prefab(scene: bpy.types.Scene, *, invoke_actions: bool = True) -> SaveR
     # Every document check has passed, so the meshes go next: a mesh refusal still leaves the
     # document untouched, and the GLBs a document references are on disk before it is.
     try:
-        result.meshes = editable_mesh.publish(scene, layout)
+        result.meshes = editable_mesh.publish(scene, layout, result.warnings.append)
     except EditableMeshError as error:
         raise SaveError(str(error)) from error
 

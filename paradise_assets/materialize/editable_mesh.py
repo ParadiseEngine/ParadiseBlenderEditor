@@ -33,11 +33,11 @@ import numpy as np
 from mathutils.kdtree import KDTree
 
 from ..document import editable_mesh as contract
-from ..document import gltf, material_document, shared_mesh
+from ..document import gltf, material_document, model_source, shared_mesh
 from ..document import guid as document_guid
 from ..document.project import ProjectLayout
 from . import store
-from .meshes import SOURCE_KEY, MeshLibrary
+from .meshes import SOURCE_KEY, MeshLibrary, glb_of
 
 __all__ = [
     "begin_shared",
@@ -551,14 +551,21 @@ def _write_glb(mesh: bpy.types.Mesh, path: str, name: str, owner: str | None) ->
 
 def write_initial(obj: bpy.types.Object, target: str) -> int:
     """Copy the shared model ``obj`` shows into ``target``, a GLB ``obj`` owns. Returns the slot
-    count. The file lands whole (temp beside it, then replace) or not at all."""
+    count. The file lands whole (temp beside it, then replace) or not at all.
+
+    A ``.blend``/``.fbx`` model is copied from its converted GLB: that file's primitives are the
+    slots the engine binds, so slot ``i`` here is the ``Slots[i]`` the placement already had."""
     collection = obj.instance_collection
     source = collection.get(SOURCE_KEY) if collection is not None else None
     if not isinstance(source, str) or not os.path.isfile(source):
         raise contract.EditableMeshError(f"'{obj.name}' does not show a model this scene imported.")
 
     name = store.document_name(obj) or obj.name
-    mesh = build_mesh(source, name)
+    try:
+        glb = glb_of(source)
+    except model_source.ConversionError as error:
+        raise contract.EditableMeshError(str(error)) from error
+    mesh = build_mesh(glb, name)
     slots = len(mesh.materials)
     os.makedirs(os.path.dirname(target), exist_ok=True)
     staged = _staging_file(target)
@@ -602,6 +609,8 @@ def shared_source(obj: bpy.types.Object, layout: ProjectLayout) -> str:
         raise contract.EditableMeshError(f"'{obj.name}' does not show a model this scene imported.")
     if not contract.is_inside(source, layout.assets):
         raise contract.EditableMeshError(f"{source} is outside {layout.assets}.")
+    if model_source.is_converted(source):
+        raise contract.EditableMeshError(model_source.edit_in_place_refusal(source))
     problem = shared_mesh.unsupported(gltf.read_json(source))
     if problem is not None:
         raise contract.EditableMeshError(f"{os.path.basename(source)} cannot be edited in place: {problem}.")

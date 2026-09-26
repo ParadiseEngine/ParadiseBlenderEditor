@@ -80,8 +80,9 @@ def load_document(
     mesh_fields = schema.load(layout.root)
     if not mesh_fields.from_schema:
         result.warn(
-            "no authoring-schema.json found; mesh references are detected by their .glb "
-            "extension instead (build the game's launcher to get the real schema)"
+            "no authoring-schema.json found; mesh references are detected by their extension "
+            "(.mesh, .skinnedmesh, .glb, .blend, .fbx) instead (build the game's launcher to get "
+            "the real schema)"
         )
 
     # Instances are expanded for DISPLAY only; the resolved children are marked derived so save
@@ -162,7 +163,7 @@ def _create_object(
     kept: dict,
 ) -> bpy.types.Object:
     reference = _mesh_reference(entry, mesh_fields)
-    # The field names a mesh DOCUMENT; the GLB it was compiled from is what Blender imports.
+    # The field names a mesh DOCUMENT; the model it was extracted from is what Blender shows.
     source = mesh_document.displayable(layout, reference) if reference is not None else None
 
     obj = None

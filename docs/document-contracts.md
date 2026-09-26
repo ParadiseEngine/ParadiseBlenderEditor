@@ -101,6 +101,20 @@ The glTF importer's own leftovers are handled where they are made: `meshes.py` d
 move left empty — `glTF_not_exported` otherwise sits in the Outliner beside the library for the
 life of the session.
 
+**A `.blend`/`.fbx` model is shown through the GLB the pipeline extracts from.** A model is a
+`.glb`, `.blend` or `.fbx` under `assets/` (`document/model_source.py`). The engine converts the
+latter two with a headless Blender into `.editor/converted/<assets-relative source>.glb`, stamped
+with the source's SHA-256 in `asset.extras.paradiseSourceSha256`, and extracts meshes, clips and
+materials from that file. The library imports the same file rather than opening the source with
+Blender's own importers, so what the viewport shows is what the game gets; when it is missing or
+its stamp no longer matches the source, `meshes.glb_of` runs `paradise assets convert` (the
+converted path is the last line it prints). The library collection is keyed and stamped by the
+SOURCE, plus the converted GLB's stamp, so saving the `.blend` is what re-imports it on the next
+load. Readers that must not start a process -- the clip panel's draw -- use
+`model_source.current_glb`, which answers only from a conversion that is already current. A
+source's identity and `[glb]` settings live in its own sidecar (`car.blend.meta`), exactly as a
+`.glb`'s do.
+
 **A GROUP is an Empty, and the format knows nothing about it.** A document object carrying only
 `meta` and `transform` whose members are its children is shown exactly like every other object:
 an Empty with Blender parenting, which the Outliner nests, drags, and moves as a unit. An earlier
@@ -302,6 +316,15 @@ otherwise the library's stamp check re-imports on the next load. A reload hands 
 back while the GLB's bytes are unchanged (`materialize_shared`); nothing records the edit outside
 this scene, and Finish Editing Shared Mesh saves, drops the object and reloads. One object edits
 a given model at a time (`shared_editor`), or two would each overwrite the other.
+
+**A converted model is edited where it comes from.** Make Mesh Editable on a `.blend`/`.fbx`
+placement builds from the converted GLB (`meshes.glb_of`): its primitives are what the engine
+extracted, so slot `i` is still the `Slots[i]` the placement had. Edit Shared Mesh refuses one
+(its poll names the reason): the converted GLB is derived, and the next conversion would drop a
+splice. "Edit Source in New Blender" opens a `.blend` source as the main file of a second
+Blender instead, where quads and modifiers are intact; its save is picked up by the watcher,
+which converts and re-extracts, and the library's source stamp re-imports it on the next load.
+An FBX is interchange, so it is refused with the advice to re-export it from its DCC.
 
 ## Schema, identity and extraction
 

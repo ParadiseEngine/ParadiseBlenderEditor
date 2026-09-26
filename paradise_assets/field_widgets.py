@@ -412,9 +412,9 @@ def _bind_range(slot, field) -> None:
         slot.range_max = 1.0
 
 
-#: Extensions that name the same KIND of thing, so a picker offered one offers the other. Only
-#: glTF has such a pair; every other document kind is one suffix.
-_INTERCHANGEABLE = ((".glb", ".gltf"),)
+#: Extensions that name the same KIND of thing, so a picker offered one offers the others. Only
+#: models have such a set; every other document kind is one suffix.
+_INTERCHANGEABLE = ((".glb", ".gltf", ".blend", ".fbx"),)
 
 
 def _kinds_of(field, value) -> list:

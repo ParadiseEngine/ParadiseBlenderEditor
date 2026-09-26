@@ -1,8 +1,11 @@
-"""Per-clip root-motion settings, authored into a GLB's ``[glb]`` sidecar domain.
+"""Per-clip root-motion settings, authored into a model's ``[glb]`` sidecar domain.
 
-The engine reads per-clip import settings from ``<model>.glb.meta`` (the ``[glb]`` domain --
-the same place ``optimize`` lives), keyed by the clip's **glTF animation index** because that
-survives a rename in the DCC where a name does not. Each entry is one inline table::
+The engine reads per-clip import settings from ``<model>.meta`` (the ``[glb]`` domain -- the
+same place ``optimize`` lives; a ``.blend``/``.fbx`` model has the same domain as a ``.glb``),
+keyed by the clip's **glTF animation index** because that survives a rename in the DCC where a
+name does not. For a ``.blend``/``.fbx`` the index is the one in its converted GLB, which is what
+the pipeline extracts clips from and so what the clip table is read from here. Each entry is one
+inline table::
 
     [glb]
     clips = [ { index = 2, name = "Walk_Loop", root_motion = true, root_bone = "root" } ]
@@ -32,7 +35,7 @@ import os
 import tomllib
 from dataclasses import dataclass
 
-from . import atomic, canonical_toml, gltf, sidecar
+from . import atomic, canonical_toml, gltf, model_source, sidecar
 from . import guid as document_guid
 
 __all__ = [
@@ -122,18 +125,22 @@ _META_CACHE: dict[str, tuple[str, dict | None]] = {}
 
 
 def rig(path: str) -> Rig | None:
-    """The GLB's clips and skin joints, or ``None`` when the file is not a readable GLB."""
+    """The clips and skin joints of the model at ``path`` -- read from its current converted GLB
+    for a ``.blend``/``.fbx`` -- or ``None`` when there is no readable GLB to read them from."""
+    glb = model_source.current_glb(path)
+    if glb is None:
+        return None
     try:
-        stat = os.stat(path)
+        stat = os.stat(glb)
     except OSError:
         return None
 
-    cached = _RIG_CACHE.get(path)
+    cached = _RIG_CACHE.get(glb)
     if cached is not None and cached[:2] == (stat.st_mtime_ns, stat.st_size):
         return cached[2]
 
-    found = _rig_of(gltf.read_json(path))
-    _RIG_CACHE[path] = (stat.st_mtime_ns, stat.st_size, found)
+    found = _rig_of(gltf.read_json(glb))
+    _RIG_CACHE[glb] = (stat.st_mtime_ns, stat.st_size, found)
     return found
 
 
@@ -286,7 +293,9 @@ def _apply(
     info = rig(glb_path)
     glb_name = os.path.basename(glb_path)
     if info is None:
-        raise ClipSettingsError(f"{glb_name} is not a readable GLB")
+        raise ClipSettingsError(
+            f"{glb_name} has no current converted GLB to read its clips from; reload the document "
+            "to convert it" if model_source.is_converted(glb_path) else f"{glb_name} is not a readable GLB")
     if not 0 <= index < len(info.clips):
         raise ClipSettingsError(
             f"{glb_name} has {len(info.clips)} clip(s); there is no clip {index}")

@@ -348,7 +348,7 @@ def _is_our_mesh(layout: ProjectLayout, path: str, glb: str) -> bool:
     document = path[: -len(sidecar.SUFFIX)] if path.endswith(sidecar.SUFFIX) else path
     if not mesh_document.is_document(document):
         return False
-    source = mesh_document.glb_for(layout, layout.relative(document))
+    source = mesh_document.source_for(layout, layout.relative(document))
     return source is not None and _same_file(source, glb)
 
 

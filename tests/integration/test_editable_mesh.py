@@ -28,7 +28,7 @@ import addon_utils
 from paradise_assets import watch
 from paradise_assets.document import editable_mesh as ownership
 from paradise_assets.document import gltf, material_document, prefab, project, sidecar
-from paradise_assets.materialize import load, save, store
+from paradise_assets.materialize import editable_mesh, load, save, store
 from paradise_assets.play import host
 
 LEVEL = "levels/test.prefab"
@@ -37,6 +37,10 @@ CUBE = "prefabs/models/Prim_Cube.prefab"
 BENCH = "prefabs/models/NCP_Shelter_bench_8cbd278d.prefab"
 #: Thirteen nodes that all share one name: parts cannot be told apart by name.
 TRUCK = "prefabs/models/HighwayTruck_A.prefab"
+#: A generated sphere whose seam and pole rows differ by float rounding, not by position.
+SPHERE = "prefabs/models/Prim_Sphere.prefab"
+#: Parts that meet a corner against a neighbour's edge (T-junctions), and zero-area slivers.
+CAR = "models/Car_Body.glb"
 
 
 def enable():
@@ -89,6 +93,41 @@ def slot_faces(obj) -> list[int]:
     for polygon in obj.data.polygons:
         counts[polygon.material_index] += 1
     return counts
+
+
+def open_edges(obj) -> int:
+    """Edges with one face: on a closed model, every one is a seam that did not weld."""
+    bm = bmesh.new()
+    try:
+        bm.from_mesh(obj.data)
+        return sum(edge.is_boundary for edge in bm.edges)
+    finally:
+        bm.free()
+
+
+def loose_corners(mesh, tolerance=1e-5) -> int:
+    """Vertices lying inside an edge of a face they are not part of: a T-junction, where
+    dragging the vertex tears it away from the face whose edge it sits on."""
+    tree = KDTree(len(mesh.vertices))
+    for vertex in mesh.vertices:
+        tree.insert(vertex.co, vertex.index)
+    tree.balance()
+    faces_of = [set() for _ in mesh.vertices]
+    for polygon in mesh.polygons:
+        for index in polygon.vertices:
+            faces_of[index].add(polygon.index)
+    count = 0
+    for edge in mesh.edges:
+        a, b = (mesh.vertices[index].co for index in edge.vertices)
+        length = (b - a).length
+        direction = (b - a) / length
+        faces = faces_of[edge.vertices[0]] & faces_of[edge.vertices[1]]
+        for co, index, _ in tree.find_range((a + b) / 2, length / 2 + tolerance):
+            along = (co - a).dot(direction)
+            if (tolerance < along < length - tolerance and (a + direction * along - co).length <= tolerance
+                    and not faces & faces_of[index]):
+                count += 1
+    return count
 
 
 def primitive_triangles(path) -> list[int]:
@@ -160,7 +199,7 @@ def run(source, root):
     assert cube.type == "MESH" and cube.instance_collection is None
     assert same_points(world_points(cube), shown), "the editable mesh does not stand where the instance did"
     assert len(cube.data.vertices) == 8, "the GLB's split corners must weld back to one vertex per corner"
-    assert all(len(edge.link_faces) == 2 for edge in cube.data.edges), "every edge of a cube is shared"
+    assert open_edges(cube) == 0, "every edge of a cube is shared"
     glb = owned_glb(layout, level, guid)
     assert Path(glb).parent == Path(level).with_suffix(""), glb
     assert ownership.owner_of(glb) == guid
@@ -258,6 +297,18 @@ def run(source, root):
     assert len(truck.material_slots) == len(primitive_triangles(layout.resolve("models/HighwayTruck_A.glb")))
     assert same_points(world_points(truck), shown), "a multi-node model was reassembled wrongly"
     print("PASS a model of same-named nodes is rebuilt where every part stood")
+
+    # -- rows split by float rounding weld too: a closed sphere edits as one surface -----------
+    sphere_guid = place(layout, SPHERE)
+    assert make_editable(store.object_with_guid(scene, sphere_guid)) == {"FINISHED"}
+    assert open_edges(store.object_with_guid(scene, sphere_guid)) == 0, "the sphere's seam did not weld"
+    print("PASS rows that differ only by float rounding weld into one closed surface")
+
+    # -- parts joined corner-to-edge are stitched: a vertex on a neighbour's edge drags it along --
+    car = editable_mesh.build_mesh(layout.resolve(CAR), "Car_Body")
+    assert loose_corners(car) == 0, "a vertex still sits on another face's edge without joining it"
+    bpy.data.meshes.remove(car)
+    print("PASS a model whose parts meet corner-to-edge edits as one stitched surface")
 
     # -- the engine side: verify is quiet about owned GLBs, and the level builds ---------------
     watch.stop_all()

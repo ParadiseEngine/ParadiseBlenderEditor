@@ -1,10 +1,11 @@
 """Per-clip root-motion settings, authored into a model's ``[glb]`` sidecar domain.
 
 The engine reads per-clip import settings from ``<model>.meta`` (the ``[glb]`` domain -- the
-same place ``optimize`` lives; a ``.blend``/``.fbx`` model has the same domain as a ``.glb``),
-keyed by the clip's **glTF animation index** because that survives a rename in the DCC where a
-name does not. For a ``.blend``/``.fbx`` the index is the one in its converted GLB, which is what
-the pipeline extracts clips from and so what the clip table is read from here. Each entry is one
+same place ``optimize`` lives; a converted model has the same domain as a ``.glb``), keyed by
+the clip's **glTF animation index** because that survives a rename in the DCC where a name does
+not. For a converted source (a ``.blend``, an ``.fbx``, a ``.bvh`` ...) the index is the one in
+its converted GLB, which is what the pipeline extracts clips from and so what the clip table is
+read from here. Each entry is one
 inline table::
 
     [glb]
@@ -126,7 +127,7 @@ _META_CACHE: dict[str, tuple[str, dict | None]] = {}
 
 def rig(path: str) -> Rig | None:
     """The clips and skin joints of the model at ``path`` -- read from its current converted GLB
-    for a ``.blend``/``.fbx`` -- or ``None`` when there is no readable GLB to read them from."""
+    for a converted source -- or ``None`` when there is no readable GLB to read them from."""
     glb = model_source.current_glb(path)
     if glb is None:
         return None

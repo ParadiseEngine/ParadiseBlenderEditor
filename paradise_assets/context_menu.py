@@ -151,6 +151,9 @@ class PARADISE_ASSETS_OT_edit_model_source(Operator):
         source = _model_source_of(context.active_object)
         if source is None or not model_source.is_converted(source):
             return False
+        if model_source.is_skeleton_only(source):
+            cls.poll_message_set(model_source.no_mesh_refusal(source))
+            return False
         if not source.lower().endswith(".blend"):
             cls.poll_message_set(model_source.edit_in_place_refusal(source))
             return False
@@ -212,8 +215,8 @@ def _draw(self, context) -> None:
             "paradise_assets.make_mesh_editable",
             text="Make Mesh Editable",
             icon="EDITMODE_HLT")
-        # A converted model's GLB is derived, so it is edited where it comes from instead; an
-        # FBX's row stays, greyed, so its tooltip can say where that is.
+        # A converted model's GLB is derived, so it is edited where it comes from instead; any
+        # other format's row stays, greyed, so its tooltip can say where that is.
         if model_source.is_converted(_model_source_of(obj) or ""):
             column.operator(
                 PARADISE_ASSETS_OT_edit_model_source.bl_idname,

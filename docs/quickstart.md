@@ -63,7 +63,8 @@ The Project panel appears whenever this `.blend` sits inside a project — the w
    — that is where your camera and selection live. Its objects are then rematerialized from the
    document regardless, so an edit made by another tool is never shown stale.
 2. The document's objects appear, meshes instanced from the models the document references (a
-   `.blend` or `.fbx` model is shown through the GLB the pipeline converts it to).
+   model that is not a `.glb` -- `.blend`, `.fbx`, `.obj`, ... -- is shown through the GLB the
+   pipeline converts it to).
 3. `paradise assets watch` starts for the project.
 
 ## 4. Place something
@@ -134,8 +135,10 @@ disk refuses the save), plus:
 
 A model made from a `.blend` offers **Edit Source in New Blender** instead: the `.blend` opens in
 a second Blender, where its quads and modifiers are still there. Save it; the watcher re-extracts
-it, and placements show the change when their document is reloaded. A model made from an `.fbx`
-is edited in the application that exported it, then exported again.
+it, and placements show the change when their document is reloaded. A model made from any other
+format (`.fbx`, `.obj`, `.usd`, ...) is edited in the application that exported it, then exported
+again. A model with no mesh -- a `.bvh`, a skeleton and its animation -- has nothing to make
+editable; its clips are set up in the Components panel's Animation clips section.
 
 ## 5. Edit components
 
@@ -213,15 +216,18 @@ preserve their stored identities. Linked `.blend` libraries are unnecessary: can
 
 ## 9. Import an existing model
 
-Drop a `.glb`, `.blend` or `.fbx` under `assets/` and run:
+Drop a `.glb`, `.blend`, `.fbx`, `.gltf`, `.obj`, `.ply`, `.stl`, `.usd`/`.usda`/`.usdc`/`.usdz`, `.abc` or `.bvh` under `assets/` and run:
 
 ```bash
 paradise assets extract assets/models/Crate.blend
 ```
 
-A `.blend` or `.fbx` is converted to a GLB by a headless Blender first
-(`.editor/converted/models/Crate.blend.glb`), and everything is extracted from that GLB; the
-source file itself is never written. Keeping the `.blend` as the model means its quads,
+Anything but a `.glb` is converted to a GLB by a headless Blender first
+(`.editor/converted/models/Crate.blend.glb`), with each importer's default axes and scale, and
+everything is extracted from that GLB; the source file itself is never written. The conversion
+records every file the import read beside the source -- an `.obj`'s `.mtl`, its textures, a
+`.gltf`'s `.bin` -- so editing any of them converts it again too. A `.bvh` (animation only)
+extracts a `.skeleton` and its `.anim` clips, and no mesh or prefab. Keeping the `.blend` as the model means its quads,
 modifiers and welded topology stay editable: save it and the watcher converts and extracts again.
 
 Models without prefabs receive one, making them placeable. The destination is the model's
@@ -239,7 +245,7 @@ nothing deletes it.
 |---|---|
 | `assets/` | the source of truth — documents, models, textures, and a `.meta` beside each |
 | `.editor/blend/` | working `.blend` files, one per document. Disposable |
-| `.editor/converted/` | GLBs converted from `.blend`/`.fbx` models. Disposable |
+| `.editor/converted/` | GLBs converted from every model that is not a `.glb`. Disposable |
 | `.editor/asset-library/` | the Asset Browser catalogue and its thumbnails. Disposable |
 | `.editor/authoring-schema.json` | the game's component schema, dumped by its launcher build |
 | `build/` | what the CLI compiles and the game loads. Disposable |

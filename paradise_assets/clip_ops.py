@@ -20,7 +20,7 @@ __all__ = ["classes", "model_for_object"]
 
 
 def model_for_object(obj, project_layout) -> str | None:
-    """The model (``.glb``, ``.blend`` or ``.fbx``) ``obj``'s components name, resolved through
+    """The model (a ``.glb`` or any converted source) ``obj``'s components name, resolved through
     its mesh document.
 
     Mirrors ``load._mesh_reference`` for the panel's dict-shaped component payloads: the

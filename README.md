@@ -21,7 +21,7 @@ assets/levels/*.prefab  ──Blender──▶  assets/levels/*.prefab
 | **Blender 5.2+** | the manifest's floor; Blender refuses to enable the extension below it |
 | **the `paradise` CLI** | Fetched automatically at the version the project pins (`ParadiseVersion` in its `Directory.Packages.props`), cached per version under `~/.paradise/cli/`. Set *Paradise CLI* in preferences to override — a ParadiseEngine checkout, say. Falls back to the installed dotnet tool when a project pins nothing, or the pinned version cannot be fetched |
 | KTX-Software (`ktx`) | *optional* — but the engine's glTF reader rejects PNG/JPEG, so textured meshes need it. The CLI does the transcode; the addon only passes the path along |
-| Blender, for the CLI | only for `.blend`/`.fbx` models: the CLI converts them to GLB with a headless Blender. Set `PARADISE_BLENDER_PATH` when it cannot find one |
+| Blender, for the CLI | only for models that are not `.glb`: the CLI converts them to GLB with a headless Blender. Set `PARADISE_BLENDER_PATH` when it cannot find one |
 
 Nothing here is .NET. The addon is pure Python and shells out to the CLI.
 
@@ -135,11 +135,15 @@ Right-clicking a **document object** — in the Outliner or in the viewport — 
 - **Edit Source in New Blender** — instead of Edit Shared Mesh, on a model made from a `.blend`:
   opens that `.blend` in a *second* Blender, where quads and modifiers stay. Saving it there
   re-extracts the model, and placements show the change on their next reload. A model made from
-  an `.fbx` is edited in the application that exported it.
+  any other format (an `.fbx`, an `.obj`, ...) is edited in the application that exported it.
 
-Models are `.glb`, `.blend` or `.fbx` files under `assets/`. The pipeline converts a `.blend` or
-`.fbx` to a GLB under `.editor/converted/` and extracts from that; the viewport shows the same
-GLB, running `paradise assets convert` when it is missing or older than its source.
+Models are files under `assets/` in any format Blender imports: `.glb` is read as it is; `.blend`,
+`.fbx`, `.gltf`, `.obj`, `.ply`, `.stl`, `.usd`/`.usda`/`.usdc`/`.usdz`, `.abc` or `.bvh` are converted to a GLB under `.editor/converted/` by a
+headless Blender, and the pipeline extracts from that. The viewport shows the same GLB, running
+`paradise assets convert` when it is missing or older than its source or any file the import read
+(an `.obj`'s `.mtl`, a texture, a `.gltf`'s buffers). A `.bvh` holds a skeleton and animation
+only: it gives `.skeleton` and `.anim` documents and its clips are set up in the Components panel,
+but it has no mesh to make editable.
 
 On something that belongs to a **prefab instance**, three more appear. Editing a field on an
 instance, or moving one of its children, records an *override*; these are how one ends:

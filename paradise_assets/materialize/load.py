@@ -15,6 +15,7 @@ from ..document import (
     component_schema,
     material_document,
     mesh_document,
+    model_source,
     project,
     schema,
     well_known,
@@ -81,8 +82,8 @@ def load_document(
     if not mesh_fields.from_schema:
         result.warn(
             "no authoring-schema.json found; mesh references are detected by their extension "
-            "(.mesh, .skinnedmesh, .glb, .blend, .fbx) instead (build the game's launcher to get "
-            "the real schema)"
+            f"({', '.join(mesh_document.SUFFIXES + model_source.SUFFIXES)}) instead (build the "
+            "game's launcher to get the real schema)"
         )
 
     # Instances are expanded for DISPLAY only; the resolved children are marked derived so save

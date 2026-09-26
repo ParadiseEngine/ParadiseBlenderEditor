@@ -2,7 +2,7 @@
 
 A prefab references the mesh DOCUMENT (a model ships nothing, and the build refuses a reference
 to one), but Blender can only show the model. The document is a small TOML the engine's extractor
-writes -- ``source = { guid, path }`` naming the model (a ``.glb``, ``.blend`` or ``.fbx``),
+writes -- ``source = { guid, path }`` naming the model (a ``.glb`` or a converted source),
 assets-relative -- so the viewport reads that one field and shows what it points at
 (``model_source`` says which GLB that is). Nothing else in the document is interpreted here.
 """

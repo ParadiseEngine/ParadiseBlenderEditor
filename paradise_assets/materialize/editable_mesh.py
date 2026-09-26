@@ -553,8 +553,8 @@ def write_initial(obj: bpy.types.Object, target: str) -> int:
     """Copy the shared model ``obj`` shows into ``target``, a GLB ``obj`` owns. Returns the slot
     count. The file lands whole (temp beside it, then replace) or not at all.
 
-    A ``.blend``/``.fbx`` model is copied from its converted GLB: that file's primitives are the
-    slots the engine binds, so slot ``i`` here is the ``Slots[i]`` the placement already had."""
+    A converted model is copied from its converted GLB: that file's primitives are the slots the
+    engine binds, so slot ``i`` here is the ``Slots[i]`` the placement already had."""
     collection = obj.instance_collection
     source = collection.get(SOURCE_KEY) if collection is not None else None
     if not isinstance(source, str) or not os.path.isfile(source):
@@ -565,6 +565,8 @@ def write_initial(obj: bpy.types.Object, target: str) -> int:
         glb = glb_of(source)
     except model_source.ConversionError as error:
         raise contract.EditableMeshError(str(error)) from error
+    if not gltf.read_json(glb).get("meshes"):
+        raise contract.EditableMeshError(model_source.no_mesh_refusal(source))
     mesh = build_mesh(glb, name)
     slots = len(mesh.materials)
     os.makedirs(os.path.dirname(target), exist_ok=True)
@@ -609,6 +611,8 @@ def shared_source(obj: bpy.types.Object, layout: ProjectLayout) -> str:
         raise contract.EditableMeshError(f"'{obj.name}' does not show a model this scene imported.")
     if not contract.is_inside(source, layout.assets):
         raise contract.EditableMeshError(f"{source} is outside {layout.assets}.")
+    if model_source.is_skeleton_only(source):
+        raise contract.EditableMeshError(model_source.no_mesh_refusal(source))
     if model_source.is_converted(source):
         raise contract.EditableMeshError(model_source.edit_in_place_refusal(source))
     problem = shared_mesh.unsupported(gltf.read_json(source))

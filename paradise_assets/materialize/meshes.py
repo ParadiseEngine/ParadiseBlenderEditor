@@ -2,9 +2,10 @@
 (ShiningPie: ~117 files across 225 objects). Instancing also makes the geometry uneditable in
 place, which is right: the model owns geometry, and an edit here would vanish on the next load.
 
-A ``.blend``/``.fbx`` model is shown through the GLB the pipeline converts it to
-(``document/model_source.py``), but the library keys, names and stamps the collection by the
-SOURCE: saving the ``.blend`` is what makes the next load re-import it.
+A converted model (``.blend``, ``.fbx``, ``.obj`` ...) is shown through the GLB the pipeline
+converts it to (``document/model_source.py``), but the library keys, names and stamps the
+collection by the SOURCE plus that GLB's stamp: saving the ``.blend`` -- or an ``.obj``'s
+``.mtl`` -- is what makes the next load convert and re-import it.
 """
 
 from __future__ import annotations
@@ -22,8 +23,8 @@ __all__ = ["LIBRARY_COLLECTION", "MeshLibrary", "glb_of"]
 #: One collection per imported model, excluded from the view layer.
 LIBRARY_COLLECTION = "ParadiseAssets/Library"
 
-#: The model source the collection shows: the ``.glb`` imported, or the ``.blend``/``.fbx``
-#: whose converted GLB was. The key predates converted sources; renaming it would orphan every
+#: The model source the collection shows: the ``.glb`` imported, or the converted source whose
+#: GLB was. The key predates converted sources; renaming it would orphan every
 #: existing workfile's library.
 SOURCE_KEY = "paradise_glb_source"
 
@@ -33,9 +34,10 @@ STAMP_KEY = "paradise_glb_stamp"
 
 
 def glb_of(source: str) -> str:
-    """The GLB to read for the model ``source``, converting a ``.blend``/``.fbx`` whose converted
-    GLB is missing or stale through ``paradise assets convert``. Synchronous: the load needs the
-    file before it can show anything, and a current conversion costs no process at all.
+    """The GLB to read for the model ``source``, converting a source whose converted GLB is
+    missing or stale -- the source or a file it depends on changed -- through
+    ``paradise assets convert``. Synchronous: the load needs the file before it can show
+    anything, and a current conversion costs no process at all.
 
     Raises :class:`model_source.ConversionError` with the reason, for the caller to report."""
     found = model_source.current_glb(source)

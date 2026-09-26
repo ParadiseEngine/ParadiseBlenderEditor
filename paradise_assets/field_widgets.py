@@ -26,7 +26,7 @@ from bpy.types import Operator, PropertyGroup
 
 from . import edits
 from .document import assets as asset_index
-from .document import component_schema, project
+from .document import component_schema, model_source, project
 from .materialize import light_preview, store
 
 __all__ = ["attach", "classes", "detach", "draw_item", "sync"]
@@ -414,7 +414,7 @@ def _bind_range(slot, field) -> None:
 
 #: Extensions that name the same KIND of thing, so a picker offered one offers the others. Only
 #: models have such a set; every other document kind is one suffix.
-_INTERCHANGEABLE = ((".glb", ".gltf", ".blend", ".fbx"),)
+_INTERCHANGEABLE = (model_source.SUFFIXES,)
 
 
 def _kinds_of(field, value) -> list:

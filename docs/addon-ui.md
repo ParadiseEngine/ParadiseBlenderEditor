@@ -70,12 +70,13 @@ edit its source prefab to clear it, or use **Revert to Prefab** to restore the i
 
 The Components panel gains an **Animation clips** section when the selected object's mesh
 resolves to a model that carries animations (`document/glb_clips.py` reads the JSON chunk of the
-GLB -- the model itself, or the current converted GLB of a `.blend`/`.fbx`). Each clip row is a
+GLB -- the model itself, or the current converted GLB of any other source, a `.bvh` included).
+Each clip row is a
 root-motion toggle and a root-bone picker; both write the model's `.meta` sidecar immediately —
 the `[glb].clips` domain, keyed by glTF animation index — because the setting belongs to the
 model, not to the open document, and the `.blend` is disposable. A static mesh draws nothing at
-all, and neither does a converted model whose GLB is older than its source: the draw never
-starts a conversion, and the next load (or the watcher) brings it current.
+all, and neither does a converted model whose GLB is older than its source or a file it read:
+the draw never starts a conversion, and the next load (or the watcher) brings it current.
 
 Entries also hang off the object context menus (`context_menu.py`) — the Outliner's and the
 viewport's, one `_draw` for both — gated on the active object being a DOCUMENT object, since a
@@ -84,11 +85,13 @@ in New Blender" starts a second Blender rather than replacing the session: a lev
 it instances are two documents, and making people close one to edit the other is what stops them
 editing it. "Make Mesh Editable" and "Edit Shared Mesh" are drawn only on an object that shows a
 model; on one of a prefab's children Make Mesh Editable stays greyed, and its tooltip says to
-unpack the instance first. Edit Shared Mesh works there, since it writes no document. On a model
-converted from a `.blend`/`.fbx` its row is "Edit Source in New Blender" instead: splicing a
-converted GLB would be overwritten by the next conversion, so the `.blend` opens in a second
-Blender (`bpy.app.binary_path <source>`); an FBX's row is greyed with a tooltip that says to edit
-it where it was exported from.
+unpack the instance first. Edit Shared Mesh works there, since it writes no document. On a
+converted model its row is "Edit Source in New Blender" instead: splicing a converted GLB would
+be overwritten by the next conversion, so a `.blend` opens in a second Blender
+(`bpy.app.binary_path <source>`); any other format's row (FBX, OBJ, USD, ...) is greyed with a
+tooltip, naming that format, that says to edit it where it was exported from. A model whose GLB
+holds no mesh -- a `.bvh` -- greys all three, Make Mesh Editable included, with a tooltip saying
+there is no geometry and pointing at the Animation clips section.
 
 Two rules for anything drawn here:
 

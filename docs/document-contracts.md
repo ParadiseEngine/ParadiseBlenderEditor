@@ -101,16 +101,20 @@ The glTF importer's own leftovers are handled where they are made: `meshes.py` d
 move left empty — `glTF_not_exported` otherwise sits in the Outliner beside the library for the
 life of the session.
 
-**A `.blend`/`.fbx` model is shown through the GLB the pipeline extracts from.** A model is a
-`.glb`, `.blend` or `.fbx` under `assets/` (`document/model_source.py`). The engine converts the
-latter two with a headless Blender into `.editor/converted/<assets-relative source>.glb`, stamped
-with the source's SHA-256 in `asset.extras.paradiseSourceSha256`, and extracts meshes, clips and
-materials from that file. The library imports the same file rather than opening the source with
-Blender's own importers, so what the viewport shows is what the game gets; when it is missing or
-its stamp no longer matches the source, `meshes.glb_of` runs `paradise assets convert` (the
-converted path is the last line it prints). The library collection is keyed and stamped by the
-SOURCE, plus the converted GLB's stamp, so saving the `.blend` is what re-imports it on the next
-load. Readers that must not start a process -- the clip panel's draw -- use
+**A converted model is shown through the GLB the pipeline extracts from.** A model is a file
+under `assets/` with one of `model_source.SUFFIXES`: `.glb`, read as it is, or one of
+`model_source.CONVERTED` -- `.blend`, `.fbx`, `.gltf`, `.obj`, `.ply`, `.stl`, `.usd`/`.usda`/`.usdc`/`.usdz`, `.abc` or `.bvh` -- every format Blender 5.2 imports
+headlessly (Collada left Blender 5; SVG is not a model). The engine converts those with a headless
+Blender into `.editor/converted/<assets-relative source>.glb`, stamped in `asset.extras` with the
+source's SHA-256 (`paradiseSourceSha256`) and `paradiseDependencies`: `{path, sha256}` for every
+file the import read besides the source -- textures, an `.obj`'s `.mtl`, a `.gltf`'s buffers,
+linked libraries -- with `path` relative to the source's directory. The engine extracts meshes,
+clips and materials from that file. The library imports the same file rather than opening the
+source with Blender's own importers, so what the viewport shows is what the game gets; when it is
+missing, or the source's or any dependency's bytes no longer match (a dependency gone counts),
+`meshes.glb_of` runs `paradise assets convert` (the converted path is the last line it prints).
+The library collection is keyed and stamped by the SOURCE, plus the converted GLB's stamp, so
+saving the `.blend` -- or editing the `.mtl` -- is what re-imports it on the next load. Readers that must not start a process -- the clip panel's draw -- use
 `model_source.current_glb`, which answers only from a conversion that is already current. A
 source's identity and `[glb]` settings live in its own sidecar (`car.blend.meta`), exactly as a
 `.glb`'s do.
@@ -317,14 +321,18 @@ back while the GLB's bytes are unchanged (`materialize_shared`); nothing records
 this scene, and Finish Editing Shared Mesh saves, drops the object and reloads. One object edits
 a given model at a time (`shared_editor`), or two would each overwrite the other.
 
-**A converted model is edited where it comes from.** Make Mesh Editable on a `.blend`/`.fbx`
+**A converted model is edited where it comes from.** Make Mesh Editable on a converted
 placement builds from the converted GLB (`meshes.glb_of`): its primitives are what the engine
 extracted, so slot `i` is still the `Slots[i]` the placement had. Edit Shared Mesh refuses one
 (its poll names the reason): the converted GLB is derived, and the next conversion would drop a
 splice. "Edit Source in New Blender" opens a `.blend` source as the main file of a second
 Blender instead, where quads and modifiers are intact; its save is picked up by the watcher,
 which converts and re-extracts, and the library's source stamp re-imports it on the next load.
-An FBX is interchange, so it is refused with the advice to re-export it from its DCC.
+Every other format is interchange, so it is refused with the advice to re-export it from its
+DCC, the message naming the format (`model_source.edit_in_place_refusal`). A model whose GLB holds
+no mesh -- a `.bvh`, or any skeleton-and-clips file -- refuses Make Mesh Editable, Edit Shared
+Mesh and Edit Source alike (`model_source.no_mesh_refusal`); it still places without a warning
+(the empty shows its armature) and its clips are authored in the Animation clips section.
 
 ## Schema, identity and extraction
 

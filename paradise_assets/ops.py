@@ -1026,6 +1026,10 @@ class PARADISE_ASSETS_OT_make_mesh_editable(Operator):
                 "This is part of a prefab instance. Unpack the instance first, or open the prefab "
                 "and make the mesh editable there.")
             return False
+        source = obj.instance_collection.get(meshes.SOURCE_KEY)
+        if isinstance(source, str) and model_source.is_skeleton_only(source):
+            cls.poll_message_set(model_source.no_mesh_refusal(source))
+            return False
         return True
 
     def invoke(self, context, event):
@@ -1136,6 +1140,9 @@ class PARADISE_ASSETS_OT_edit_shared_mesh(Operator):
         if obj is None or store.guid_of(obj) is None or obj.instance_collection is None:
             return False
         source = obj.instance_collection.get(meshes.SOURCE_KEY)
+        if isinstance(source, str) and model_source.is_skeleton_only(source):
+            cls.poll_message_set(model_source.no_mesh_refusal(source))
+            return False
         if isinstance(source, str) and model_source.is_converted(source):
             cls.poll_message_set(model_source.edit_in_place_refusal(source))
             return False

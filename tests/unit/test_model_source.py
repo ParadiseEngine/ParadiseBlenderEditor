@@ -1,8 +1,9 @@
-"""A ``.blend``/``.fbx`` model is read through the GLB the pipeline converted it to.
+"""A model that is not a ``.glb`` is read through the GLB the pipeline converted it to.
 
 The viewport, Make Mesh Editable and the clip settings all read that GLB, so the one question
 that matters is whether the file under ``.editor/converted/`` is the conversion of the source as
-it is NOW: the stamp inside it names the source bytes, and a saved ``.blend`` must stop matching.
+it is NOW: the stamp inside it names the source bytes and those of every file the import read,
+and a saved ``.blend`` -- or an edited ``.mtl`` -- must stop matching.
 """
 
 from __future__ import annotations
@@ -46,10 +47,16 @@ def write(path: Path, data: bytes) -> str:
     return str(path)
 
 
-def converted(layout: ProjectLayout, source: str, source_bytes: bytes, **document) -> str:
-    """The converted GLB the pipeline would write for ``source``, stamped with those bytes."""
-    stamp = {"paradiseSourceSha256": hashlib.sha256(source_bytes).hexdigest(),
-             "paradiseConverterVersion": 1, "paradiseBlenderVersion": "Blender 5.2.1 LTS"}
+def sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def converted(layout: ProjectLayout, source: str, source_bytes: bytes, dependencies=(), **document) -> str:
+    """The converted GLB the pipeline would write for ``source``, stamped with those bytes and
+    ``dependencies``: ``(path relative to the source's directory, bytes)`` pairs."""
+    stamp = {"paradiseSourceSha256": sha256(source_bytes),
+             "paradiseConverterVersion": 2, "paradiseBlenderVersion": "Blender 5.2.1 LTS",
+             "paradiseDependencies": [{"path": path, "sha256": sha256(data)} for path, data in dependencies]}
     content = {"asset": {"version": "2.0", "extras": stamp}, **document}
     return write(Path(model_source.converted_path(layout, source)), glb(content))
 
@@ -92,6 +99,78 @@ def test_a_glb_without_a_source_stamp_is_never_current(tmp_path):
     write(Path(model_source.converted_path(layout, source)), glb({"asset": {"version": "2.0"}}))
 
     assert model_source.current_glb(source) is None
+
+
+def test_every_format_blender_imports_is_a_converted_model_and_a_glb_is_read_directly():
+    for name in ("a.blend", "a.fbx", "a.gltf", "a.obj", "a.ply", "a.stl", "a.usd", "a.usda",
+                 "a.usdc", "a.usdz", "a.abc", "a.bvh", "A.OBJ"):
+        assert model_source.is_model(name) and model_source.is_converted(name), name
+    assert model_source.is_model("a.glb") and not model_source.is_converted("a.glb")
+    for name in ("a.dae", "a.svg", "a.png", "a.mesh", "a.glb.meta"):
+        assert not model_source.is_model(name), name
+
+
+def test_editing_a_file_the_import_read_makes_the_conversion_stale(tmp_path):
+    layout = project(tmp_path)
+    models = tmp_path / "assets" / "models"
+    source = write(models / "crate.obj", b"mtllib crate.mtl\n")
+    mtl = write(models / "crate.mtl", b"map_Kd textures/wood.png\n")
+    write(models / "textures" / "wood.png", b"PNG-oak")
+    glb_path = converted(layout, source, b"mtllib crate.mtl\n",
+                         dependencies=[("crate.mtl", b"map_Kd textures/wood.png\n"),
+                                       ("textures/wood.png", b"PNG-oak")])
+    assert model_source.current_glb(source) == glb_path
+
+    write(models / "textures" / "wood.png", b"PNG-elm")   # same size: only the bytes differ
+    assert model_source.current_glb(source) is None, "a changed texture left the conversion current"
+
+    write(models / "textures" / "wood.png", b"PNG-oak")
+    assert model_source.current_glb(source) == glb_path
+
+    os.unlink(mtl)
+    assert model_source.current_glb(source) is None, "a dependency that is gone left it current"
+
+
+def test_dependencies_resolve_against_the_source_directory_not_the_project(tmp_path):
+    layout = project(tmp_path)
+    source = write(tmp_path / "assets" / "models" / "props" / "tree.gltf", b"{}")
+    write(tmp_path / "assets" / "models" / "shared" / "tree.bin", b"BIN")
+    write(tmp_path / "assets" / "tree.bin", b"OTHER")
+    glb_path = converted(layout, source, b"{}", dependencies=[("../shared/tree.bin", b"BIN")])
+
+    assert model_source.is_current(source, glb_path)
+
+
+def test_a_conversion_that_records_no_dependency_list_is_never_current(tmp_path):
+    layout = project(tmp_path)
+    source = write(tmp_path / "assets" / "models" / "car.fbx", b"Kaydara")
+    stamp = {"paradiseSourceSha256": sha256(b"Kaydara"), "paradiseConverterVersion": 1}
+    write(Path(model_source.converted_path(layout, source)),
+          glb({"asset": {"version": "2.0", "extras": stamp}}))
+
+    assert model_source.current_glb(source) is None
+
+
+def test_the_interchange_refusal_names_the_format_and_a_blend_is_edited_at_source():
+    assert "Edit Source in New Blender" in model_source.edit_in_place_refusal("/a/crate.blend")
+    obj = model_source.edit_in_place_refusal("/a/crate.obj")
+    assert "crate.obj is an OBJ file" in obj and "export the OBJ again" in obj
+    assert "a glTF file" in model_source.edit_in_place_refusal("/a/tree.gltf")
+    assert "a USDZ file" in model_source.edit_in_place_refusal("/a/set.usdz")
+
+
+def test_a_conversion_with_no_mesh_is_skeleton_only(tmp_path):
+    layout = project(tmp_path)
+    walk = write(tmp_path / "assets" / "models" / "walk.bvh", b"HIERARCHY")
+    crate = write(tmp_path / "assets" / "models" / "crate.obj", b"v 0 0 0")
+    assert not model_source.is_skeleton_only(walk), "nothing converted yet: nothing is known"
+
+    converted(layout, walk, b"HIERARCHY", nodes=[{"name": "Hips"}], skins=[{"joints": [0]}],
+              animations=[{"name": "Walk"}])
+    converted(layout, crate, b"v 0 0 0", meshes=[{"primitives": []}])
+
+    assert model_source.is_skeleton_only(walk)
+    assert not model_source.is_skeleton_only(crate)
 
 
 def test_the_converted_path_is_the_last_line_the_cli_printed():

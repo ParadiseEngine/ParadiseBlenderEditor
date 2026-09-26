@@ -154,7 +154,12 @@ def _mesh(name, positions, normals, uvs, corners, slots) -> bpy.types.Mesh:
 
     # glTF is Y-up; Blender is Z-up: (x, y, z) -> (x, -z, y), the importer's own swizzle.
     points = _to_blender(np.concatenate(positions))
-    triangles = np.concatenate(corners).astype(np.int32)
+    corners_by_row = np.concatenate(corners)
+    # glTF has no per-corner vertex: any attribute difference splits a corner into its own row,
+    # so coincident faces' corners arrive unwelded. Merge rows that share a position -- normals
+    # and UVs are set per loop below, so distinct corner values survive the weld.
+    points, weld = np.unique(points, axis=0, return_inverse=True)
+    triangles = weld[corners_by_row].astype(np.int32)
     mesh.vertices.add(len(points))
     mesh.vertices.foreach_set("co", points.astype(np.float32).ravel())
     mesh.loops.add(triangles.size)
@@ -166,13 +171,17 @@ def _mesh(name, positions, normals, uvs, corners, slots) -> bpy.types.Mesh:
     texture = np.concatenate(uvs)
     texture[:, 1] = 1.0 - texture[:, 1]   # glTF's V runs down the image; Blender's runs up
     layer = mesh.uv_layers.new(name="UVMap")
-    layer.uv.foreach_set("vector", texture[triangles.ravel()].astype(np.float32).ravel())
+    layer.uv.foreach_set("vector", texture[corners_by_row.ravel()].astype(np.float32).ravel())
 
-    mesh.update(calc_edges=True)
-    mesh.validate(clean_customdata=False)
     if normals is not None:
         mesh.shade_smooth()
-        mesh.normals_split_custom_set_from_vertices(_to_blender(np.concatenate(normals)).tolist())
+        # Welded vertices still need their own corner normals; per-vertex normals would smooth
+        # the hard edges the split was for. Set before update/validate so a removed degenerate
+        # face shrinks the per-loop data with it.
+        mesh.normals_split_custom_set(
+            _to_blender(np.concatenate(normals))[corners_by_row.ravel()].tolist())
+    mesh.update(calc_edges=True)
+    mesh.validate(clean_customdata=False)
     return mesh
 
 

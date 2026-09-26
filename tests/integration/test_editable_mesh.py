@@ -159,6 +159,8 @@ def run(source, root):
     cube = store.object_with_guid(scene, guid)
     assert cube.type == "MESH" and cube.instance_collection is None
     assert same_points(world_points(cube), shown), "the editable mesh does not stand where the instance did"
+    assert len(cube.data.vertices) == 8, "the GLB's split corners must weld back to one vertex per corner"
+    assert all(len(edge.link_faces) == 2 for edge in cube.data.edges), "every edge of a cube is shared"
     glb = owned_glb(layout, level, guid)
     assert Path(glb).parent == Path(level).with_suffix(""), glb
     assert ownership.owner_of(glb) == guid

@@ -12,7 +12,8 @@ paradise_assets/
                   ID-property store, the working .blend, save-on-save
   play/           the CLI: resolution, Build / Verify / Clean / Play, the running session
   ops.py          open_prefab / save_prefab / reload_prefab, add_prefab_instance,
-                  extract_prefab, make_mesh_editable, toggle_watch, refresh_catalogue
+                  extract_prefab, make_mesh_editable, edit/finish_shared_mesh, toggle_watch,
+                  refresh_catalogue
   ui.py           the Paradise sidebar tab
   project_settings.py  game-declared project TOML documents, edited without an active prefab
   edits.py      ★ the component-edit overlay — no bpy, unit-tested against a plain dict
@@ -79,8 +80,9 @@ viewport's, one `_draw` for both — gated on the active object being a DOCUMENT
 menu that grows greyed rows on every cube is worse than one that says nothing. "Open Prefab
 in New Blender" starts a second Blender rather than replacing the session: a level and the prop
 it instances are two documents, and making people close one to edit the other is what stops them
-editing it. "Make Mesh Editable" is drawn only on an object that shows a model; on one of a
-prefab's children it stays greyed, and its tooltip says to unpack the instance first.
+editing it. "Make Mesh Editable" and "Edit Shared Mesh" are drawn only on an object that shows a
+model; on one of a prefab's children Make Mesh Editable stays greyed, and its tooltip says to
+unpack the instance first. Edit Shared Mesh works there, since it writes no document.
 
 Two rules for anything drawn here:
 

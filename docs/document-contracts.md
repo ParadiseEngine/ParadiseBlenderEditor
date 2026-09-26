@@ -275,6 +275,26 @@ leaves the GLB in place: a watcher in play mode rebuilds after every change and 
 behind that build (minutes on a cold cache), and running the operator again reuses the object's
 own GLB (`plan_target` accepts a file this object owns).
 
+**A shared model can be edited in place instead (`document/shared_mesh.py`).** Edit Shared Mesh
+builds the same one-mesh, slot-per-primitive object from the placement's shared GLB, tagged
+`shared` in `store.EDITABLE_KEY`, and writes nothing -- no GLB, no document. The save exports the
+edit to a scratch GLB outside `assets/` and `shared_mesh.splice` writes a new model from the
+ORIGINAL's JSON with only the geometry replaced: slot `i` goes back to primitive `i` of the same
+`mesh_instances` walk, moved into its node's space by the inverse of that node's world transform
+(normals by `L^T`, tangents by `L^-1`, a mirror's winding and handedness flipped back), keeping
+its `material`. Materials, textures, images (embedded bytes copied), samplers, nodes, names,
+extras and extensions are untouched, so the extracted materials' source fingerprints still match
+and `verify` stays quiet. A mesh several nodes shared becomes one per node. `shared_mesh.unsupported`
+refuses what the round trip would drop: morph targets, attributes other than
+POSITION/NORMAL/TEXCOORD_0/TANGENT, mesh nodes outside the default scene, accessors or buffer
+views nothing but geometry and images uses, external buffers, and owned GLBs. The same fingerprint,
+slot and changed-on-disk refusals apply. After the replace, other placements in the scene are
+pointed at a fresh import -- from Object Mode only, since Blender's importer leaves Edit Mode;
+otherwise the library's stamp check re-imports on the next load. A reload hands the editing object
+back while the GLB's bytes are unchanged (`materialize_shared`); nothing records the edit outside
+this scene, and Finish Editing Shared Mesh saves, drops the object and reloads. One object edits
+a given model at a time (`shared_editor`), or two would each overwrite the other.
+
 ## Schema, identity and extraction
 
 **There is ONE schema, and it is the game's.** A launcher built with

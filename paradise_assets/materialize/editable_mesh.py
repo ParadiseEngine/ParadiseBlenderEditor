@@ -6,7 +6,9 @@
   "no material"), and it names objects after nodes that ShiningPie's multi-part models reuse
   dozens of times -- so afterwards neither the slots nor the parts could be told apart.
 - :func:`publish` is the save's half: export what changed, refuse what would bind materials to
-  the wrong faces or overwrite someone else's GLB.
+  the wrong faces or overwrite someone else's GLB. A SHARED model (:func:`begin_shared`) is not
+  exported as-is but spliced back into its own GLB (``document/shared_mesh.py``), so its
+  materials, textures and node hierarchy survive, and every placement is re-imported after.
 - :func:`stash`, :func:`materialize` and :func:`drop` are the load's half. An object whose GLB is
   byte-for-byte what it last wrote or read is KEPT across a reload, so quads, modifiers and
   everything else a GLB cannot hold survive for the author who made them; the GLB, triangulated
@@ -23,18 +25,20 @@ import hashlib
 import os
 import shutil
 import tempfile
+from dataclasses import replace
 
 import bpy
 import numpy as np
 
 from ..document import editable_mesh as contract
-from ..document import gltf, material_document
+from ..document import gltf, material_document, shared_mesh
 from ..document import guid as document_guid
 from ..document.project import ProjectLayout
 from . import store
-from .meshes import SOURCE_KEY
+from .meshes import SOURCE_KEY, MeshLibrary
 
 __all__ = [
+    "begin_shared",
     "build_mesh",
     "display_names",
     "drop",
@@ -43,6 +47,8 @@ __all__ = [
     "publish",
     "refresh_display",
     "settle",
+    "shared_editor",
+    "shared_source",
     "stash",
     "write_initial",
 ]
@@ -256,7 +262,7 @@ def refresh_display(scene: bpy.types.Scene, layout: ProjectLayout | None) -> Non
     would refuse them as reordered."""
     if layout is None:
         return
-    for obj in _owned_objects(scene):
+    for obj in _editing_objects(scene):
         _assign_display_materials(obj.data, _payloads(obj), layout)
 
 
@@ -304,17 +310,33 @@ def _feed(digest, collection, prop: str, width: int, dtype) -> None:
     digest.update(values.tobytes())
 
 
-def _export(obj: bpy.types.Object, depsgraph, path: str) -> int:
+def _export(obj: bpy.types.Object, depsgraph, path: str, state: store.EditableMesh,
+            layout: ProjectLayout) -> int:
     """Write what ``obj`` evaluates to (modifiers applied, in its own space) as the GLB at
-    ``path`` it owns. Returns the primitive count the file holds."""
+    ``path``: the whole file for a mesh it owns, the shared model with its geometry replaced for
+    one it does not. Returns the primitive count the file holds."""
     mesh = bpy.data.meshes.new_from_object(obj.evaluated_get(depsgraph), depsgraph=depsgraph)
-    return _write_glb(mesh, path, store.guid_of(obj), store.document_name(obj) or obj.name)
+    name = store.document_name(obj) or obj.name
+    if not state.shared:
+        return _write_glb(mesh, path, name, store.guid_of(obj))
+    with tempfile.TemporaryDirectory(prefix="paradise-shared-") as directory:
+        scratch = os.path.join(directory, "edited.glb")
+        written = _write_glb(mesh, scratch, name, None)
+        if written == state.slots:
+            try:
+                spliced = shared_mesh.splice(gltf.read_glb(layout.resolve(state.glb)), gltf.read_glb(scratch))
+            except (ValueError, KeyError, IndexError, TypeError) as error:
+                raise contract.EditableMeshError(
+                    f"'{obj.name}': its edit could not be written into {state.glb}: {error}") from error
+            with open(path, "wb") as handle:
+                handle.write(spliced)
+    return written
 
 
-def _write_glb(mesh: bpy.types.Mesh, path: str, owner: str, name: str) -> int:
-    """Export ``mesh`` alone as a GLB owned by ``owner`` into ``path``, then free it; returns
-    the primitive count written. Placeholder materials: the primitives stay split per slot, and
-    there are no glTF materials for anything to extract.
+def _write_glb(mesh: bpy.types.Mesh, path: str, name: str, owner: str | None) -> int:
+    """Export ``mesh`` alone as a GLB into ``path``, owned by ``owner`` when one is given, then
+    free it; returns the primitive count written. Placeholder materials: the primitives stay
+    split per slot, and there are no glTF materials for anything to extract.
 
     The exporter runs in a private directory: it forces a ``.glb`` extension onto its path, so
     exporting straight to the ``.tmp`` beside the target would leave a stray GLB in ``assets/``
@@ -323,7 +345,8 @@ def _write_glb(mesh: bpy.types.Mesh, path: str, owner: str, name: str) -> int:
     for key in list(mesh.keys()):
         del mesh[key]   # export_extras would write them into the GLB
     scene = bpy.data.scenes.new("Paradise editable mesh")
-    scene[contract.OWNER_EXTRA] = document_guid.canonical(owner)
+    if owner is not None:
+        scene[contract.OWNER_EXTRA] = document_guid.canonical(owner)
     carrier = bpy.data.objects.new(name, mesh)
     scene.collection.objects.link(carrier)
     try:
@@ -361,7 +384,7 @@ def write_initial(obj: bpy.types.Object, target: str) -> int:
     os.makedirs(os.path.dirname(target), exist_ok=True)
     staged = _staging_file(target)
     try:
-        written = _write_glb(mesh, staged, store.guid_of(obj), name)
+        written = _write_glb(mesh, staged, name, store.guid_of(obj))
         if written != slots:
             raise contract.EditableMeshError(
                 f"{os.path.basename(source)} has {slots} material part(s) but only {written} could be "
@@ -390,15 +413,60 @@ def _sha256(path: str) -> str:
     return digest.hexdigest()
 
 
+# -- editing a shared model --------------------------------------------------------------------------
+
+def shared_source(obj: bpy.types.Object, layout: ProjectLayout) -> str:
+    """The shared GLB the instance ``obj`` shows, if it can be edited in place; else raise."""
+    collection = obj.instance_collection
+    source = collection.get(SOURCE_KEY) if collection is not None else None
+    if not isinstance(source, str) or not os.path.isfile(source):
+        raise contract.EditableMeshError(f"'{obj.name}' does not show a model this scene imported.")
+    if not contract.is_inside(source, layout.assets):
+        raise contract.EditableMeshError(f"{source} is outside {layout.assets}.")
+    problem = shared_mesh.unsupported(gltf.read_json(source))
+    if problem is not None:
+        raise contract.EditableMeshError(f"{os.path.basename(source)} cannot be edited in place: {problem}.")
+    return source
+
+
+def shared_editor(scene: bpy.types.Scene, glb: str) -> bpy.types.Object | None:
+    """The object in ``scene`` already editing the shared GLB ``glb`` (assets-relative), if any.
+    One per model: two would each save over the other's edit."""
+    for obj in _editing_objects(scene):
+        state = store.editable_of(obj)
+        if state.shared and state.glb == glb:
+            return obj
+    return None
+
+
+def begin_shared(obj: bpy.types.Object, source: str, layout: ProjectLayout) -> bpy.types.Object:
+    """A mesh object standing in for the instance ``obj``, editing the shared GLB ``source``.
+
+    Carries ``obj``'s identity and is linked beside it, so the reload the caller runs next
+    stashes it and hands it back in ``obj``'s place (:func:`materialize_shared`) -- the reload,
+    not this function, retires ``obj`` and tags the stand-in from the document.
+    """
+    name = store.document_name(obj) or obj.name
+    mesh = build_mesh(source, name)
+    _assign_display_materials(mesh, _payloads(obj), layout)
+    editor = bpy.data.objects.new(obj.name, mesh)
+    editor[store.GUID_KEY] = store.guid_of(obj)
+    editor[store.COMPONENTS_KEY] = obj.get(store.COMPONENTS_KEY, "[]")
+    store.tag_editable(editor, store.EditableMesh(
+        layout.relative(source), _sha256(source), None, len(mesh.materials), shared=True))
+    obj.users_collection[0].objects.link(editor)
+    return editor
+
+
 # -- save ------------------------------------------------------------------------------------------
 
 def publish(scene: bpy.types.Scene, layout: ProjectLayout | None) -> int:
-    """Write every owned mesh whose geometry changed back to its GLB; how many were written.
+    """Write every edited mesh whose geometry changed back to its GLB; how many were written.
 
     All-or-nothing up to the final replace: every refusal is checked and every export staged
     before any GLB is touched, so a save that refuses has written nothing.
     """
-    owned = _owned_objects(scene)
+    owned = _editing_objects(scene)
     if not owned or layout is None:
         return 0
 
@@ -424,7 +492,7 @@ def publish(scene: bpy.types.Scene, layout: ProjectLayout | None) -> int:
     try:
         for obj, state, _geometry in changed:
             staged.append(_staging_file(layout.resolve(state.glb)))
-            written = _export(obj, depsgraph, staged[-1])
+            written = _export(obj, depsgraph, staged[-1], state, layout)
             if written != state.slots:
                 raise contract.EditableMeshError(
                     f"'{obj.name}': {state.slots - written} of its {state.slots} material slot(s) "
@@ -435,12 +503,45 @@ def publish(scene: bpy.types.Scene, layout: ProjectLayout | None) -> int:
             path = layout.resolve(state.glb)
             shutil.copymode(path, temporary)
             os.replace(temporary, path)
-            store.tag_editable(obj, state.glb, _sha256(path), geometry, state.slots)
+            store.tag_editable(obj, replace(state, sha256=_sha256(path), geometry=geometry))
     finally:
         for temporary in staged:
             if os.path.exists(temporary):
                 os.unlink(temporary)
+    _reimport_shared(scene, [layout.resolve(state.glb) for _obj, state, _g in changed if state.shared])
     return len(changed)
+
+
+def _reimport_shared(scene: bpy.types.Scene, paths: list[str]) -> None:
+    """Show a rewritten shared model on every other placement of it now, not at the next load:
+    re-import it and point each instance of the stale import at the fresh one.
+
+    Only from Object Mode. Blender's glTF importer leaves Edit Mode and reselects what it made,
+    and a Ctrl+S from Edit Mode must not throw the author out of it; the library re-imports a
+    GLB whose stamp moved on the next load anyway, so waiting costs only a stale preview."""
+    if not paths or bpy.context.mode != "OBJECT":
+        return
+    view_layer = bpy.context.view_layer
+    selected = [obj for obj in scene.objects if obj.select_get()]
+    active = view_layer.objects.active if view_layer is not None else None
+    try:
+        for path in paths:
+            users = [obj for obj in bpy.data.objects
+                     if obj.instance_collection is not None
+                     and _same_path(obj.instance_collection.get(SOURCE_KEY), path)]
+            fresh = MeshLibrary(scene).collection_for(path)
+            for obj in users:
+                obj.instance_collection = fresh
+    finally:
+        for obj in scene.objects:
+            obj.select_set(obj in selected)
+        if view_layer is not None:
+            view_layer.objects.active = active
+
+
+def _same_path(stored, path: str) -> bool:
+    return isinstance(stored, str) and os.path.normcase(os.path.abspath(stored)) == os.path.normcase(
+        os.path.abspath(path))
 
 
 def _refuse_changed_on_disk(obj, state: store.EditableMesh, layout: ProjectLayout) -> None:
@@ -469,21 +570,27 @@ def _refuse_changed_slots(obj, state: store.EditableMesh) -> None:
         )
 
 
-def _owned_objects(scene: bpy.types.Scene) -> list[bpy.types.Object]:
-    return [
-        obj for obj in scene.collection.all_objects
-        if obj.type == "MESH" and store.guid_of(obj) is not None and not store.is_derived(obj)
-        and store.editable_of(obj) is not None
-    ]
+def _editing_objects(scene: bpy.types.Scene) -> list[bpy.types.Object]:
+    """The objects editing a mesh: one they own, or a shared model. An owned mesh is the
+    document's own object's; a shared model may be edited from a prefab's child as well, since
+    its GLB, not any document, is what the save writes."""
+    found = []
+    for obj in scene.collection.all_objects:
+        if obj.type != "MESH" or store.guid_of(obj) is None:
+            continue
+        state = store.editable_of(obj)
+        if state is not None and (state.shared or not store.is_derived(obj)):
+            found.append(obj)
+    return found
 
 
 # -- load --------------------------------------------------------------------------------------------
 
 def stash(scene: bpy.types.Scene) -> dict[str, bpy.types.Object]:
-    """Take the owned objects out of the scene before a load clears it, keyed by guid, so the
+    """Take the editing objects out of the scene before a load clears it, keyed by guid, so the
     load can hand each back instead of rebuilding it from its GLB."""
     kept = {}
-    for obj in _owned_objects(scene):
+    for obj in _editing_objects(scene):
         for collection in list(obj.users_collection):
             collection.objects.unlink(obj)
         kept[store.guid_of(obj)] = obj
@@ -509,17 +616,9 @@ def materialize(entry, source: str, layout: ProjectLayout, kept: dict, warn) -> 
     """
     relative = layout.relative(source)
     sha256 = _sha256(source)
-    previous = kept.pop(document_guid.canonical(entry.guid), None)
+    previous = _hand_back(entry, relative, sha256, kept, layout, shared=False)
     if previous is not None:
-        state = store.editable_of(previous)
-        if state is not None and state.glb == relative and state.sha256 == sha256:
-            previous.parent = None
-            previous.matrix_parent_inverse.identity()
-            store.clear_object(previous)   # the load re-tags; nothing stale may answer for it
-            store.tag_editable(previous, state.glb, state.sha256, state.geometry, state.slots)
-            _assign_display_materials(previous.data, [c.data for c in entry.components], layout)
-            return previous
-        drop({entry.guid: previous})
+        return previous
 
     try:
         mesh = build_mesh(source, entry.name or "mesh")
@@ -528,8 +627,36 @@ def materialize(entry, source: str, layout: ProjectLayout, kept: dict, warn) -> 
         return None
     _assign_display_materials(mesh, [c.data for c in entry.components], layout)
     obj = bpy.data.objects.new(entry.name or "object", mesh)
-    store.tag_editable(obj, relative, sha256, None, len(mesh.materials))
+    store.tag_editable(obj, store.EditableMesh(relative, sha256, None, len(mesh.materials)))
     return obj
+
+
+def materialize_shared(entry, source: str, layout: ProjectLayout, kept: dict) -> bpy.types.Object | None:
+    """The object this scene had editing the shared GLB ``source`` for ``entry``, handed back
+    while the GLB is byte-for-byte what it last read or wrote; ``None`` otherwise, for the caller
+    to show an ordinary instance. Nothing in any document records the edit: it lives in this
+    scene until its object is finished or the GLB changes under it."""
+    guid = document_guid.canonical(entry.guid)
+    state = store.editable_of(kept[guid]) if guid in kept else None
+    if state is None or not state.shared:
+        return None
+    return _hand_back(entry, layout.relative(source), _sha256(source), kept, layout, shared=True)
+
+
+def _hand_back(entry, relative: str, sha256: str, kept: dict, layout: ProjectLayout, *, shared: bool):
+    previous = kept.pop(document_guid.canonical(entry.guid), None)
+    if previous is None:
+        return None
+    state = store.editable_of(previous)
+    if state is not None and state.shared == shared and state.glb == relative and state.sha256 == sha256:
+        previous.parent = None
+        previous.matrix_parent_inverse.identity()
+        store.clear_object(previous)   # the load re-tags; nothing stale may answer for it
+        store.tag_editable(previous, state)
+        _assign_display_materials(previous.data, [c.data for c in entry.components], layout)
+        return previous
+    drop({entry.guid: previous})
+    return None
 
 
 def settle(objects, scene: bpy.types.Scene) -> None:
@@ -544,4 +671,4 @@ def settle(objects, scene: bpy.types.Scene) -> None:
     depsgraph = scene.view_layers[0].depsgraph
     for obj in pending:
         state = store.editable_of(obj)
-        store.tag_editable(obj, state.glb, state.sha256, fingerprint(obj, depsgraph), state.slots)
+        store.tag_editable(obj, replace(state, geometry=fingerprint(obj, depsgraph)))

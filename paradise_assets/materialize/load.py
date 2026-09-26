@@ -169,6 +169,9 @@ def _create_object(
     if source is not None and ownership.owns(source, entry.guid):
         # This object's own geometry: a real mesh to edit, not an instance of a shared one.
         obj = editable_mesh.materialize(entry, result.read(source), layout, kept, result.warn)
+    elif source is not None:
+        # A shared model this scene was editing in place, while its GLB is still what it read.
+        obj = editable_mesh.materialize_shared(entry, result.read(source), layout, kept)
     if obj is None:
         obj = bpy.data.objects.new(entry.name or "object", None)
         obj.empty_display_size = 0.25

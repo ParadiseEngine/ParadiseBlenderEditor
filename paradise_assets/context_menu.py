@@ -29,6 +29,7 @@ __all__ = ["classes", "register_menu", "unregister_menu"]
 #: context menu. One ``_draw`` for both -- they are handed the same active object, and an entry
 #: that appeared in one place and not the other would read as a bug in whichever lacked it.
 MENUS = ("OUTLINER_MT_object", "VIEW3D_MT_object_context_menu")
+EDIT_MODE_MENU = "VIEW3D_MT_edit_mesh_context_menu"
 
 
 def prefab_of(obj) -> tuple[str, str] | None:
@@ -170,6 +171,16 @@ def _draw(self, context) -> None:
             "paradise_assets.make_mesh_editable",
             text="Make Mesh Editable",
             icon="EDITMODE_HLT")
+        column.operator(
+            "paradise_assets.edit_shared_mesh",
+            text="Edit Shared Mesh…",
+            icon="LINKED")
+    editing = store.editable_of(obj)
+    if editing is not None and editing.shared:
+        column.operator(
+            "paradise_assets.finish_shared_mesh",
+            text="Finish Editing Shared Mesh",
+            icon="CHECKMARK")
 
     # Only for something that IS part of an instance: on a plain object these three could only
     # ever be greyed, and the menu already earns its rows.
@@ -192,20 +203,37 @@ def _draw(self, context) -> None:
         icon="UNLINKED")
 
 
+def _draw_edit_mode(self, context) -> None:
+    """Edit Mode's right-click is a different menu, and it is where a shared-mesh edit ends."""
+    obj = getattr(context, "active_object", None)
+    editing = store.editable_of(obj) if obj is not None else None
+    if editing is None or not editing.shared:
+        return
+    self.layout.separator()
+    self.layout.operator(
+        "paradise_assets.finish_shared_mesh",
+        text="Finish Editing Shared Mesh",
+        icon="CHECKMARK")
+
+
+#: Menu -> what it appends, for the Object Mode menus and Edit Mode's.
+_ENTRIES = (*((name, _draw) for name in MENUS), (EDIT_MODE_MENU, _draw_edit_mode))
+
+
 def register_menu() -> None:
     """Append the entries to each menu that exists: a renamed bundled menu must not fail the
     whole addon's registration over a context-menu entry."""
-    for name in MENUS:
+    for name, draw in _ENTRIES:
         menu = getattr(bpy.types, name, None)
         if menu is not None:
-            menu.append(_draw)
+            menu.append(draw)
 
 
 def unregister_menu() -> None:
-    for name in MENUS:
+    for name, draw in _ENTRIES:
         menu = getattr(bpy.types, name, None)
         if menu is not None:
-            menu.remove(_draw)
+            menu.remove(draw)
 
 
 classes = (PARADISE_ASSETS_OT_open_prefab_elsewhere,)

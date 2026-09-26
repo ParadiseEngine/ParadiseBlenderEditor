@@ -115,6 +115,22 @@ shared model and its other placements stay as they were. An instance is unpacked
 - The asset watcher mints the new GLB's mesh document. If it is busy rebuilding, the command
   says so; run it again once the watcher is idle. Rigged or animated models are refused.
 
+**Reshaping the model itself.** To change a model everywhere instead, right-click a placement and
+choose **Edit Shared Mesh…**. No new file is made: that placement becomes an editable mesh, and
+every save writes the geometry back into the shared GLB, so every placement of it, in every
+document, changes. The rules above apply (triangles, slot order, a GLB changed on disk refuses the
+save), plus:
+
+- Only the geometry is rewritten. The model's materials, textures, node names and transforms stay
+  exactly as they were, so its extracted materials and every prefab that uses it are untouched.
+- Other placements in this scene show the change after a save from Object Mode, or at the next
+  reload.
+- **Finish Editing Shared Mesh** (right-click, in Object or Edit Mode) saves and turns the object
+  back into an ordinary placement. One object at a time may edit a given model; a prefab's child
+  may edit it too, since no document is written.
+- A model with morph targets, vertex colours, a second UV set, or data the rewrite would not carry
+  is refused rather than stripped.
+
 ## 5. Edit components
 
 Select an object. The **Components** panel shows what the document says about it:

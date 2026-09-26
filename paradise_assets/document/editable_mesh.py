@@ -40,14 +40,17 @@ from .project import ProjectLayout
 from .schema import MeshFields
 
 __all__ = [
+    "IDENTITY",
     "MESH_WAIT_SECONDS",
     "OWNER_EXTRA",
     "EditableMeshError",
+    "is_inside",
     "material_slots",
     "mesh_field",
     "mesh_instances",
     "mesh_reference",
     "owner_of",
+    "owner_of_document",
     "owns",
     "plan_target",
     "unsupported",
@@ -71,7 +74,8 @@ _GEOMETRY_EXTENSIONS = frozenset({
     "KHR_draco_mesh_compression", "EXT_meshopt_compression", "KHR_mesh_quantization",
 })
 
-_IDENTITY = (1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+#: The glTF identity matrix, column-major.
+IDENTITY = (1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0)
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9_-]+")
 
@@ -95,7 +99,7 @@ def owner_of(path: str) -> str | None:
     if cached is not None and cached[:2] == (stat.st_mtime_ns, stat.st_size):
         return cached[2]
 
-    owner = _owner_in(gltf.read_json(path))
+    owner = owner_of_document(gltf.read_json(path))
     _OWNERS[path] = (stat.st_mtime_ns, stat.st_size, owner)
     return owner
 
@@ -106,7 +110,8 @@ def owns(path: str, guid: str | None) -> bool:
     return owner is not None and guid is not None and owner == document_guid.canonical(guid)
 
 
-def _owner_in(document: dict) -> str | None:
+def owner_of_document(document: dict) -> str | None:
+    """The owner a GLB's parsed JSON names, or ``None`` for a shared model."""
     scene = _default_scene(document)
     extras = scene.get("extras") if scene is not None else None
     value = extras.get(OWNER_EXTRA) if isinstance(extras, dict) else None
@@ -166,7 +171,7 @@ def mesh_instances(document: dict) -> list[tuple[int, int, tuple[float, ...]]]:
 
     found: list[tuple[int, int, tuple[float, ...]]] = []
     roots = scene.get("nodes") or []
-    pending = [(index, _IDENTITY) for index in reversed(roots)]
+    pending = [(index, IDENTITY) for index in reversed(roots)]
     budget = len(nodes)
     while pending:
         index, parent = pending.pop()
@@ -263,7 +268,7 @@ def plan_target(layout: ProjectLayout, document_path: str, name: str, guid: str)
     folder = os.path.splitext(os.path.abspath(document_path))[0]
     stem = f"{_file_stem(name)}_{canonical[:8]}"
     target = os.path.join(folder, stem + ".glb")
-    if not _inside(target, layout.assets):
+    if not is_inside(target, layout.assets):
         raise EditableMeshError(
             f"{target} is outside {layout.assets}, so no document could reference it. Is the "
             "document's folder a link to somewhere else?"
@@ -304,7 +309,7 @@ def plan_target(layout: ProjectLayout, document_path: str, name: str, guid: str)
     return target
 
 
-def _inside(path: str, root: str) -> bool:
+def is_inside(path: str, root: str) -> bool:
     """Whether ``path`` lands under ``root`` once links are followed -- the rule
     ``new_prefab.refuse_target`` applies, so a symlinked folder cannot carry a GLB out."""
     real_root = os.path.realpath(root)

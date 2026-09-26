@@ -130,6 +130,12 @@ if command -v "$BLENDER" >/dev/null 2>&1; then
     tests/integration/test_editable_mesh.py "$DEFAULT_NOISE" \
     "${PARADISE_ASSETS_PROJECT:-../shiningpie}"
 
+  # A shared model edited in place: spliced back into its own GLB with materials and nodes kept,
+  # shown on every placement, verified and built.
+  integration "a shared model edited in place, round trip and build" \
+    tests/integration/test_shared_mesh.py "$DEFAULT_NOISE" \
+    "${PARADISE_ASSETS_PROJECT:-../shiningpie}"
+
   # Asset Browser thumbnails. Renders, so it wants the same real project -- and its load-bearing
   # check is that the catalogue came out with no geometry in it.
   integration "prefab thumbnails and the catalogue's weight" \

@@ -127,6 +127,9 @@ Right-clicking a **document object** — in the Outliner or in the viewport — 
   object owns, beside the document, so it can be reshaped in Edit Mode; every save writes it
   back. The shared model and its other placements stay as they are, and an instance is unpacked
   first. See [the quickstart](docs/quickstart.md#4-place-something) for what it trades away.
+- **Edit Shared Mesh** — on anything that shows a model: edit the model itself in place; every
+  save writes the geometry back into the shared GLB, keeping its materials, textures and nodes,
+  so every placement changes. **Finish Editing Shared Mesh** returns it to an ordinary placement.
 
 On something that belongs to a **prefab instance**, three more appear. Editing a field on an
 instance, or moving one of its children, records an *override*; these are how one ends:

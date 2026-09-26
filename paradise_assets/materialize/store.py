@@ -362,29 +362,36 @@ def resolved_children(obj: bpy.types.Object) -> set[str] | None:
 
 @dataclass(frozen=True)
 class EditableMesh:
-    """What :data:`EDITABLE_KEY` records about an object that owns its mesh."""
+    """What :data:`EDITABLE_KEY` records about an object that edits a mesh: one it owns, or --
+    ``shared`` -- the model every placement of it shows, written back in place."""
 
     glb: str
     sha256: str
     geometry: str | None
     slots: int
+    shared: bool = False
 
 
-def tag_editable(obj: bpy.types.Object, glb: str, sha256: str, geometry: str | None, slots: int) -> None:
-    """Record that ``obj`` owns the GLB at ``glb`` (assets-relative), last in step with it at
-    these fingerprints, with ``slots`` material slots."""
-    obj[EDITABLE_KEY] = json.dumps({"glb": glb, "sha256": sha256, "geometry": geometry, "slots": slots})
+def tag_editable(obj: bpy.types.Object, state: EditableMesh) -> None:
+    """Record that ``obj`` edits the GLB at ``state.glb`` (assets-relative), last in step with it
+    at these fingerprints, with ``state.slots`` material slots."""
+    obj[EDITABLE_KEY] = json.dumps({
+        "glb": state.glb, "sha256": state.sha256, "geometry": state.geometry,
+        "slots": state.slots, "shared": state.shared,
+    })
 
 
 def editable_of(obj: bpy.types.Object) -> EditableMesh | None:
-    """The mesh ``obj`` owns, or ``None`` for an object that shows a shared one (or none)."""
+    """The mesh ``obj`` edits, or ``None`` for an object that shows a shared one (or none)."""
     stored = _json_object(obj, EDITABLE_KEY)
     if stored is None:
         return None
     glb, sha256, geometry, slots = (stored.get(key) for key in ("glb", "sha256", "geometry", "slots"))
     if not isinstance(glb, str) or not isinstance(sha256, str) or not isinstance(slots, int):
         return None
-    return EditableMesh(glb, sha256, geometry if isinstance(geometry, str) else None, slots)
+    return EditableMesh(
+        glb, sha256, geometry if isinstance(geometry, str) else None, slots, stored.get("shared") is True
+    )
 
 
 def _json_object(obj: bpy.types.Object, key: str) -> dict | None:

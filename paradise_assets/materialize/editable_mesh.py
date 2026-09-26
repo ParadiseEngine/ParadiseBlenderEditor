@@ -27,8 +27,10 @@ import shutil
 import tempfile
 from dataclasses import replace
 
+import bmesh
 import bpy
 import numpy as np
+from mathutils.kdtree import KDTree
 
 from ..document import editable_mesh as contract
 from ..document import gltf, material_document, shared_mesh
@@ -61,6 +63,13 @@ _NO_MATERIAL = "(no material)"
 #: cannot collapse into one material.
 _NAME_LIMIT = 63
 _FALLBACK_COLOUR = (0.8, 0.8, 0.8, 1.0)
+#: A temporary corner attribute carrying glTF normals through ``Mesh.validate``.
+_CORNER_NORMALS = ".paradise_corner_normals"
+#: Stitching rounds before giving up on T-junctions that keep appearing; real models need two.
+_STITCH_PASSES = 8
+#: The largest deviation, relative to an edge's length, that is still rounding rather than shape
+#: (about 0.006 degrees).
+_FLAT = 1e-4
 
 _COMPONENT_TYPES = {5120: "<i1", 5121: "<u1", 5122: "<i2", 5123: "<u2", 5125: "<u4", 5126: "<f4"}
 _NORMALIZED_MAX = {5120: 127.0, 5121: 255.0, 5122: 32767.0, 5123: 65535.0}
@@ -154,26 +163,171 @@ def _mesh(name, positions, normals, uvs, corners, slots) -> bpy.types.Mesh:
 
     # glTF is Y-up; Blender is Z-up: (x, y, z) -> (x, -z, y), the importer's own swizzle.
     points = _to_blender(np.concatenate(positions))
-    triangles = np.concatenate(corners).astype(np.int32)
+    rows = np.concatenate(corners).ravel()
     mesh.vertices.add(len(points))
     mesh.vertices.foreach_set("co", points.astype(np.float32).ravel())
-    mesh.loops.add(triangles.size)
-    mesh.loops.foreach_set("vertex_index", triangles.ravel())
-    mesh.polygons.add(len(triangles))
-    mesh.polygons.foreach_set("loop_start", np.arange(0, triangles.size, 3, dtype=np.int32))
+    mesh.loops.add(rows.size)
+    mesh.loops.foreach_set("vertex_index", rows.astype(np.int32))
+    mesh.polygons.add(rows.size // 3)
+    mesh.polygons.foreach_set("loop_start", np.arange(0, rows.size, 3, dtype=np.int32))
     mesh.polygons.foreach_set("material_index", np.concatenate(slots))
 
     texture = np.concatenate(uvs)
     texture[:, 1] = 1.0 - texture[:, 1]   # glTF's V runs down the image; Blender's runs up
     layer = mesh.uv_layers.new(name="UVMap")
-    layer.uv.foreach_set("vector", texture[triangles.ravel()].astype(np.float32).ravel())
+    layer.uv.foreach_set("vector", texture[rows].astype(np.float32).ravel())
+    if normals is not None:
+        # Welded vertices keep their own corner normals -- per-vertex normals would smooth the
+        # hard edges the split was for. Blender derives custom normals from final edges, so
+        # they ride through the weld and validate() as a corner attribute and are set last.
+        carried = mesh.attributes.new(_CORNER_NORMALS, "FLOAT_VECTOR", "CORNER")
+        carried.data.foreach_set("vector", _to_blender(np.concatenate(normals))[rows].astype(np.float32).ravel())
 
     mesh.update(calc_edges=True)
+    _weld(mesh, _weld_distance(points))
     mesh.validate(clean_customdata=False)
     if normals is not None:
+        carried = mesh.attributes[_CORNER_NORMALS]
+        values = np.empty(len(mesh.loops) * 3, dtype=np.float32)
+        carried.data.foreach_get("vector", values)
+        mesh.attributes.remove(carried)
         mesh.shade_smooth()
-        mesh.normals_split_custom_set_from_vertices(_to_blender(np.concatenate(normals)).tolist())
+        mesh.normals_split_custom_set(values.reshape(-1, 3).tolist())
     return mesh
+
+
+def _weld_distance(points: np.ndarray) -> float:
+    """How far apart two rows may be and still be one corner. glTF has no per-corner vertex: any
+    attribute difference splits a corner into its own row, and those rows are only NEARLY equal
+    once exporters and node transforms have rounded them to float32 -- a few ulps of the model's
+    largest coordinate. Detail finer than 10 µm is kept apart."""
+    return max(1e-5, 8 * float(np.finfo(np.float32).eps) * float(np.abs(points).max(initial=0.0)))
+
+
+def _weld(mesh: bpy.types.Mesh, distance: float) -> None:
+    """Make the surface one piece to edit: merge vertices closer than ``distance``, then stitch
+    T-junctions. Corner data (UVs, carried normals) and face data (material slots) stay with
+    their faces."""
+    bm = bmesh.new()
+    try:
+        bm.from_mesh(mesh)
+        bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=distance)
+        _stitch(bm, distance)
+        bm.to_mesh(mesh)
+    finally:
+        bm.free()
+
+
+def _stitch(bm: bmesh.types.BMesh, distance: float) -> None:
+    """Join every vertex lying inside another triangle's edge to that triangle. Parts modelled
+    separately and joined meet a corner of one against an edge of the other (a T-junction): it
+    renders watertight, but only one side owns the vertex, so dragging it opens a crack in the
+    other. Each triangle with such vertices on its edges is replaced by triangles that use them,
+    its corner data interpolated from the original.
+
+    Slivers -- triangles flat to within :func:`_off_line` -- go first. Triangulating an n-gon
+    with a vertex on a straight side leaves one, and it covers nothing: its long side is the
+    T-junction the neighbour across it gets stitched along, and its short sides join what it
+    separated.
+
+    A new triangle's inner edge can cross another part's vertex in turn, so the new edges are
+    searched again until none does: a rebuilt mesh then stitches to itself, unchanged."""
+    slivers = []
+    for face in bm.faces:
+        longest = max(edge.calc_length() for edge in face.edges)
+        if 2 * face.calc_area() <= _off_line(longest, distance) * longest:
+            slivers.append(face)
+    bmesh.ops.delete(bm, geom=slivers, context="FACES_ONLY")
+    edges = list(bm.edges)
+    for _ in range(_STITCH_PASSES):
+        on_edge = _junctions(bm, edges, distance)
+        if not on_edge:
+            break
+        replaced = {face for edge in on_edge for face in edge.link_faces if len(face.verts) == 3}
+        made = [made for face in replaced for made in _split(bm, face, on_edge)]
+        bmesh.ops.delete(bm, geom=list(replaced), context="FACES_ONLY")
+        edges = list({edge for face in made if face.is_valid for edge in face.edges})
+    bmesh.ops.delete(bm, geom=[edge for edge in bm.edges if not edge.link_faces], context="EDGES")
+    bmesh.ops.delete(bm, geom=[vert for vert in bm.verts if not vert.link_faces], context="VERTS")
+
+
+def _split(bm: bmesh.types.BMesh, face, on_edge: dict) -> list:
+    """The triangles replacing ``face`` so that it uses every vertex ``on_edge`` puts on its sides."""
+    corners = [loop.vert for loop in face.loops]
+    sides = []
+    for loop in face.loops:
+        points = on_edge.get(loop.edge, [])
+        sides.append(points if loop.edge.verts[0] is loop.vert else points[::-1])
+    made = []
+    for triangle in _fan(*corners, *sides):
+        try:
+            new = bm.faces.new(triangle, face)
+        except ValueError:   # the same triangle already exists: overlapping geometry
+            continue
+        for loop in new.loops:
+            loop.copy_from_face_interp(face)
+        made.append(new)
+    return made
+
+
+def _off_line(length, distance: float):
+    """How far a point may sit from a ``length``-long edge (or array of them) and still lie ON
+    it: rounding, not shape. Within ``distance``, and within a sliver of the edge's length, so
+    fine curved detail -- sub-millimetre edges bending by a few µm -- is not straightened."""
+    return np.minimum(distance, np.multiply(length, _FLAT))
+
+
+def _junctions(bm: bmesh.types.BMesh, edges, distance: float) -> dict:
+    """Each of ``edges`` with vertices of other faces strictly inside it (within
+    :func:`_off_line` of the segment, farther than ``distance`` from both ends): the vertices,
+    ordered from ``edge.verts[0]``."""
+    bm.verts.index_update()
+    bm.verts.ensure_lookup_table()
+    verts = bm.verts
+    co = np.array([vert.co[:] for vert in verts], dtype=np.float64).reshape(-1, 3)
+    tree = KDTree(len(verts))
+    for index, point in enumerate(co.tolist()):
+        tree.insert(point, index)
+    tree.balance()
+
+    found = {}
+    for edge in edges:
+        start, end = edge.verts
+        axis = co[end.index] - co[start.index]
+        length = float(np.linalg.norm(axis))
+        if length <= 2 * distance:
+            continue
+        near = np.array([index for _, index, _ in tree.find_range(
+            (start.co + end.co) / 2, length / 2 + distance)])
+        offset = co[near] - co[start.index]
+        along = offset @ axis / length
+        apart = np.linalg.norm(offset - np.outer(along / length, axis), axis=1)
+        inside = (along > distance) & (along < length - distance) & (apart <= _off_line(length, distance))
+        if not inside.any():
+            continue
+        own = {vert.index for face in edge.link_faces for vert in face.verts}
+        points = sorted((a, i) for a, i in zip(along[inside].tolist(), near[inside].tolist()) if i not in own)
+        if points:
+            found[edge] = [verts[i] for _, i in points]
+    return found
+
+
+def _fan(a, b, c, ab, bc, ca) -> list[tuple]:
+    """Triangle ``a b c`` with the points ``ab``, ``bc``, ``ca`` inside its sides, as triangles
+    of the same winding using every point. One side at a time is fanned from its opposite
+    corner, which is never on that side's line, so no triangle is degenerate; the two outer
+    triangles of the fan inherit the remaining sides' points."""
+    if not ab:
+        if bc:
+            return _fan(b, c, a, bc, ca, ab)
+        if ca:
+            return _fan(c, a, b, ca, ab, bc)
+        return [(a, b, c)]
+    chain = [a, *ab, b]
+    triangles = []
+    for p, q in zip(chain, chain[1:]):
+        triangles += _fan(p, q, c, [], bc if q is b else [], ca if p is a else [])
+    return triangles
 
 
 def _to_blender(points: np.ndarray) -> np.ndarray:

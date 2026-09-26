@@ -102,13 +102,14 @@ move left empty — `glTF_not_exported` otherwise sits in the Outliner beside th
 life of the session.
 
 **A converted model is shown through the GLB the pipeline extracts from.** A model is a file
-under `assets/` with one of `model_source.SUFFIXES`: `.glb`, read as it is, or one of
-`model_source.CONVERTED` -- `.blend`, `.fbx`, `.gltf`, `.obj`, `.ply`, `.stl`, `.usd`/`.usda`/`.usdc`/`.usdz`, `.abc` or `.bvh` -- every format Blender 5.2 imports
-headlessly (Collada left Blender 5; SVG is not a model). The engine converts those with a headless
-Blender into `.editor/converted/<assets-relative source>.glb`, stamped in `asset.extras` with the
-source's SHA-256 (`paradiseSourceSha256`) and `paradiseDependencies`: `{path, sha256}` for every
-file the import read besides the source -- textures, an `.obj`'s `.mtl`, a `.gltf`'s buffers,
-linked libraries -- with `path` relative to the source's directory. The engine extracts meshes,
+under `assets/` with one of `model_source.SUFFIXES`: one of `model_source.DIRECT` -- `.glb` or
+`.gltf` -- read as it is, or one of `model_source.CONVERTED` -- `.blend`, `.fbx`, `.obj`, `.ply`,
+`.stl`, `.usd`/`.usda`/`.usdc`/`.usdz`, `.abc` or `.bvh` -- every other format Blender 5.2
+imports headlessly (Collada left Blender 5; SVG is not a model). The engine converts those with a
+headless Blender into `.editor/converted/<assets-relative source>.glb`, stamped in `asset.extras`
+with the source's SHA-256 (`paradiseSourceSha256`) and `paradiseDependencies`: `{path, sha256}`
+for every file the import read besides the source -- textures, an `.obj`'s `.mtl`, linked
+libraries -- with `path` relative to the source's directory. The engine extracts meshes,
 clips and materials from that file. The library imports the same file rather than opening the
 source with Blender's own importers, so what the viewport shows is what the game gets; when it is
 missing, or the source's or any dependency's bytes no longer match (a dependency gone counts),
@@ -118,6 +119,16 @@ saving the `.blend` -- or editing the `.mtl` -- is what re-imports it on the nex
 `model_source.current_glb`, which answers only from a conversion that is already current. A
 source's identity and `[glb]` settings live in its own sidecar (`car.blend.meta`), exactly as a
 `.glb`'s do.
+
+**A `.gltf` is the GLB its buffers make.** Every reader in `document/gltf.py` hands a `.gltf` out
+as the GLB the engine's pipeline reads it as: its JSON, with the buffers (a file named relative to
+the `.gltf`, percent-decoded, or a `data:` URI) concatenated 4-byte aligned into one BIN chunk and
+the buffer views re-pointed into it. A buffer or image uri that is absolute, remote or outside
+`assets/` is refused (`gltf.GltfError`, `gltf.reference_refusal`), as the engine refuses it: the
+library does not import such a file, and building an editable mesh from it fails with the reason.
+Blender's importer opens the `.gltf` itself; the library stamps it with its buffer files, so a
+re-exported `.bin` re-imports on the next load, and it keeps the extension in its collection name
+(`GLB/Lamp.gltf`) so a `Lamp.glb` beside it keeps its own.
 
 **A GROUP is an Empty, and the format knows nothing about it.** A document object carrying only
 `meta` and `transform` whose members are its children is shown exactly like every other object:
@@ -313,8 +324,12 @@ extras and extensions are untouched, so the extracted materials' source fingerpr
 and `verify` stays quiet. A mesh several nodes shared becomes one per node. `shared_mesh.unsupported`
 refuses what the round trip would drop: morph targets, attributes other than
 POSITION/NORMAL/TEXCOORD_0/TANGENT, mesh nodes outside the default scene, accessors or buffer
-views nothing but geometry and images uses, external buffers, and owned GLBs. The same fingerprint,
-slot and changed-on-disk refusals apply. After the replace, other placements in the scene are
+views nothing but geometry and images uses, a GLB's external buffers, and owned GLBs. A `.gltf`
+is spliced as the GLB it reads as and written back by `gltf.container_files`: its JSON, naming its
+one buffer as before (the same `.bin`, or a `data:` URI again), and the `.bin` only when its bytes
+changed, staged and renamed into place before the JSON. A `.gltf` split across several buffers is
+refused (`gltf.rewrite_refusal`), since the rewrite has one. The same fingerprint, slot and
+changed-on-disk refusals apply -- for a `.gltf`, to it and its `.bin` together. After the replace, other placements in the scene are
 pointed at a fresh import -- from Object Mode only, since Blender's importer leaves Edit Mode;
 otherwise the library's stamp check re-imports on the next load. A reload hands the editing object
 back while the GLB's bytes are unchanged (`materialize_shared`); nothing records the edit outside

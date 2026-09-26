@@ -21,7 +21,7 @@ assets/levels/*.prefab  ──Blender──▶  assets/levels/*.prefab
 | **Blender 5.2+** | the manifest's floor; Blender refuses to enable the extension below it |
 | **the `paradise` CLI** | Fetched automatically at the version the project pins (`ParadiseVersion` in its `Directory.Packages.props`), cached per version under `~/.paradise/cli/`. Set *Paradise CLI* in preferences to override — a ParadiseEngine checkout, say. Falls back to the installed dotnet tool when a project pins nothing, or the pinned version cannot be fetched |
 | KTX-Software (`ktx`) | *optional* — but the engine's glTF reader rejects PNG/JPEG, so textured meshes need it. The CLI does the transcode; the addon only passes the path along |
-| Blender, for the CLI | only for models that are not `.glb`: the CLI converts them to GLB with a headless Blender. Set `PARADISE_BLENDER_PATH` when it cannot find one |
+| Blender, for the CLI | only for models that are not `.glb` or `.gltf`: the CLI converts them to GLB with a headless Blender. Set `PARADISE_BLENDER_PATH` when it cannot find one |
 
 Nothing here is .NET. The addon is pure Python and shells out to the CLI.
 
@@ -128,20 +128,23 @@ Right-clicking a **document object** — in the Outliner or in the viewport — 
   object owns, beside the document, so it can be reshaped in Edit Mode; every save writes it
   back. The shared model and its other placements stay as they are, and an instance is unpacked
   first. See [the quickstart](docs/quickstart.md#4-place-something) for what it trades away.
-- **Edit Shared Mesh** — on anything that shows a `.glb` model: edit the model itself in place;
-  every save writes the geometry back into the shared GLB, keeping its materials, textures and
-  nodes, so every placement changes. **Finish Editing Shared Mesh** returns it to an ordinary
+- **Edit Shared Mesh** — on anything that shows a `.glb` or `.gltf` model: edit the model itself
+  in place; every save writes the geometry back into the shared file (a `.gltf` stays a `.gltf`,
+  its geometry in its `.bin`), keeping its materials, textures and nodes, so every placement
+  changes. **Finish Editing Shared Mesh** returns it to an ordinary
   placement.
 - **Edit Source in New Blender** — instead of Edit Shared Mesh, on a model made from a `.blend`:
   opens that `.blend` in a *second* Blender, where quads and modifiers stay. Saving it there
   re-extracts the model, and placements show the change on their next reload. A model made from
   any other format (an `.fbx`, an `.obj`, ...) is edited in the application that exported it.
 
-Models are files under `assets/` in any format Blender imports: `.glb` is read as it is; `.blend`,
-`.fbx`, `.gltf`, `.obj`, `.ply`, `.stl`, `.usd`/`.usda`/`.usdc`/`.usdz`, `.abc` or `.bvh` are converted to a GLB under `.editor/converted/` by a
-headless Blender, and the pipeline extracts from that. The viewport shows the same GLB, running
-`paradise assets convert` when it is missing or older than its source or any file the import read
-(an `.obj`'s `.mtl`, a texture, a `.gltf`'s buffers). A `.bvh` holds a skeleton and animation
+Models are files under `assets/` in any format Blender imports. `.glb` and `.gltf` are read as
+they are -- a `.gltf` is the same asset as a GLB whose buffers (a `.bin`, or `data:` URIs) and
+images live beside it, and may only name files under `assets/`. `.blend`, `.fbx`, `.obj`, `.ply`,
+`.stl`, `.usd`/`.usda`/`.usdc`/`.usdz`, `.abc` or `.bvh` are converted to a GLB under
+`.editor/converted/` by a headless Blender, and the pipeline extracts from that. The viewport
+shows the same GLB, running `paradise assets convert` when it is missing or older than its source
+or any file the import read (an `.obj`'s `.mtl`, a texture). A `.bvh` holds a skeleton and animation
 only: it gives `.skeleton` and `.anim` documents and its clips are set up in the Components panel,
 but it has no mesh to make editable.
 

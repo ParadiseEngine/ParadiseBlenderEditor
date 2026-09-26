@@ -1,19 +1,20 @@
 """The files a model can come from, and the GLB Blender reads for each.
 
-A ``.glb`` is read as it is. Every other model format (:data:`CONVERTED`) is converted to a GLB
-by the engine's pipeline -- headless Blender, fixed import and export settings -- and the pipeline
-extracts meshes, clips and materials from THAT GLB. So the viewport imports the very same file, at
+A ``.glb`` or a ``.gltf`` (:data:`DIRECT`) is read as it is -- a ``.gltf`` is the same asset as a
+GLB whose buffers live beside it (``document/gltf.py``). Every other model format
+(:data:`CONVERTED`) is converted to a GLB by the engine's pipeline -- headless Blender, fixed
+import and export settings -- and the pipeline extracts meshes, clips and materials from THAT GLB.
+So the viewport imports the very same file, at
 ``<root>/.editor/converted/<assets-relative source>.glb``, rather than opening the source
 itself: anything Blender's own importer did differently from the converter would be a preview
 of a model the game never gets.
 
 The converted GLB records the SHA-256 of the source bytes it was made from
 (``asset.extras.paradiseSourceSha256``) and of every external file Blender loaded while
-importing it -- textures, an ``.obj``'s ``.mtl``, a ``.gltf``'s buffers, linked libraries
-(``paradiseDependencies``, paths relative to the source's directory). The pipeline refreshes it
-whenever it reads the source; this module only answers whether the file on disk is current.
-Running the conversion is the CLI's (``paradise assets convert``) -- see
-``materialize/meshes.glb_of``.
+importing it -- textures, an ``.obj``'s ``.mtl``, linked libraries (``paradiseDependencies``,
+paths relative to the source's directory). The pipeline refreshes it whenever it reads the
+source; this module only answers whether the file on disk is current. Running the conversion is
+the CLI's (``paradise assets convert``) -- see ``materialize/meshes.glb_of``.
 
 Imports no ``bpy``.
 """
@@ -29,6 +30,7 @@ from . import gltf, project
 
 __all__ = [
     "CONVERTED",
+    "DIRECT",
     "SUFFIXES",
     "ConversionError",
     "convert_arguments",
@@ -43,15 +45,18 @@ __all__ = [
     "printed_path",
 ]
 
-#: The sources the pipeline converts to a GLB before reading them: every format headless Blender
-#: imports. A ``.bvh`` carries animation only. Collada left Blender in 5.0 and is not one.
+#: The sources read as they are: glTF, binary or JSON with its buffers beside it.
+DIRECT = (".glb", ".gltf")
+
+#: The sources the pipeline converts to a GLB before reading them: every other format headless
+#: Blender imports. A ``.bvh`` carries animation only. Collada left Blender in 5.0 and is not one.
 CONVERTED = (
-    ".blend", ".fbx", ".gltf", ".obj", ".ply", ".stl",
+    ".blend", ".fbx", ".obj", ".ply", ".stl",
     ".usd", ".usda", ".usdc", ".usdz", ".abc", ".bvh",
 )
 
 #: Every extension a model source may have.
-SUFFIXES = (".glb", *CONVERTED)
+SUFFIXES = (*DIRECT, *CONVERTED)
 
 T = TypeVar("T")
 
@@ -106,7 +111,7 @@ def is_skeleton_only(source: str) -> bool:
 
 def current_glb(source: str) -> str | None:
     """The GLB to read for the model ``source``, without converting anything: the file itself
-    for a ``.glb``, the converted GLB for any other source while it is current, else
+    for a ``.glb`` or ``.gltf``, the converted GLB for any other source while it is current, else
     ``None``. For readers that must not start a process (a panel draw)."""
     if not is_converted(source):
         return source if os.path.isfile(source) else None
@@ -150,13 +155,12 @@ def no_mesh_refusal(source: str) -> str:
 
 
 def _format_label(source: str) -> str:
-    """How a message names ``source``'s format: ``OBJ``, ``USDZ``, ``glTF``."""
-    suffix = os.path.splitext(source)[1].lower()
-    return "glTF" if suffix == ".gltf" else suffix[1:].upper()
+    """How a message names ``source``'s format: ``OBJ``, ``USDZ``."""
+    return os.path.splitext(source)[1][1:].upper()
 
 
 def _article(label: str) -> str:
-    # By the spelled-out first letter: "an FBX", "an OBJ", "a PLY", "a USD", "a glTF".
+    # By the spelled-out first letter: "an FBX", "an OBJ", "a PLY", "a USD".
     return "an" if label[:1] and label[:1] in "AEFHILMNORSX" else "a"
 
 

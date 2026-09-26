@@ -63,8 +63,8 @@ The Project panel appears whenever this `.blend` sits inside a project — the w
    — that is where your camera and selection live. Its objects are then rematerialized from the
    document regardless, so an edit made by another tool is never shown stale.
 2. The document's objects appear, meshes instanced from the models the document references (a
-   model that is not a `.glb` -- `.blend`, `.fbx`, `.obj`, ... -- is shown through the GLB the
-   pipeline converts it to).
+   `.glb` or `.gltf` is imported as it is; any other model -- `.blend`, `.fbx`, `.obj`, ... -- is
+   shown through the GLB the pipeline converts it to).
 3. `paradise assets watch` starts for the project.
 
 ## 4. Place something
@@ -118,9 +118,9 @@ shared model and its other placements stay as they were. An instance is unpacked
   says so; run it again once the watcher is idle. Rigged or animated models are refused.
 
 **Reshaping the model itself.** To change a model everywhere instead, right-click a placement and
-choose **Edit Shared Mesh…** (for a `.glb` model). No new file is made: that placement becomes an
-editable mesh, and every save writes the geometry back into the shared GLB, so every placement of
-it, in every document, changes. The rules above apply (triangles, slot order, a GLB changed on
+choose **Edit Shared Mesh…** (for a `.glb` or `.gltf` model). No new file is made: that placement
+becomes an editable mesh, and every save writes the geometry back into the shared model -- a
+`.gltf` as its JSON and its `.bin` -- so every placement of it, in every document, changes. The rules above apply (triangles, slot order, a GLB changed on
 disk refuses the save), plus:
 
 - Only the geometry is rewritten. The model's materials, textures, node names and transforms stay
@@ -222,11 +222,13 @@ Drop a `.glb`, `.blend`, `.fbx`, `.gltf`, `.obj`, `.ply`, `.stl`, `.usd`/`.usda`
 paradise assets extract assets/models/Crate.blend
 ```
 
-Anything but a `.glb` is converted to a GLB by a headless Blender first
+A `.glb` or `.gltf` is extracted as it is: a `.gltf` is read with its `.bin` and images beside it
+(files it names outside `assets/` are refused), so editing the `.bin` rebuilds it like editing the
+`.gltf`. Anything else is converted to a GLB by a headless Blender first
 (`.editor/converted/models/Crate.blend.glb`), with each importer's default axes and scale, and
 everything is extracted from that GLB; the source file itself is never written. The conversion
-records every file the import read beside the source -- an `.obj`'s `.mtl`, its textures, a
-`.gltf`'s `.bin` -- so editing any of them converts it again too. A `.bvh` (animation only)
+records every file the import read beside the source -- an `.obj`'s `.mtl`, its textures -- so
+editing any of them converts it again too. A `.bvh` (animation only)
 extracts a `.skeleton` and its `.anim` clips, and no mesh or prefab. Keeping the `.blend` as the model means its quads,
 modifiers and welded topology stay editable: save it and the watcher converts and extracts again.
 
@@ -245,7 +247,7 @@ nothing deletes it.
 |---|---|
 | `assets/` | the source of truth — documents, models, textures, and a `.meta` beside each |
 | `.editor/blend/` | working `.blend` files, one per document. Disposable |
-| `.editor/converted/` | GLBs converted from every model that is not a `.glb`. Disposable |
+| `.editor/converted/` | GLBs converted from every model that is not a `.glb` or `.gltf`. Disposable |
 | `.editor/asset-library/` | the Asset Browser catalogue and its thumbnails. Disposable |
 | `.editor/authoring-schema.json` | the game's component schema, dumped by its launcher build |
 | `build/` | what the CLI compiles and the game loads. Disposable |

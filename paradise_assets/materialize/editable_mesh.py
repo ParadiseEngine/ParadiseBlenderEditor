@@ -95,12 +95,17 @@ _ATTRIBUTES = {
 # -- building a mesh from a GLB ----------------------------------------------------------------
 
 def build_mesh(path: str, name: str) -> bpy.types.Mesh:
-    """The GLB at ``path`` as one mesh in the model's own space: every mesh node baked by its
-    world transform, one material slot per primitive in the engine's slot order.
+    """The model (a GLB, or a ``.gltf`` read as one) at ``path`` as one mesh in the model's own
+    space: every mesh node baked by its world transform, one material slot per primitive in the
+    engine's slot order.
 
     Raises only :class:`contract.EditableMeshError`: the file is untrusted, and every caller
     turns that one error into a refusal or the read-only fallback."""
-    document, binary = gltf.read_glb(path)
+    try:
+        document, binary = gltf.read_glb(path)
+    except gltf.GltfError as error:
+        raise contract.EditableMeshError(
+            f"{os.path.basename(path)} cannot be edited here: {error}.") from error
     problem = contract.unsupported(document)
     if problem is not None:
         raise contract.EditableMeshError(f"{os.path.basename(path)} cannot be edited here: {problem}.")
@@ -489,26 +494,30 @@ def _feed(digest, collection, prop: str, width: int, dtype) -> None:
     digest.update(values.tobytes())
 
 
-def _export(obj: bpy.types.Object, depsgraph, path: str, state: store.EditableMesh,
+def _export(obj: bpy.types.Object, depsgraph, stage, state: store.EditableMesh,
             layout: ProjectLayout) -> int:
-    """Write what ``obj`` evaluates to (modifiers applied, in its own space) as the GLB at
-    ``path``: the whole file for a mesh it owns, the shared model with its geometry replaced for
-    one it does not. Returns the primitive count the file holds."""
+    """Write what ``obj`` evaluates to (modifiers applied, in its own space) into staging files
+    ``stage(final path)`` hands out: the whole GLB for a mesh it owns, the shared model with its
+    geometry replaced for one it does not -- for a ``.gltf``, its JSON and the buffer file whose
+    bytes changed. Returns the primitive count the model holds."""
     mesh = bpy.data.meshes.new_from_object(obj.evaluated_get(depsgraph), depsgraph=depsgraph)
     name = store.document_name(obj) or obj.name
+    path = layout.resolve(state.glb)
     if not state.shared:
-        return _write_glb(mesh, path, name, store.guid_of(obj))
+        return _write_glb(mesh, stage(path), name, store.guid_of(obj))
     with tempfile.TemporaryDirectory(prefix="paradise-shared-") as directory:
         scratch = os.path.join(directory, "edited.glb")
         written = _write_glb(mesh, scratch, name, None)
         if written == state.slots:
             try:
-                spliced = shared_mesh.splice(gltf.read_glb(layout.resolve(state.glb)), gltf.read_glb(scratch))
+                spliced = shared_mesh.splice(gltf.read_glb(path), gltf.read_glb(scratch))
+                files = gltf.container_files(path, spliced)
             except (ValueError, KeyError, IndexError, TypeError) as error:
                 raise contract.EditableMeshError(
                     f"'{obj.name}': its edit could not be written into {state.glb}: {error}") from error
-            with open(path, "wb") as handle:
-                handle.write(spliced)
+            for final, data in files:
+                with open(stage(final), "wb") as handle:
+                    handle.write(data)
     return written
 
 
@@ -594,17 +603,24 @@ def _staging_file(target: str) -> str:
 
 
 def _sha256(path: str) -> str:
+    """The model's bytes: the file, and a ``.gltf``'s buffer files after it -- a changed ``.bin``
+    is a changed model, and so is one that is gone."""
     digest = hashlib.sha256()
-    with open(path, "rb") as handle:
-        for block in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(block)
+    for part in (path, *gltf.buffer_files(path)):
+        if part != path and not os.path.isfile(part):
+            digest.update(b"\x00missing")
+            continue
+        with open(part, "rb") as handle:
+            for block in iter(lambda handle=handle: handle.read(1 << 20), b""):
+                digest.update(block)
     return digest.hexdigest()
 
 
 # -- editing a shared model --------------------------------------------------------------------------
 
 def shared_source(obj: bpy.types.Object, layout: ProjectLayout) -> str:
-    """The shared GLB the instance ``obj`` shows, if it can be edited in place; else raise."""
+    """The shared model (a GLB or ``.gltf``) the instance ``obj`` shows, if it can be edited in
+    place; else raise."""
     collection = obj.instance_collection
     source = collection.get(SOURCE_KEY) if collection is not None else None
     if not isinstance(source, str) or not os.path.isfile(source):
@@ -615,7 +631,7 @@ def shared_source(obj: bpy.types.Object, layout: ProjectLayout) -> str:
         raise contract.EditableMeshError(model_source.no_mesh_refusal(source))
     if model_source.is_converted(source):
         raise contract.EditableMeshError(model_source.edit_in_place_refusal(source))
-    problem = shared_mesh.unsupported(gltf.read_json(source))
+    problem = shared_mesh.unsupported(gltf.read_json(source)) or gltf.rewrite_refusal(source)
     if problem is not None:
         raise contract.EditableMeshError(f"{os.path.basename(source)} cannot be edited in place: {problem}.")
     return source
@@ -686,24 +702,31 @@ def publish(scene: bpy.types.Scene, layout: ProjectLayout | None, warn=None) -> 
         _refuse_changed_slots(obj, state)
         changed.append((obj, state, geometry))
 
-    staged: list[str] = []
+    staged: list[tuple[str, str]] = []   # (temporary, final)
+
+    def stage(final: str) -> str:
+        staged.append((_staging_file(final), final))
+        return staged[-1][0]
+
     try:
         for obj, state, _geometry in changed:
-            staged.append(_staging_file(layout.resolve(state.glb)))
-            written = _export(obj, depsgraph, staged[-1], state, layout)
+            written = _export(obj, depsgraph, stage, state, layout)
             if written != state.slots:
                 raise contract.EditableMeshError(
                     f"'{obj.name}': {state.slots - written} of its {state.slots} material slot(s) "
                     "have no faces, so the game would bind every material after them to the wrong "
                     "part. Give each slot at least one face."
                 )
-        for (obj, state, geometry), temporary in zip(changed, staged, strict=True):
-            path = layout.resolve(state.glb)
-            shutil.copymode(path, temporary)
-            os.replace(temporary, path)
-            store.tag_editable(obj, replace(state, sha256=_sha256(path), geometry=geometry))
+        # A .gltf's buffer file lands before the JSON naming its new length.
+        for temporary, final in staged:
+            if os.path.exists(final):
+                shutil.copymode(final, temporary)
+            os.replace(temporary, final)
+        for obj, state, geometry in changed:
+            sha256 = _sha256(layout.resolve(state.glb))
+            store.tag_editable(obj, replace(state, sha256=sha256, geometry=geometry))
     finally:
-        for temporary in staged:
+        for temporary, _final in staged:
             if os.path.exists(temporary):
                 os.unlink(temporary)
     _reimport_shared(scene, [layout.resolve(state.glb) for _obj, state, _g in changed if state.shared])

@@ -70,7 +70,8 @@ edit its source prefab to clear it, or use **Revert to Prefab** to restore the i
 
 The Components panel gains an **Animation clips** section when the selected object's mesh
 resolves to a model that carries animations (`document/glb_clips.py` reads the JSON chunk of the
-GLB -- the model itself, or the current converted GLB of any other source, a `.bvh` included).
+GLB -- the model itself for a `.glb` or `.gltf`, or the current converted GLB of any other source,
+a `.bvh` included).
 Each clip row is a
 root-motion toggle and a root-bone picker; both write the model's `.meta` sidecar immediately —
 the `[glb].clips` domain, keyed by glTF animation index — because the setting belongs to the

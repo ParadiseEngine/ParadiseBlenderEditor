@@ -1,9 +1,9 @@
 """Per-clip root-motion settings, authored into a model's ``[glb]`` sidecar domain.
 
 The engine reads per-clip import settings from ``<model>.meta`` (the ``[glb]`` domain -- the
-same place ``optimize`` lives; a converted model has the same domain as a ``.glb``), keyed by
-the clip's **glTF animation index** because that survives a rename in the DCC where a name does
-not. For a converted source (a ``.blend``, an ``.fbx``, a ``.bvh`` ...) the index is the one in
+same place ``optimize`` lives; a ``.gltf`` or a converted model has the same domain as a
+``.glb``), keyed by the clip's **glTF animation index** because that survives a rename in the
+DCC where a name does not. For a converted source (a ``.blend``, an ``.fbx``, a ``.bvh`` ...) the index is the one in
 its converted GLB, which is what the pipeline extracts clips from and so what the clip table is
 read from here. Each entry is one
 inline table::
@@ -296,7 +296,8 @@ def _apply(
     if info is None:
         raise ClipSettingsError(
             f"{glb_name} has no current converted GLB to read its clips from; reload the document "
-            "to convert it" if model_source.is_converted(glb_path) else f"{glb_name} is not a readable GLB")
+            "to convert it" if model_source.is_converted(glb_path)
+            else f"{glb_name} is not a readable glTF model")
     if not 0 <= index < len(info.clips):
         raise ClipSettingsError(
             f"{glb_name} has {len(info.clips)} clip(s); there is no clip {index}")

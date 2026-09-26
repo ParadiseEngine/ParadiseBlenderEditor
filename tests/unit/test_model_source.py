@@ -1,4 +1,4 @@
-"""A model that is not a ``.glb`` is read through the GLB the pipeline converted it to.
+"""A model that is not a ``.glb`` or ``.gltf`` is read through the GLB the pipeline converted it to.
 
 The viewport, Make Mesh Editable and the clip settings all read that GLB, so the one question
 that matters is whether the file under ``.editor/converted/`` is the conversion of the source as
@@ -69,12 +69,14 @@ def test_the_converted_glb_mirrors_the_source_path_under_editor_converted(tmp_pa
         tmp_path / ".editor" / "converted" / "models" / "props" / "car.blend.glb")
 
 
-def test_a_glb_is_read_as_itself_and_a_blend_through_its_current_conversion(tmp_path):
+def test_a_glb_or_gltf_is_read_as_itself_and_a_blend_through_its_current_conversion(tmp_path):
     layout = project(tmp_path)
     model = write(tmp_path / "assets" / "models" / "crate.glb", glb({"asset": {"version": "2.0"}}))
+    text = write(tmp_path / "assets" / "models" / "tree.gltf", b'{"asset": {"version": "2.0"}}')
     source = write(tmp_path / "assets" / "models" / "car.blend", b"BLENDER-v1")
 
     assert model_source.current_glb(model) == model
+    assert model_source.current_glb(text) == text
     assert model_source.current_glb(source) is None, "nothing converted yet"
 
     glb_path = converted(layout, source, b"BLENDER-v1")
@@ -101,11 +103,12 @@ def test_a_glb_without_a_source_stamp_is_never_current(tmp_path):
     assert model_source.current_glb(source) is None
 
 
-def test_every_format_blender_imports_is_a_converted_model_and_a_glb_is_read_directly():
-    for name in ("a.blend", "a.fbx", "a.gltf", "a.obj", "a.ply", "a.stl", "a.usd", "a.usda",
+def test_every_format_blender_imports_is_a_converted_model_and_gltf_is_read_directly():
+    for name in ("a.blend", "a.fbx", "a.obj", "a.ply", "a.stl", "a.usd", "a.usda",
                  "a.usdc", "a.usdz", "a.abc", "a.bvh", "A.OBJ"):
         assert model_source.is_model(name) and model_source.is_converted(name), name
-    assert model_source.is_model("a.glb") and not model_source.is_converted("a.glb")
+    for name in ("a.glb", "a.gltf", "A.GLTF"):
+        assert model_source.is_model(name) and not model_source.is_converted(name), name
     for name in ("a.dae", "a.svg", "a.png", "a.mesh", "a.glb.meta"):
         assert not model_source.is_model(name), name
 
@@ -133,10 +136,11 @@ def test_editing_a_file_the_import_read_makes_the_conversion_stale(tmp_path):
 
 def test_dependencies_resolve_against_the_source_directory_not_the_project(tmp_path):
     layout = project(tmp_path)
-    source = write(tmp_path / "assets" / "models" / "props" / "tree.gltf", b"{}")
-    write(tmp_path / "assets" / "models" / "shared" / "tree.bin", b"BIN")
-    write(tmp_path / "assets" / "tree.bin", b"OTHER")
-    glb_path = converted(layout, source, b"{}", dependencies=[("../shared/tree.bin", b"BIN")])
+    source = write(tmp_path / "assets" / "models" / "props" / "tree.obj", b"mtllib ../shared/tree.mtl\n")
+    write(tmp_path / "assets" / "models" / "shared" / "tree.mtl", b"MTL")
+    write(tmp_path / "assets" / "tree.mtl", b"OTHER")
+    glb_path = converted(layout, source, b"mtllib ../shared/tree.mtl\n",
+                         dependencies=[("../shared/tree.mtl", b"MTL")])
 
     assert model_source.is_current(source, glb_path)
 
@@ -155,7 +159,6 @@ def test_the_interchange_refusal_names_the_format_and_a_blend_is_edited_at_sourc
     assert "Edit Source in New Blender" in model_source.edit_in_place_refusal("/a/crate.blend")
     obj = model_source.edit_in_place_refusal("/a/crate.obj")
     assert "crate.obj is an OBJ file" in obj and "export the OBJ again" in obj
-    assert "a glTF file" in model_source.edit_in_place_refusal("/a/tree.gltf")
     assert "a USDZ file" in model_source.edit_in_place_refusal("/a/set.usdz")
 
 

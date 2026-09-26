@@ -2,10 +2,11 @@
 (ShiningPie: ~117 files across 225 objects). Instancing also makes the geometry uneditable in
 place, which is right: the model owns geometry, and an edit here would vanish on the next load.
 
-A converted model (``.blend``, ``.fbx``, ``.obj`` ...) is shown through the GLB the pipeline
-converts it to (``document/model_source.py``), but the library keys, names and stamps the
-collection by the SOURCE plus that GLB's stamp: saving the ``.blend`` -- or an ``.obj``'s
-``.mtl`` -- is what makes the next load convert and re-import it.
+A ``.gltf`` is imported as it is, like a ``.glb``; its stamp covers its buffer files too, so a
+re-exported ``.bin`` is re-imported. A converted model (``.blend``, ``.fbx``, ``.obj`` ...) is
+shown through the GLB the pipeline converts it to (``document/model_source.py``), but the library
+keys, names and stamps the collection by the SOURCE plus that GLB's stamp: saving the ``.blend``
+-- or an ``.obj``'s ``.mtl`` -- is what makes the next load convert and re-import it.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import os
 
 import bpy
 
-from ..document import model_source, project
+from ..document import gltf, model_source, project
 from ..play import host
 from . import store
 
@@ -23,13 +24,13 @@ __all__ = ["LIBRARY_COLLECTION", "MeshLibrary", "glb_of"]
 #: One collection per imported model, excluded from the view layer.
 LIBRARY_COLLECTION = "ParadiseAssets/Library"
 
-#: The model source the collection shows: the ``.glb`` imported, or the converted source whose
-#: GLB was. The key predates converted sources; renaming it would orphan every
+#: The model source the collection shows: the ``.glb`` or ``.gltf`` imported, or the converted
+#: source whose GLB was. The key predates converted sources; renaming it would orphan every
 #: existing workfile's library.
 SOURCE_KEY = "paradise_glb_source"
 
-#: ``(mtime, size)`` at import -- of the source, and of the converted GLB when there is one; a
-#: moved stamp means re-import.
+#: ``(mtime, size)`` at import -- of the source and a ``.gltf``'s buffer files, and of the
+#: converted GLB when there is one; a moved stamp means re-import.
 STAMP_KEY = "paradise_glb_stamp"
 
 
@@ -103,12 +104,20 @@ class MeshLibrary:
         except model_source.ConversionError as error:
             self._warn(str(error))
             return None
+        # Blender's importer would follow a uri anywhere; the engine refuses these, so the
+        # viewport must not show what the game will never get.
+        refusal = gltf.reference_refusal(glb)
+        if refusal is not None:
+            self._warn(f"could not import {os.path.basename(path)}: {refusal}")
+            return None
 
         basename = os.path.basename(path)
-        # A converted source keeps its extension in the name: ``car.blend`` beside ``car.glb``
+        # Only a ``.glb`` is named by its stem: ``car.blend`` or ``car.gltf`` beside ``car.glb``
         # must not take over that model's collection.
-        name = f"GLB/{basename if glb != path else os.path.splitext(basename)[0]}"
-        stamp = store.stamp_of(path) if glb == path else f"{store.stamp_of(path)}|{store.stamp_of(glb)}"
+        name = f"GLB/{os.path.splitext(basename)[0] if path.lower().endswith('.glb') else basename}"
+        stamp = "|".join(store.stamp_of(part) for part in (path, *gltf.buffer_files(path)))
+        if glb != path:
+            stamp += f"|{store.stamp_of(glb)}"
         existing = bpy.data.collections.get(name)
         if existing is not None and _is_current_import(existing, path, stamp):
             return existing

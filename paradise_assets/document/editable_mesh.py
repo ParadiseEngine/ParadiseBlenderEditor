@@ -133,7 +133,7 @@ def unsupported(document) -> str | None:
     A GLB on disk is untrusted -- a merge, a teammate, a hand edit -- so a field of the wrong
     shape is an answer here, never an exception for the caller to miss."""
     if not isinstance(document, dict) or not document:
-        return "it is not a readable GLB"
+        return "it is not a readable glTF model"
     try:
         return _unsupported(document)
     except (TypeError, ValueError, KeyError, IndexError, AttributeError):

@@ -115,7 +115,7 @@ enough — so a fresh session can start the watcher and build without opening an
 document is open, **Prefab Document** lists what you last worked on here, or what the project
 holds if you have not worked on anything yet.
 
-Right-clicking a **document object** — in the Outliner or in the viewport — adds three entries:
+Right-clicking a **document object** — in the Outliner or in the viewport — adds these entries:
 
 - **Open Prefab in New Blender** — for an instance (or anything under one), opens the prefab it
   came from in a *second* Blender. The level stays open in this one; the watcher reconciles what
@@ -123,6 +123,13 @@ Right-clicking a **document object** — in the Outliner or in the viewport — 
 - **Create Prefab from Object…** — the same extraction the sidebar offers, on the object you
   clicked.
 - **Group Selected** — put the selection under a new Empty, which is what a group is.
+- **Make Mesh Editable** — on anything that shows a model: copy its geometry into a GLB this
+  object owns, beside the document, so it can be reshaped in Edit Mode; every save writes it
+  back. The shared model and its other placements stay as they are, and an instance is unpacked
+  first. See [the quickstart](docs/quickstart.md#4-place-something) for what it trades away.
+- **Edit Shared Mesh** — on anything that shows a model: edit the model itself in place; every
+  save writes the geometry back into the shared GLB, keeping its materials, textures and nodes,
+  so every placement changes. **Finish Editing Shared Mesh** returns it to an ordinary placement.
 
 On something that belongs to a **prefab instance**, three more appear. Editing a field on an
 instance, or moving one of its children, records an *override*; these are how one ends:

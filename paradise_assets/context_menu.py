@@ -1,6 +1,7 @@
 """The right-click entries for a document object, in both editors an author selects one in:
-open the prefab it instantiates, turn it into one, group the selection under a new Empty, and --
-for anything that belongs to an instance -- apply, revert or break its overrides.
+open the prefab it instantiates, turn it into one, group the selection under a new Empty, give a
+placement a mesh of its own, and -- for anything that belongs to an instance -- apply, revert or
+break its overrides.
 
 Both are reachable from the sidebar already. The menus are where an author's hand already is
 when the question comes up -- the Outliner because it is the only place the document's tree is
@@ -28,6 +29,7 @@ __all__ = ["classes", "register_menu", "unregister_menu"]
 #: context menu. One ``_draw`` for both -- they are handed the same active object, and an entry
 #: that appeared in one place and not the other would read as a bug in whichever lacked it.
 MENUS = ("OUTLINER_MT_object", "VIEW3D_MT_object_context_menu")
+EDIT_MODE_MENU = "VIEW3D_MT_edit_mesh_context_menu"
 
 
 def prefab_of(obj) -> tuple[str, str] | None:
@@ -162,6 +164,23 @@ def _draw(self, context) -> None:
         "paradise_assets.group_objects",
         text="Group Selected",
         icon="OUTLINER_COLLECTION")
+    # Only on something that shows a model: on a group or a light it could only ever be greyed.
+    # A prefab's child keeps the row, greyed, so its tooltip can say to unpack the instance.
+    if obj.instance_collection is not None:
+        column.operator(
+            "paradise_assets.make_mesh_editable",
+            text="Make Mesh Editable",
+            icon="EDITMODE_HLT")
+        column.operator(
+            "paradise_assets.edit_shared_mesh",
+            text="Edit Shared Mesh…",
+            icon="LINKED")
+    editing = store.editable_of(obj)
+    if editing is not None and editing.shared:
+        column.operator(
+            "paradise_assets.finish_shared_mesh",
+            text="Finish Editing Shared Mesh",
+            icon="CHECKMARK")
 
     # Only for something that IS part of an instance: on a plain object these three could only
     # ever be greyed, and the menu already earns its rows.
@@ -184,20 +203,37 @@ def _draw(self, context) -> None:
         icon="UNLINKED")
 
 
+def _draw_edit_mode(self, context) -> None:
+    """Edit Mode's right-click is a different menu, and it is where a shared-mesh edit ends."""
+    obj = getattr(context, "active_object", None)
+    editing = store.editable_of(obj) if obj is not None else None
+    if editing is None or not editing.shared:
+        return
+    self.layout.separator()
+    self.layout.operator(
+        "paradise_assets.finish_shared_mesh",
+        text="Finish Editing Shared Mesh",
+        icon="CHECKMARK")
+
+
+#: Menu -> what it appends, for the Object Mode menus and Edit Mode's.
+_ENTRIES = (*((name, _draw) for name in MENUS), (EDIT_MODE_MENU, _draw_edit_mode))
+
+
 def register_menu() -> None:
     """Append the entries to each menu that exists: a renamed bundled menu must not fail the
     whole addon's registration over a context-menu entry."""
-    for name in MENUS:
+    for name, draw in _ENTRIES:
         menu = getattr(bpy.types, name, None)
         if menu is not None:
-            menu.append(_draw)
+            menu.append(draw)
 
 
 def unregister_menu() -> None:
-    for name in MENUS:
+    for name, draw in _ENTRIES:
         menu = getattr(bpy.types, name, None)
         if menu is not None:
-            menu.remove(_draw)
+            menu.remove(draw)
 
 
 classes = (PARADISE_ASSETS_OT_open_prefab_elsewhere,)

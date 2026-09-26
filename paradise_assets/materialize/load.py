@@ -6,14 +6,22 @@ and here it would churn every object's decimals on the next save.
 from __future__ import annotations
 
 import os
-import tomllib
 
 import bpy
 from mathutils import Quaternion, Vector
 
-from ..document import axes, component_schema, mesh_document, project, schema, well_known
+from ..document import (
+    axes,
+    component_schema,
+    material_document,
+    mesh_document,
+    project,
+    schema,
+    well_known,
+)
+from ..document import editable_mesh as ownership
 from ..document.prefab import PrefabDocument, PrefabObject
-from . import light_preview, shapes, store, tagging, transform_helpers
+from . import editable_mesh, light_preview, shapes, store, tagging, transform_helpers
 from .meshes import LIBRARY_COLLECTION, MeshLibrary
 
 __all__ = ["LoadResult", "load_document"]
@@ -63,6 +71,9 @@ def load_document(
     # the clear owns the document objects, and doing it in this order means no captured
     # reference can have been freed under us and no name is taken when the document wants it.
     startup = _startup_content(scene) if clear_startup else None
+    # Owned meshes leave the scene BEFORE the clear, which would delete them: the load hands
+    # each back when its GLB is unchanged, keeping what a GLB cannot hold, and drops the rest.
+    kept = editable_mesh.stash(scene)
     _clear_previous(scene, preserve_actions=preserve_actions)
     _drop_startup_content(startup)
 
@@ -86,12 +97,13 @@ def load_document(
     created: dict[str, bpy.types.Object] = {}
 
     for entry in resolution.document.objects:
-        obj = _create_object(entry, scene, layout, library, mesh_fields, result)
+        obj = _create_object(entry, scene, layout, library, mesh_fields, result, kept)
         tagging.tag(obj, entry, resolution)
         if store.is_derived(obj):
             result.derived += 1
         created[entry.guid] = obj
         result.objects += 1
+    editable_mesh.drop(kept)
 
     # Shapes only for what this DOCUMENT authors. An instance's own entry is read from the
     # file, not the expansion: the expansion folds the prefab's components in, and a shape the
@@ -127,6 +139,7 @@ def load_document(
     result.sources |= library.sources
     store.write_state(scene, scene_path)
     scene.view_layers[0].update()
+    editable_mesh.settle(created.values(), scene)
     # Nested transform fields store WORLD placement, so all parents must be evaluated first.
     for entry in document.objects:
         if entry.guid in created:
@@ -146,24 +159,32 @@ def _create_object(
     library: MeshLibrary,
     mesh_fields: schema.MeshFields,
     result: LoadResult,
+    kept: dict,
 ) -> bpy.types.Object:
-    obj = bpy.data.objects.new(entry.name or "object", None)
-    obj.empty_display_size = 0.25
-    scene.collection.objects.link(obj)
-
-    _apply_transform(obj, entry)
-
     reference = _mesh_reference(entry, mesh_fields)
-    if reference is not None:
-        # The field names a mesh DOCUMENT; the GLB it was compiled from is what Blender imports.
-        source = mesh_document.displayable(layout, reference)
-        collection = library.collection_for(source) if source is not None else None
-        if collection is not None:
-            obj.instance_type = "COLLECTION"
-            obj.instance_collection = collection
-        else:
-            result.warn(f"{entry.name}: mesh '{reference}' could not be displayed")
+    # The field names a mesh DOCUMENT; the GLB it was compiled from is what Blender imports.
+    source = mesh_document.displayable(layout, reference) if reference is not None else None
 
+    obj = None
+    if source is not None and ownership.owns(source, entry.guid):
+        # This object's own geometry: a real mesh to edit, not an instance of a shared one.
+        obj = editable_mesh.materialize(entry, result.read(source), layout, kept, result.warn)
+    elif source is not None:
+        # A shared model this scene was editing in place, while its GLB is still what it read.
+        obj = editable_mesh.materialize_shared(entry, result.read(source), layout, kept)
+    if obj is None:
+        obj = bpy.data.objects.new(entry.name or "object", None)
+        obj.empty_display_size = 0.25
+        if reference is not None:
+            collection = library.collection_for(source) if source is not None else None
+            if collection is not None:
+                obj.instance_type = "COLLECTION"
+                obj.instance_collection = collection
+            else:
+                result.warn(f"{entry.name}: mesh '{reference}' could not be displayed")
+
+    scene.collection.objects.link(obj)
+    _apply_transform(obj, entry)
     _apply_authored_colour(obj, entry, layout, result)
     return obj
 
@@ -181,30 +202,10 @@ def _apply_authored_colour(
         if not isinstance(first, dict) or not first.get("path"):
             continue
 
-        colour = _base_colour(result.read(layout.resolve(first["path"])))
+        colour = material_document.base_colour(result.read(layout.resolve(first["path"])))
         if colour is not None:
             obj.color = colour
         return
-
-
-def _base_colour(path: str):
-    """``BaseColorFactor`` from a material document, or ``None``."""
-    try:
-        with open(path, "rb") as handle:
-            document = tomllib.load(handle)
-    except (OSError, tomllib.TOMLDecodeError):
-        return None
-
-    factor = document.get("BaseColorFactor")
-    if not isinstance(factor, dict):
-        return None
-
-    return (
-        float(factor.get("r", 1.0)),
-        float(factor.get("g", 1.0)),
-        float(factor.get("b", 1.0)),
-        float(factor.get("a", 1.0)),
-    )
 
 
 def _transform_of(entry: PrefabObject):
@@ -242,15 +243,12 @@ def _apply_transform(obj: bpy.types.Object, entry: PrefabObject) -> None:
 
 def _mesh_reference(entry: PrefabObject, mesh_fields: schema.MeshFields) -> str | None:
     """The first mesh path the components name (a bare path or an ``AssetReference``), if any."""
-    for component in entry.components:
-        for field, value in component.data.items():
-            if isinstance(value, dict):
-                path = value.get("path")
-                if isinstance(path, str) and mesh_fields.is_mesh_field(component.type, field, path):
-                    return path
-            elif mesh_fields.is_mesh_field(component.type, field, value):
-                return value
-    return None
+    found = ownership.mesh_field(entry.components, mesh_fields)
+    if found is None:
+        return None
+    component, field = found
+    value = component.data[field]
+    return value.get("path") if isinstance(value, dict) else value
 
 
 def _startup_content(scene: bpy.types.Scene):

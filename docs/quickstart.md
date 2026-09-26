@@ -96,6 +96,41 @@ One thing is still the prefab's alone: **collision shapes**. A shape row is a li
 override replaces a whole list, so overriding one would silently drop the prefab's other rows.
 The panel says *"the prefab's; edit it there"*.
 
+**Reshaping one placement.** A placed model is an instance of a shared GLB, so its geometry
+cannot be edited where it stands: every placement *is* that mesh. Right-click it and choose
+**Make Mesh Editable**. The geometry is copied into a GLB this object owns, in a folder beside
+the document (`levels/arena/Wall_1a2b3c4d.glb`), and the object becomes an ordinary mesh; the
+shared model and its other placements stay as they were. An instance is unpacked first. Then:
+
+- Edit it in Edit Mode, add modifiers — anything. Every save writes what it evaluates to back to
+  its GLB; a save that changed nothing writes nothing.
+- The GLB holds triangles. Your quads, modifiers and seams stay in this working file for as long
+  as the GLB is what you last saved; a fresh clone, **Recreate Working File**, or anyone else
+  gets the triangulated result with modifiers applied.
+- Each material slot shows the Materials entry the game binds to it. Keep the slots as they are:
+  adding, removing or reordering one, or leaving one without faces, is refused at save, because
+  the game binds materials by slot order. Change a slot's material in the Components panel.
+- If the GLB changed on disk since you loaded it, the save refuses rather than overwrite that
+  change; **Reload** takes it and drops your edits to that mesh.
+- The asset watcher mints the new GLB's mesh document. If it is busy rebuilding, the command
+  says so; run it again once the watcher is idle. Rigged or animated models are refused.
+
+**Reshaping the model itself.** To change a model everywhere instead, right-click a placement and
+choose **Edit Shared Mesh…**. No new file is made: that placement becomes an editable mesh, and
+every save writes the geometry back into the shared GLB, so every placement of it, in every
+document, changes. The rules above apply (triangles, slot order, a GLB changed on disk refuses the
+save), plus:
+
+- Only the geometry is rewritten. The model's materials, textures, node names and transforms stay
+  exactly as they were, so its extracted materials and every prefab that uses it are untouched.
+- Other placements in this scene show the change after a save from Object Mode, or at the next
+  reload.
+- **Finish Editing Shared Mesh** (right-click, in Object or Edit Mode) saves and turns the object
+  back into an ordinary placement. One object at a time may edit a given model; a prefab's child
+  may edit it too, since no document is written.
+- A model with morph targets, vertex colours, a second UV set, or data the rewrite would not carry
+  is refused rather than stripped.
+
 ## 5. Edit components
 
 Select an object. The **Components** panel shows what the document says about it:
@@ -152,8 +187,9 @@ For new Blender geometry:
 5. Wait for the asset watcher to compile those assets, then **Build & Play** loads the instance in
    the game.
 
-Creation leaves the source Blender scene and selection intact. It creates a static snapshot;
-later geometry edits require re-exporting the GLB and running `paradise assets extract` on it.
+Creation leaves the source Blender scene and selection intact. It creates a static snapshot:
+to reshape one placement of it later, use **Make Mesh Editable** (section 4); to change the model
+everywhere, re-export the GLB and run `paradise assets extract` on it.
 The meshes become one reusable model; rigged objects, native lights, cameras and gameplay
 components are not copied by this command. Add game components through the prefab's Components
 panel. If extraction fails after export, the error names the saved GLB to recover from.

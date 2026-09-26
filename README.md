@@ -191,6 +191,12 @@ after touching anything under `document/` or `materialize/`.
 Integration tests that need a real project take one via `PARADISE_ASSETS_PROJECT` (default
 `../shiningpie`) and skip cleanly when it names nothing.
 
+The tests that copy that project and build it (`test_editable_mesh`, `test_shared_mesh`,
+`test_model_sources`, `test_geometry_prefab`) keep the build outputs of their last passing run
+under `~/.cache/paradise-assets-tests` (`PARADISE_TEST_WARM_DIR`; `off` disables it) and start
+from them, so only the first run rebuilds the whole project. Delete that directory after
+changing the CLI's pipeline version if a run should prove a build from nothing.
+
 ## Documentation
 
 - [`docs/quickstart.md`](docs/quickstart.md) — from a checkout to a document open and playing

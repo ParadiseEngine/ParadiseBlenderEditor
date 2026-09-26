@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import contextlib
 import os
-import shutil
 import sys
 import tempfile
 import tomllib
@@ -22,8 +21,10 @@ from mathutils import Matrix
 from mathutils.kdtree import KDTree
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import addon_utils
+from warm_project import copy_project, keep_warm
 
 from paradise_assets import watch
 from paradise_assets.document import editable_mesh as ownership
@@ -152,9 +153,9 @@ def owned_glb(layout, path, guid) -> str:
 
 
 def make_editable(obj) -> dict:
-    """Run the operator with a FRESH watcher. The copied project has a cold build cache, so a
-    watcher that has seen one change is busy rebuilding every asset for minutes and queues new
-    files behind that; a fresh one reconciles them first. (A working session's watcher is warm.)"""
+    """Run the operator with a FRESH watcher. Without a warm start (``warm_project``) the copied
+    project builds from nothing, and a watcher that has seen one change is busy rebuilding every
+    asset for minutes and queues new files behind that; a fresh one reconciles them first."""
     watch.stop_all()
     bpy.context.view_layer.objects.active = obj
     return bpy.ops.paradise_assets.make_mesh_editable("EXEC_DEFAULT")
@@ -181,9 +182,7 @@ def expect_refusal(level, glb, words):
 
 def run(source, root):
     enable()
-    shutil.copytree(Path(source, "assets"), Path(root, "assets"))
-    Path(root, ".editor").mkdir()
-    shutil.copy2(Path(source, ".editor/authoring-schema.json"), Path(root, ".editor/authoring-schema.json"))
+    copy_project(source, root)
     layout = project.ProjectLayout(root)
     level = layout.resolve(LEVEL)
     open_fresh(level, layout)
@@ -318,6 +317,7 @@ def run(source, root):
     built = host.run_cli(["assets", "build", "--profile", "dev", "--project", root], root)
     assert built is not None and built.ok, (built.stdout + built.stderr)[-3000:] if built else "no CLI"
     print("PASS verify raises nothing about owned GLBs, and the level builds")
+    keep_warm(source, root)
 
 
 if __name__ == "__main__":

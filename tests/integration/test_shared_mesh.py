@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import contextlib
 import os
-import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -30,6 +29,7 @@ from test_editable_mesh import (
     slot_faces,
     world_points,
 )
+from warm_project import copy_project, keep_warm
 
 from paradise_assets import watch
 from paradise_assets.document import gltf, project, sidecar
@@ -68,9 +68,7 @@ def local_space(obj, points):
 
 def run(source, root):
     enable()
-    shutil.copytree(Path(source, "assets"), Path(root, "assets"))
-    Path(root, ".editor").mkdir()
-    shutil.copy2(Path(source, ".editor/authoring-schema.json"), Path(root, ".editor/authoring-schema.json"))
+    copy_project(source, root)
     layout = project.ProjectLayout(root)
     level = layout.resolve(LEVEL)
     open_fresh(level, layout)
@@ -183,6 +181,7 @@ def run(source, root):
     built = host.run_cli(["assets", "build", "--profile", "dev", "--project", root], root)
     assert built is not None and built.ok, (built.stdout + built.stderr)[-3000:] if built else "no CLI"
     print("PASS verify is clean after in-place edits, and the level builds")
+    keep_warm(source, root)
 
 
 if __name__ == "__main__":

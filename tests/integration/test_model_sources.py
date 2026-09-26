@@ -13,7 +13,6 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -26,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from test_editable_mesh import enable, make_editable, open_fresh, owned_glb, place, reload, world_points
+from warm_project import copy_project, keep_warm
 
 from paradise_assets import clip_ops, context_menu, watch
 from paradise_assets.document import editable_mesh as ownership
@@ -180,9 +180,7 @@ def placed(scene, guid):
 
 def run(source, root):
     enable()
-    shutil.copytree(Path(source, "assets"), Path(root, "assets"))
-    Path(root, ".editor").mkdir()
-    shutil.copy2(Path(source, ".editor/authoring-schema.json"), Path(root, ".editor/authoring-schema.json"))
+    copy_project(source, root)
     layout = project.ProjectLayout(root)
     level = layout.resolve(LEVEL)
     blend, fbx = layout.resolve(BLEND), layout.resolve(FBX)
@@ -355,6 +353,7 @@ def run(source, root):
     assert "has not been extracted" not in report.stdout + report.stderr, report.stdout + report.stderr
     cli(["assets", "build", "--profile", "dev"], root)
     print("PASS verify is clean and the level builds with .blend, .fbx and .obj models in it")
+    keep_warm(source, root)
 
 
 if __name__ == "__main__":

@@ -9,7 +9,6 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -21,8 +20,10 @@ import bpy
 from mathutils import Vector
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import addon_utils
+from warm_project import copy_project, keep_warm
 
 from paradise_assets import watch
 from paradise_assets.document import prefab, project, sidecar
@@ -74,9 +75,7 @@ def reopened(root):
 
 def run(source, root):
     enable()
-    shutil.copytree(Path(source, "assets"), Path(root, "assets"))
-    Path(root, ".editor").mkdir()
-    shutil.copy2(Path(source, ".editor/authoring-schema.json"), Path(root, ".editor/authoring-schema.json"))
+    copy_project(source, root)
     layout = project.ProjectLayout(root)
     level = layout.resolve("levels/test.prefab")
     open_document(level, layout)
@@ -185,6 +184,7 @@ def run(source, root):
     cli(["verify"], root)
     cli(["build", "--profile", "dev"], root)
     print(f"PASS reusable geometry prefab and instance built: {root}/build/levels/test.toml")
+    keep_warm(source, root)
 
 
 if __name__ == "__main__":

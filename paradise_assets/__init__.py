@@ -1,6 +1,6 @@
 """Paradise Assets: ``assets/`` is the source of truth and the ``.blend`` a disposable cache of
 one ``*.prefab``. Blender owns placement, the document owns component data (passed through
-untouched), the GLB owns geometry.
+untouched), the model (``.glb``, ``.blend`` or ``.fbx``) owns geometry.
 
 No ``bpy`` at module scope: Python runs ``__init__`` before any submodule, and the
 ``document/`` unit tests are the only defence keeping the canonical-TOML writer byte-identical

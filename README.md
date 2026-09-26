@@ -21,6 +21,7 @@ assets/levels/*.prefab  ──Blender──▶  assets/levels/*.prefab
 | **Blender 5.2+** | the manifest's floor; Blender refuses to enable the extension below it |
 | **the `paradise` CLI** | Fetched automatically at the version the project pins (`ParadiseVersion` in its `Directory.Packages.props`), cached per version under `~/.paradise/cli/`. Set *Paradise CLI* in preferences to override — a ParadiseEngine checkout, say. Falls back to the installed dotnet tool when a project pins nothing, or the pinned version cannot be fetched |
 | KTX-Software (`ktx`) | *optional* — but the engine's glTF reader rejects PNG/JPEG, so textured meshes need it. The CLI does the transcode; the addon only passes the path along |
+| Blender, for the CLI | only for `.blend`/`.fbx` models: the CLI converts them to GLB with a headless Blender. Set `PARADISE_BLENDER_PATH` when it cannot find one |
 
 Nothing here is .NET. The addon is pure Python and shells out to the CLI.
 
@@ -127,9 +128,18 @@ Right-clicking a **document object** — in the Outliner or in the viewport — 
   object owns, beside the document, so it can be reshaped in Edit Mode; every save writes it
   back. The shared model and its other placements stay as they are, and an instance is unpacked
   first. See [the quickstart](docs/quickstart.md#4-place-something) for what it trades away.
-- **Edit Shared Mesh** — on anything that shows a model: edit the model itself in place; every
-  save writes the geometry back into the shared GLB, keeping its materials, textures and nodes,
-  so every placement changes. **Finish Editing Shared Mesh** returns it to an ordinary placement.
+- **Edit Shared Mesh** — on anything that shows a `.glb` model: edit the model itself in place;
+  every save writes the geometry back into the shared GLB, keeping its materials, textures and
+  nodes, so every placement changes. **Finish Editing Shared Mesh** returns it to an ordinary
+  placement.
+- **Edit Source in New Blender** — instead of Edit Shared Mesh, on a model made from a `.blend`:
+  opens that `.blend` in a *second* Blender, where quads and modifiers stay. Saving it there
+  re-extracts the model, and placements show the change on their next reload. A model made from
+  an `.fbx` is edited in the application that exported it.
+
+Models are `.glb`, `.blend` or `.fbx` files under `assets/`. The pipeline converts a `.blend` or
+`.fbx` to a GLB under `.editor/converted/` and extracts from that; the viewport shows the same
+GLB, running `paradise assets convert` when it is missing or older than its source.
 
 On something that belongs to a **prefab instance**, three more appear. Editing a field on an
 instance, or moving one of its children, records an *override*; these are how one ends:

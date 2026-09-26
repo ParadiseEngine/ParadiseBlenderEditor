@@ -30,6 +30,7 @@ from .document import (
     atomic,
     extract,
     geometry_prefab,
+    model_source,
     new_prefab,
     overrides,
     project,
@@ -1132,7 +1133,13 @@ class PARADISE_ASSETS_OT_edit_shared_mesh(Operator):
         obj = context.active_object
         if context.mode != "OBJECT" or store.read_state(context.scene) is None:
             return False
-        return obj is not None and store.guid_of(obj) is not None and obj.instance_collection is not None
+        if obj is None or store.guid_of(obj) is None or obj.instance_collection is None:
+            return False
+        source = obj.instance_collection.get(meshes.SOURCE_KEY)
+        if isinstance(source, str) and model_source.is_converted(source):
+            cls.poll_message_set(model_source.edit_in_place_refusal(source))
+            return False
+        return True
 
     def invoke(self, context, event):
         source = context.active_object.instance_collection.get(meshes.SOURCE_KEY)

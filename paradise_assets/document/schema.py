@@ -1,7 +1,8 @@
 """Which component fields name a MESH, read from the dump's ``authoredBy: mesh``. The dump is
 an enrichment, not a requirement: a fresh clone has none, so the fallback is "a string ending
-in .glb". A wrong guess costs a wrong preview, not data, since payload writes never consult
-this; that is what makes a heuristic acceptable here and nowhere else.
+in a mesh document's or a model's extension". A wrong guess costs a wrong preview, not data,
+since payload writes never consult this; that is what makes a heuristic acceptable here and
+nowhere else.
 """
 
 from __future__ import annotations
@@ -10,6 +11,8 @@ import json
 import os
 from dataclasses import dataclass
 
+from .mesh_document import SUFFIXES as DOCUMENT_SUFFIXES
+from .model_source import SUFFIXES as MODEL_SUFFIXES
 from .project import SCHEMA_CANDIDATES
 
 __all__ = ["MeshComponent", "MeshFields", "load", "mesh_components"]
@@ -35,7 +38,7 @@ class MeshFields:
             return False
         if self._pairs is not None and component_type is not None:
             return (component_type, field) in self._pairs
-        return value.lower().endswith((".glb", ".mesh", ".skinnedmesh"))
+        return value.lower().endswith(DOCUMENT_SUFFIXES + MODEL_SUFFIXES)
 
 
 @dataclass(frozen=True)
@@ -113,8 +116,8 @@ def _read_dump(project_root: str) -> tuple[dict | None, str | None]:
             with open(path, "rb") as handle:
                 document = json.load(handle)
         except (OSError, json.JSONDecodeError):
-            # An unreadable dump is not worth failing a scene load over: the fallback still
-            # finds every .glb, and the panel reports which source is in use.
+            # An unreadable dump is not worth failing a scene load over: the fallback still finds
+            # every mesh reference by its extension, and the panel reports which source is in use.
             continue
         if isinstance(document, dict):
             _CACHE[path] = (stat.st_mtime_ns, stat.st_size, document)

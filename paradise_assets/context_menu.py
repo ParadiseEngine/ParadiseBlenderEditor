@@ -1,7 +1,7 @@
 """The right-click entries for a document object, in both editors an author selects one in:
 open the prefab it instantiates, turn it into one, group the selection under a new Empty, give a
-placement a mesh of its own, and -- for anything that belongs to an instance -- apply, revert or
-break its overrides.
+placement a mesh of its own, open the ``.blend`` its model comes from, and -- for anything that
+belongs to an instance -- apply, revert or break its overrides.
 
 Both are reachable from the sidebar already. The menus are where an author's hand already is
 when the question comes up -- the Outliner because it is the only place the document's tree is
@@ -21,7 +21,9 @@ import subprocess
 import bpy
 from bpy.types import Operator
 
+from .document import model_source
 from .materialize import store
+from .materialize.meshes import SOURCE_KEY
 
 __all__ = ["classes", "register_menu", "unregister_menu"]
 
@@ -106,21 +108,20 @@ def launch(document_path: str, project_root: str) -> str | None:
     """Start a Blender on ``document_path``; a message on failure, ``None`` on success.
 
     NOT ``--factory-startup``: the new session needs this addon enabled, which means the user's
-    preferences. Detached (``start_new_session``) so it survives this Blender quitting -- the
-    author opened a second editor, not a subprocess of the first.
+    preferences.
     """
-    argv = [
-        bpy.app.binary_path,
-        "--python-expr", _OPEN_SCRIPT,
-        "--", document_path,
-    ]
+    return _spawn([bpy.app.binary_path, "--python-expr", _OPEN_SCRIPT, "--", document_path], project_root)
 
+
+def _spawn(argv: list[str], cwd: str) -> str | None:
+    """Start ``argv`` detached (``start_new_session``) so it survives this Blender quitting -- the
+    author opened a second editor, not a subprocess of the first. A message on failure."""
     # No console window on Windows; a GUI Blender would otherwise pop one behind the new session.
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     try:
         subprocess.Popen(  # argv is built from resolved paths
             argv,
-            cwd=project_root,
+            cwd=cwd,
             stdin=subprocess.DEVNULL,
             creationflags=flags,
             start_new_session=os.name != "nt",
@@ -128,6 +129,46 @@ def launch(document_path: str, project_root: str) -> str | None:
     except (OSError, subprocess.SubprocessError) as error:
         return f"Could not start Blender: {error}"
     return None
+
+
+def _model_source_of(obj) -> str | None:
+    """The model file the placement ``obj`` shows, as the library imported it."""
+    collection = obj.instance_collection if obj is not None else None
+    source = collection.get(SOURCE_KEY) if collection is not None else None
+    return source if isinstance(source, str) else None
+
+
+class PARADISE_ASSETS_OT_edit_model_source(Operator):
+    """Open the .blend this object's model comes from in a new Blender. Saving it there
+    re-extracts the model, and every placement shows the change on its next reload"""
+
+    bl_idname = "paradise_assets.edit_model_source"
+    bl_label = "Edit Source in New Blender"
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context) -> bool:
+        source = _model_source_of(context.active_object)
+        if source is None or not model_source.is_converted(source):
+            return False
+        if not source.lower().endswith(".blend"):
+            cls.poll_message_set(model_source.edit_in_place_refusal(source))
+            return False
+        return True
+
+    def execute(self, context):
+        source = _model_source_of(context.active_object)
+        if source is None or not source.lower().endswith(".blend") or not os.path.isfile(source):
+            self.report({"ERROR"}, "This object does not show a model made from a .blend on disk.")
+            return {"CANCELLED"}
+        # Opened as the main file with no script: the author edits the model itself, and the
+        # asset watcher -- not this session -- picks up the save.
+        problem = _spawn([bpy.app.binary_path, source], os.path.dirname(source))
+        if problem is not None:
+            self.report({"ERROR"}, problem)
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"Opening {os.path.basename(source)} in a new Blender…")
+        return {"FINISHED"}
 
 
 def _draw(self, context) -> None:
@@ -171,10 +212,18 @@ def _draw(self, context) -> None:
             "paradise_assets.make_mesh_editable",
             text="Make Mesh Editable",
             icon="EDITMODE_HLT")
-        column.operator(
-            "paradise_assets.edit_shared_mesh",
-            text="Edit Shared Mesh…",
-            icon="LINKED")
+        # A converted model's GLB is derived, so it is edited where it comes from instead; an
+        # FBX's row stays, greyed, so its tooltip can say where that is.
+        if model_source.is_converted(_model_source_of(obj) or ""):
+            column.operator(
+                PARADISE_ASSETS_OT_edit_model_source.bl_idname,
+                text="Edit Source in New Blender",
+                icon="FILE_BLEND")
+        else:
+            column.operator(
+                "paradise_assets.edit_shared_mesh",
+                text="Edit Shared Mesh…",
+                icon="LINKED")
     editing = store.editable_of(obj)
     if editing is not None and editing.shared:
         column.operator(
@@ -236,4 +285,4 @@ def unregister_menu() -> None:
             menu.remove(draw)
 
 
-classes = (PARADISE_ASSETS_OT_open_prefab_elsewhere,)
+classes = (PARADISE_ASSETS_OT_open_prefab_elsewhere, PARADISE_ASSETS_OT_edit_model_source)

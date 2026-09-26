@@ -24,7 +24,7 @@ def test_a_document_resolves_to_the_glb_it_names(tmp_path):
     (tmp_path / "assets" / "Models" / "Player.skinnedmesh").write_text(DOCUMENT, encoding="utf-8")
 
     expected = layout.resolve("Models/Player.glb")
-    assert mesh_document.glb_for(layout, "Models/Player.skinnedmesh") == expected
+    assert mesh_document.source_for(layout, "Models/Player.skinnedmesh") == expected
     assert mesh_document.displayable(layout, "Models/Player.skinnedmesh") == expected
 
 
@@ -41,6 +41,6 @@ def test_a_missing_or_unreadable_document_displays_nothing(tmp_path):
     (tmp_path / "assets" / "Models" / "Broken.mesh").write_text("source = [\n", encoding="utf-8")
     (tmp_path / "assets" / "Models" / "Sourceless.mesh").write_text("schema_version = 1\n", encoding="utf-8")
 
-    assert mesh_document.glb_for(layout, "Models/Absent.mesh") is None
-    assert mesh_document.glb_for(layout, "Models/Broken.mesh") is None
-    assert mesh_document.glb_for(layout, "Models/Sourceless.mesh") is None
+    assert mesh_document.source_for(layout, "Models/Absent.mesh") is None
+    assert mesh_document.source_for(layout, "Models/Broken.mesh") is None
+    assert mesh_document.source_for(layout, "Models/Sourceless.mesh") is None

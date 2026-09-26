@@ -1,6 +1,7 @@
 """The right-click entries for a document object, in both editors an author selects one in:
-open the prefab it instantiates, turn it into one, group the selection under a new Empty, and --
-for anything that belongs to an instance -- apply, revert or break its overrides.
+open the prefab it instantiates, turn it into one, group the selection under a new Empty, give a
+placement a mesh of its own, and -- for anything that belongs to an instance -- apply, revert or
+break its overrides.
 
 Both are reachable from the sidebar already. The menus are where an author's hand already is
 when the question comes up -- the Outliner because it is the only place the document's tree is
@@ -162,6 +163,13 @@ def _draw(self, context) -> None:
         "paradise_assets.group_objects",
         text="Group Selected",
         icon="OUTLINER_COLLECTION")
+    # Only on something that shows a model: on a group or a light it could only ever be greyed.
+    # A prefab's child keeps the row, greyed, so its tooltip can say to unpack the instance.
+    if obj.instance_collection is not None:
+        column.operator(
+            "paradise_assets.make_mesh_editable",
+            text="Make Mesh Editable",
+            icon="EDITMODE_HLT")
 
     # Only for something that IS part of an instance: on a plain object these three could only
     # ever be greyed, and the menu already earns its rows.

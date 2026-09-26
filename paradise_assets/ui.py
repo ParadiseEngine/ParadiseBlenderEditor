@@ -365,12 +365,14 @@ def _tree_rows(scene) -> list:
 
 
 def _tree_icon(obj) -> str:
-    """What this object IS, in one glyph: an instance, one of a prefab's children, a group, or an
-    ordinary object."""
+    """What this object IS, in one glyph: an instance, one of a prefab's children, a group, a
+    mesh of its own, or an ordinary object."""
     if store.prefab_of(obj) is not None:
         return "PACKAGE"
     if store.is_derived(obj):
         return "DECORATE_LINKED"
+    if store.editable_of(obj) is not None:
+        return "EDITMODE_HLT"
     if obj.instance_collection is not None:
         return "OUTLINER_OB_MESH"
     return "OUTLINER_OB_EMPTY"

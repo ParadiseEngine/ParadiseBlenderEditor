@@ -224,6 +224,57 @@ their editor, and a second way to type an identity is a second thing that can di
 on the save path, and being importable outside Blender is what lets it be unit-tested against a
 plain dict. Keep it that way.
 
+## Editable meshes
+
+**An object that owns its geometry is recorded in the GLB, not in the document.** Make Mesh
+Editable (`ops.py`) copies the geometry an object shows into `<document folder>/<document
+stem>/<Name>_<guid8>.glb`, waits for the watcher to mint its `.mesh` document (found through the
+GLB sidecar's `[extract]` record), unpacks the instance if it was one, and points the object's
+mesh field at that document. The GLB's `scenes[scene].extras.paradise_mesh_owner` holds the
+owner's guid: the load builds a real, editable Blender mesh for that object alone
+(`document/editable_mesh.owns`), and anything else referencing the same `.mesh` sees an ordinary
+instance. No document field exists for it, so the engine reads the level exactly as before and
+`paradise assets mv` cannot break the link.
+
+**Materials bind by position, so slot order IS the contract.** Engine `MeshBlob` binds `Slots[i]`
+to glTF primitive `i`, counted in `GltfSceneReader.BakeInstances` order: depth-first from the
+default scene's roots, children as each node lists them. `document/editable_mesh.mesh_instances`
+is that walk, and `materialize/editable_mesh.build_mesh` rebuilds a GLB as one mesh with a slot
+per primitive in that order. Blender's importer cannot do it: it merges primitives that share a
+material, and names objects after nodes that ShiningPie's multi-part models reuse by the dozen,
+so neither slots nor parts could be matched afterwards. Slot materials in Blender are display
+only (`Paradise/<material document>`), assigned from `Slots` on load and after every save.
+
+**The GLB is written with placeholder materials.** `export_materials='PLACEHOLDER'` keeps one
+primitive per used slot and writes no `materials` array, and `AssetExtractor.HasAuthoredParts`
+is exactly "materials or embedded images" -- so `verify` does not ask for an `extract` that would
+mint a seed prefab and a copy of every material per placement. The exporter forces a `.glb`
+extension onto its path, so it writes into a private temp directory; the result is copied to a
+`.tmp` beside the target (in the default `[assets] ignore`) and renamed into place.
+
+**The save exports what changed, refuses what would misbind, and never overwrites someone else.**
+`store.EDITABLE_KEY` records per owned object the GLB (assets-relative), the SHA-256 of the bytes
+last read or written, a fingerprint of the evaluated geometry (topology, every non-internal
+attribute, corner normals, slot count) and the slot count. `editable_mesh.publish` runs after
+every document check and before the document is written. An unchanged fingerprint exports
+nothing, so an untouched scene writes zero bytes. A changed one is refused when the GLB's bytes
+moved on disk, when the slots no longer show `Slots` in order, or when a slot lost all its faces
+(the exporter drops that slot's primitive, shifting every binding after it). Every export is
+staged before any GLB is renamed into place, so a refusal writes nothing.
+
+**A reload keeps the author's object while its GLB is unchanged.** `load_document` takes owned
+objects out of the scene before clearing it (`editable_mesh.stash`) and hands each back when the
+GLB's bytes are still the recorded ones, so quads, modifiers and anything else a GLB cannot hold
+survive. Otherwise -- a fresh clone, Recreate, someone else's change -- the object is rebuilt from
+the GLB, triangulated with modifiers applied. That asymmetry is the price of the GLB being the
+only truth.
+
+**The watcher mints; the operator waits for it.** The `.mesh` document follows the GLB's own
+sidecar out of `paradise assets watch`. The operator waits `MESH_WAIT_SECONDS`, and on a timeout
+leaves the GLB in place: a watcher in play mode rebuilds after every change and queues new files
+behind that build (minutes on a cold cache), and running the operator again reuses the object's
+own GLB (`plan_target` accepts a file this object owns).
+
 ## Schema, identity and extraction
 
 **There is ONE schema, and it is the game's.** A launcher built with

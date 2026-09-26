@@ -91,3 +91,16 @@ def test_the_answer_is_recomputed_when_the_model_changes(tmp_path):
     (tmp_path / "x.glb").write_bytes(glb({"skins": [{"joints": [0]}], "meshes": [{}]}))
 
     assert gltf.has_skin(path) is True
+
+
+class TestReadGlb:
+    def test_both_chunks_are_returned(self, tmp_path):
+        path = write(tmp_path, "x.glb", glb({"meshes": [{}]}, binary=b"\x01\x02\x03\x04"))
+
+        assert gltf.read_glb(path) == ({"meshes": [{}]}, b"\x01\x02\x03\x04")
+
+    def test_a_chunk_that_runs_past_the_file_is_unreadable(self, tmp_path):
+        data = bytearray(glb({"meshes": [{}]}, binary=b"\x00" * 8))
+        data[-16:-12] = (64).to_bytes(4, "little")   # the BIN chunk claims 64 bytes it does not have
+
+        assert gltf.read_glb(write(tmp_path, "x.glb", bytes(data))) == ({}, b"")

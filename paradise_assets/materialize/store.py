@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass
 
 import bpy
 
@@ -17,10 +18,12 @@ from ..document import project
 
 __all__ = [
     "DocumentState",
+    "EditableMesh",
     "base_json",
     "clear_object",
     "component_json",
     "document_name",
+    "editable_of",
     "guid_of",
     "local_of",
     "mark",
@@ -33,6 +36,7 @@ __all__ = [
     "strip_marks",
     "tag_base",
     "tag_children",
+    "tag_editable",
     "tag_local",
     "tag_name",
     "tag_object",
@@ -82,6 +86,15 @@ CHILDREN_KEY = "paradise_resolved_children"
 #: renamed anything (#32).
 NAME_KEY = "paradise_name"
 SHOWN_NAME_KEY = "paradise_shown_name"
+
+#: On an object that owns its mesh (``document/editable_mesh.py``): JSON ``{glb, sha256,
+#: geometry, slots}`` -- the GLB it writes (assets-relative, so a moved checkout still matches),
+#: the bytes last read from or written to it, the geometry fingerprint at that moment (``None``
+#: until the depsgraph has evaluated the object), and how many material slots -- glTF primitives
+#: -- it had. The save exports only when the fingerprint moved and refuses when the bytes on disk
+#: did, since writing then would drop someone else's edit; a reload keeps the object -- and every
+#: quad, modifier and UV seam the GLB cannot hold -- for as long as those bytes are unchanged.
+EDITABLE_KEY = "paradise_editable_mesh"
 
 SCENE_PATH_KEY = "paradise_scene_path"
 
@@ -239,7 +252,7 @@ def prefab_of(obj: bpy.types.Object):
 #: `DERIVED_KEY` hides it from the save for good.
 _MARKERS = (
     GUID_KEY, COMPONENTS_KEY, PREFAB_KEY, NAME_KEY, SHOWN_NAME_KEY,
-    DERIVED_KEY, AUTHORED_KEY, LOCAL_KEY, BASE_KEY, CHILDREN_KEY,
+    DERIVED_KEY, AUTHORED_KEY, LOCAL_KEY, BASE_KEY, CHILDREN_KEY, EDITABLE_KEY,
 )
 
 
@@ -345,6 +358,33 @@ def resolved_children(obj: bpy.types.Object) -> set[str] | None:
     except json.JSONDecodeError:
         return None
     return {str(item) for item in parsed} if isinstance(parsed, list) else None
+
+
+@dataclass(frozen=True)
+class EditableMesh:
+    """What :data:`EDITABLE_KEY` records about an object that owns its mesh."""
+
+    glb: str
+    sha256: str
+    geometry: str | None
+    slots: int
+
+
+def tag_editable(obj: bpy.types.Object, glb: str, sha256: str, geometry: str | None, slots: int) -> None:
+    """Record that ``obj`` owns the GLB at ``glb`` (assets-relative), last in step with it at
+    these fingerprints, with ``slots`` material slots."""
+    obj[EDITABLE_KEY] = json.dumps({"glb": glb, "sha256": sha256, "geometry": geometry, "slots": slots})
+
+
+def editable_of(obj: bpy.types.Object) -> EditableMesh | None:
+    """The mesh ``obj`` owns, or ``None`` for an object that shows a shared one (or none)."""
+    stored = _json_object(obj, EDITABLE_KEY)
+    if stored is None:
+        return None
+    glb, sha256, geometry, slots = (stored.get(key) for key in ("glb", "sha256", "geometry", "slots"))
+    if not isinstance(glb, str) or not isinstance(sha256, str) or not isinstance(slots, int):
+        return None
+    return EditableMesh(glb, sha256, geometry if isinstance(geometry, str) else None, slots)
 
 
 def _json_object(obj: bpy.types.Object, key: str) -> dict | None:

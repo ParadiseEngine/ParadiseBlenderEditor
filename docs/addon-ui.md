@@ -8,11 +8,11 @@ Paths in this reference are relative to the repository root.
 paradise_assets/
   document/     ★ pure Python, imports no bpy — the *.prefab format, the canonical TOML writer,
                   the axis rebase, sidecar reading, the game's component schema
-  materialize/    document <-> Blender objects: load, save, mesh instancing, ID-property store,
-                  the working .blend, save-on-save
+  materialize/    document <-> Blender objects: load, save, mesh instancing, editable meshes,
+                  ID-property store, the working .blend, save-on-save
   play/           the CLI: resolution, Build / Verify / Clean / Play, the running session
   ops.py          open_prefab / save_prefab / reload_prefab, add_prefab_instance,
-                  extract_prefab, toggle_watch, refresh_catalogue
+                  extract_prefab, make_mesh_editable, toggle_watch, refresh_catalogue
   ui.py           the Paradise sidebar tab
   project_settings.py  game-declared project TOML documents, edited without an active prefab
   edits.py      ★ the component-edit overlay — no bpy, unit-tested against a plain dict
@@ -74,12 +74,13 @@ chunk). Each clip row is a root-motion toggle and a root-bone picker; both write
 because the setting belongs to the model, not to the open document, and the `.blend` is
 disposable. A static mesh draws nothing at all.
 
-Two entries also hang off the object context menus (`context_menu.py`) — the Outliner's and the
+Entries also hang off the object context menus (`context_menu.py`) — the Outliner's and the
 viewport's, one `_draw` for both — gated on the active object being a DOCUMENT object, since a
-menu that grows two greyed rows on every cube is worse than one that says nothing. "Open Prefab
+menu that grows greyed rows on every cube is worse than one that says nothing. "Open Prefab
 in New Blender" starts a second Blender rather than replacing the session: a level and the prop
 it instances are two documents, and making people close one to edit the other is what stops them
-editing it.
+editing it. "Make Mesh Editable" is drawn only on an object that shows a model; on one of a
+prefab's children it stays greyed, and its tooltip says to unpack the instance first.
 
 Two rules for anything drawn here:
 

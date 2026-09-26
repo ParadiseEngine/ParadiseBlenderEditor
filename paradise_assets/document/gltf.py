@@ -1,13 +1,14 @@
-"""Just enough of the GLB container to tell a rigged model from a static one.
+"""Just enough of the GLB container: its JSON chunk, and on request its binary chunk.
 
 A generated prefab has to name a component, and a skinned mesh is a different component from a
 static one in every game that has both (ShiningPie: ``SkinnedMesh`` and ``StaticMesh``). The
 distinction is in the model, not in the schema, so it is read from the file: a glTF asset with a
 non-empty ``skins`` array has a rig.
 
-Only the JSON chunk is read -- the binary chunk holding the geometry is never touched, so this
-costs a few kilobytes on a multi-megabyte model. Imports no ``bpy``: Blender's importer would
-answer the same question by importing the whole model, which is minutes across a project.
+Questions like that read only the JSON chunk -- the binary chunk holding the geometry is never
+touched, so they cost a few kilobytes on a multi-megabyte model. :func:`read_glb` is the one
+exception, for an editable mesh, which rebuilds geometry primitive by primitive and cannot use
+Blender's importer to do it (see ``materialize/editable_mesh.py``). Imports no ``bpy``.
 """
 
 from __future__ import annotations
@@ -16,10 +17,11 @@ import json
 import os
 import struct
 
-__all__ = ["has_skin", "read_json"]
+__all__ = ["has_skin", "read_glb", "read_json"]
 
 _MAGIC = b"glTF"
 _JSON_CHUNK = b"JSON"
+_BIN_CHUNK = b"BIN\x00"
 _HEADER = struct.Struct("<4sII")
 _CHUNK = struct.Struct("<I4s")
 
@@ -71,3 +73,38 @@ def read_json(path: str) -> dict:
                 return json.loads(handle.read(size).decode("utf-8"))
     except (OSError, struct.error, ValueError, UnicodeDecodeError):
         return {}
+
+
+def read_glb(path: str) -> tuple[dict, bytes]:
+    """The GLB's JSON chunk and its BIN chunk, or ``({}, b"")`` when the file is not a readable
+    GLB. For the one caller that rebuilds geometry itself (an editable mesh): everything else
+    asks the JSON a question and must not pay for the geometry."""
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read()
+    except OSError:
+        return {}, b""
+
+    if len(data) < _HEADER.size:
+        return {}, b""
+    magic, _version, length = _HEADER.unpack_from(data)
+    if magic != _MAGIC or length > len(data):
+        return {}, b""
+
+    document: dict = {}
+    binary = b""
+    at = _HEADER.size
+    while at + _CHUNK.size <= length:
+        size, kind = _CHUNK.unpack_from(data, at)
+        start = at + _CHUNK.size
+        if start + size > length:
+            return {}, b""
+        if kind == _JSON_CHUNK and not document:
+            try:
+                document = json.loads(data[start:start + size].decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                return {}, b""
+        elif kind == _BIN_CHUNK and not binary:
+            binary = data[start:start + size]
+        at = start + size
+    return (document, binary) if isinstance(document, dict) else ({}, b"")

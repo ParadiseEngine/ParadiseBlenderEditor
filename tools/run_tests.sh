@@ -124,6 +124,12 @@ if command -v "$BLENDER" >/dev/null 2>&1; then
     tests/integration/test_geometry_prefab.py "$DEFAULT_NOISE" \
     "${PARADISE_ASSETS_PROJECT:-../shiningpie}"
 
+  # A placement's own mesh: made editable, edited, written back to its GLB, reloaded, built. It
+  # copies the project too, and runs the real watcher -- the only thing that mints `.mesh` files.
+  integration "an editable mesh from a placed model, round trip and build" \
+    tests/integration/test_editable_mesh.py "$DEFAULT_NOISE" \
+    "${PARADISE_ASSETS_PROJECT:-../shiningpie}"
+
   # Asset Browser thumbnails. Renders, so it wants the same real project -- and its load-bearing
   # check is that the catalogue came out with no geometry in it.
   integration "prefab thumbnails and the catalogue's weight" \

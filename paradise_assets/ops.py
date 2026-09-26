@@ -25,10 +25,21 @@ from bpy.types import Operator
 
 from . import catalogue, watch
 from .document import apply as apply_overrides
-from .document import atomic, extract, geometry_prefab, new_prefab, overrides, project, unpack
+from .document import (
+    asset_reference,
+    atomic,
+    extract,
+    geometry_prefab,
+    new_prefab,
+    overrides,
+    project,
+    schema,
+    unpack,
+)
+from .document import editable_mesh as ownership
 from .document import prefab as prefab_document
 from .document.prefab import PrefabDocumentError, loads
-from .materialize import geometry, grouping, instancing, load, save, store, workfile
+from .materialize import editable_mesh, geometry, grouping, instancing, load, save, store, workfile
 from .play import host
 
 __all__ = ["classes"]
@@ -268,6 +279,8 @@ class PARADISE_ASSETS_OT_save_prefab(Operator):
             changes.append(f"{result.removed} removed")
         if result.edited:
             changes.append(f"{result.edited} field(s) edited")
+        if result.meshes:
+            changes.append(f"{result.meshes} mesh(es) written")
         self.report(
             {"INFO"},
             f"Saved {result.written} object(s)"
@@ -759,14 +772,67 @@ def _instance_of(obj):
     return None
 
 
+def _write_scene_first(operator: Operator, context):
+    """``(scene state, layout)`` once the scene is written to its document, or ``None`` after
+    reporting why not.
+
+    The first half of every gesture that rewrites the document FILE, exactly as extraction does:
+    the scene is written first, the document re-read, the surgery done on what is actually on
+    disk, and the result rematerialized (:func:`_rematerialize`).
+    """
+    scene = context.scene
+    state = store.read_state(scene)
+    if state is None:
+        operator.report({"ERROR"}, "No prefab document is open.")
+        return None
+
+    layout = project.locate(state.path)
+    if layout is None:
+        operator.report({"ERROR"}, f"No asset project above {state.path}")
+        return None
+
+    kept = workfile.unsaved_work(scene)
+    if kept is not None:
+        operator.report(
+            {"ERROR"},
+            f"This scene has work the document does not: {kept}. Save to the prefab document "
+            "first (Paradise Assets > Save), then try again.",
+        )
+        return None
+
+    try:
+        # A transport save, not the author's: the rematerialize after it would kill a
+        # save hook's job mid-write.
+        save.save_prefab(scene, invoke_actions=False)
+    except save.SaveError as error:
+        operator.report({"ERROR"}, str(error))
+        return None
+    return state, layout
+
+
+def _rematerialize(context, state, layout) -> None:
+    with open(state.path, encoding="utf-8") as handle:
+        document = loads(handle.read(), state.path)
+    load.load_document(context.scene, document, state.path, layout)
+    workfile.save(layout, state.path)
+
+
+def _prefab_reader(layout):
+    def read(reference):
+        try:
+            with open(layout.resolve(reference.path), encoding="utf-8") as handle:
+                return loads(handle.read(), reference.path)
+        except (OSError, PrefabDocumentError):
+            return None
+    return read
+
+
 class _InstanceOperator(Operator):
     """Shared shape for the gestures that rewrite a document around one instance.
 
-    Each works on the FILE, exactly as extraction does: the scene is written first, the document
-    re-read, the surgery done on what is actually on disk, and the result rematerialized. None of
-    them needs the watcher -- no asset is created, so there is no identity to wait for, and
-    borrowing extraction's ``watch.ensure`` would refuse the operation for a reason that is not
-    true here.
+    None of them needs the watcher -- no asset is created, so there is no identity to wait for,
+    and borrowing extraction's ``watch.ensure`` would refuse the operation for a reason that is
+    not true here.
     """
 
     bl_options = {"REGISTER"}
@@ -779,54 +845,12 @@ class _InstanceOperator(Operator):
 
     def _prepare(self, context):
         """``(scene state, layout, instance object)``, or ``None`` after reporting why not."""
-        scene = context.scene
-        state = store.read_state(scene)
-        if state is None:
-            self.report({"ERROR"}, "No prefab document is open.")
-            return None
-
-        layout = project.locate(state.path)
-        if layout is None:
-            self.report({"ERROR"}, f"No asset project above {state.path}")
-            return None
-
         instance = _instance_of(context.active_object)
         if instance is None:
             self.report({"ERROR"}, "This object does not belong to a prefab instance.")
             return None
-
-        kept = workfile.unsaved_work(scene)
-        if kept is not None:
-            self.report(
-                {"ERROR"},
-                f"This scene has work the document does not: {kept}. Save to the prefab document "
-                "first (Paradise Assets > Save), then try again.",
-            )
-            return None
-
-        try:
-            # A transport save, not the author's: the rematerialize after it would kill a
-            # save hook's job mid-write.
-            save.save_prefab(scene, invoke_actions=False)
-        except save.SaveError as error:
-            self.report({"ERROR"}, str(error))
-            return None
-        return state, layout, instance
-
-    def _rematerialize(self, context, state, layout):
-        with open(state.path, encoding="utf-8") as handle:
-            document = loads(handle.read(), state.path)
-        load.load_document(context.scene, document, state.path, layout)
-        workfile.save(layout, state.path)
-
-    def _prefabs(self, layout):
-        def read(reference):
-            try:
-                with open(layout.resolve(reference.path), encoding="utf-8") as handle:
-                    return loads(handle.read(), reference.path)
-            except (OSError, PrefabDocumentError):
-                return None
-        return read
+        prepared = _write_scene_first(self, context)
+        return None if prepared is None else (*prepared, instance)
 
 
 class PARADISE_ASSETS_OT_unpack_instance(_InstanceOperator):
@@ -848,7 +872,7 @@ class PARADISE_ASSETS_OT_unpack_instance(_InstanceOperator):
         try:
             with open(state.path, encoding="utf-8") as handle:
                 document = loads(handle.read(), state.path)
-            result = unpack.unpack(document, guid, self._prefabs(layout))
+            result = unpack.unpack(document, guid, _prefab_reader(layout))
         except (unpack.UnpackError, PrefabDocumentError) as error:
             self.report({"ERROR"}, str(error))
             return {"CANCELLED"}
@@ -862,7 +886,7 @@ class PARADISE_ASSETS_OT_unpack_instance(_InstanceOperator):
             self.report({"ERROR"}, f"Could not write the document: {error}")
             return {"CANCELLED"}
 
-        self._rematerialize(context, state, layout)
+        _rematerialize(context, state, layout)
         for warning in result.warnings[:5]:
             self.report({"WARNING"}, warning)
         self.report(
@@ -933,7 +957,7 @@ class PARADISE_ASSETS_OT_apply_overrides(_InstanceOperator):
             )
             return {"CANCELLED"}
 
-        self._rematerialize(context, state, layout)
+        _rematerialize(context, state, layout)
         for warning in result.warnings[:5]:
             self.report({"WARNING"}, warning)
         self.report(
@@ -976,9 +1000,122 @@ class PARADISE_ASSETS_OT_revert_instance(_InstanceOperator):
             self.report({"ERROR"}, f"Could not rewrite the document: {error}")
             return {"CANCELLED"}
 
-        self._rematerialize(context, state, layout)
+        _rematerialize(context, state, layout)
         self.report({"INFO"}, "The instance shows its prefab again; its overrides are gone.")
         return {"FINISHED"}
+
+
+class PARADISE_ASSETS_OT_make_mesh_editable(Operator):
+    """Give this object a mesh of its own: edited here, written back to its GLB on every save"""
+
+    bl_idname = "paradise_assets.make_mesh_editable"
+    bl_label = "Make Mesh Editable"
+    # No UNDO: it writes a GLB and a document and reloads the scene; an undo step over that is a lie.
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        if context.mode != "OBJECT" or store.read_state(context.scene) is None:
+            return False
+        if obj is None or store.guid_of(obj) is None or obj.instance_collection is None:
+            return False
+        if store.is_derived(obj):
+            cls.poll_message_set(
+                "This is part of a prefab instance. Unpack the instance first, or open the prefab "
+                "and make the mesh editable there.")
+            return False
+        return True
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_confirm(
+            self, event,
+            message="Its geometry is copied into a GLB of its own beside this document. The "
+                    "shared model and every other placement of it stay as they are.",
+        )
+
+    def execute(self, context):
+        guid = store.guid_of(context.active_object)
+        was_instance = store.prefab_of(context.active_object) is not None
+        prepared = _write_scene_first(self, context)
+        if prepared is None:
+            return {"CANCELLED"}
+        state, layout = prepared
+        obj = store.object_with_guid(context.scene, guid)
+        if obj is None:
+            self.report({"ERROR"}, "The object is no longer in the scene.")
+            return {"CANCELLED"}
+
+        blocked = watch.ensure(layout.root)
+        if blocked:
+            self.report({"ERROR"}, f"Could not make the mesh editable: {blocked}")
+            return {"CANCELLED"}
+
+        name = store.document_name(obj) or obj.name
+        try:
+            target = ownership.plan_target(layout, state.path, name, guid)
+            slots = editable_mesh.write_initial(obj, target)
+        except ownership.EditableMeshError as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+
+        reference = ownership.wait_for_mesh_reference(target, layout)
+        if reference is None:
+            self.report(
+                {"ERROR"},
+                f"{layout.relative(target)} was written, but no mesh document was minted for it "
+                f"within {ownership.MESH_WAIT_SECONDS:.0f}s -- the asset watcher is not running, or "
+                "is still busy rebuilding the project. Run Make Mesh Editable again once it is "
+                "idle; it reuses the file.",
+            )
+            return {"CANCELLED"}
+
+        try:
+            unpacked = self._point_at(state, layout, guid, reference, was_instance)
+        except (ownership.EditableMeshError, unpack.UnpackError, PrefabDocumentError) as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+        except OSError as error:
+            self.report({"ERROR"}, f"Could not rewrite the document: {error}")
+            return {"CANCELLED"}
+
+        _rematerialize(context, state, layout)
+        restored = store.object_with_guid(context.scene, guid)
+        if restored is not None:
+            restored.select_set(True)
+            context.view_layer.objects.active = restored
+        for warning in (unpacked.warnings if unpacked is not None else [])[:5]:
+            self.report({"WARNING"}, warning)
+        self.report(
+            {"INFO"},
+            f"'{name}' now owns {layout.relative(target)} ({slots} material slot(s)); edit it in "
+            "Edit Mode, and saving writes it back."
+            + (f" Its prefab instance was unpacked into {unpacked.objects} object(s)."
+               if unpacked is not None else ""),
+        )
+        return {"FINISHED"}
+
+    @staticmethod
+    def _point_at(state, layout, guid: str, reference, was_instance: bool):
+        """Rewrite the document so ``guid``'s mesh field names ``reference``, unpacking the
+        instance first -- an instance's mesh is its prefab's, and only an object of this
+        document can point at a mesh of its own. Returns the unpack result, if it unpacked."""
+        with open(state.path, encoding="utf-8") as handle:
+            document = loads(handle.read(), state.path)
+        unpacked = None
+        if was_instance:
+            unpacked = unpack.unpack(document, guid, _prefab_reader(layout))
+            document = unpacked.document
+
+        entry = document.by_guid().get(guid)
+        found = ownership.mesh_field(entry.components, schema.load(layout.root)) if entry else None
+        if found is None:
+            raise ownership.EditableMeshError("The document has no mesh field for this object to point at.")
+        component, field = found
+        component.data[field] = asset_reference.write(reference)
+        document.validate(state.path)
+        atomic.write_text(state.path, prefab_document.dumps(document))
+        return unpacked
 
 
 def _has_overrides(instance) -> bool:
@@ -1012,6 +1149,7 @@ classes = (
     PARADISE_ASSETS_OT_unpack_instance,
     PARADISE_ASSETS_OT_apply_overrides,
     PARADISE_ASSETS_OT_revert_instance,
+    PARADISE_ASSETS_OT_make_mesh_editable,
     PARADISE_ASSETS_OT_group_objects,
     PARADISE_ASSETS_OT_refresh_catalogue,
     PARADISE_ASSETS_FH_prefab,

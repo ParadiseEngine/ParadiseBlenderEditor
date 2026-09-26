@@ -13,6 +13,9 @@ from dataclasses import dataclass
 from . import new_prefab, schema
 from .project import ProjectLayout
 
+#: What ``paradise assets extract`` writes for a GLB, each routed by the project's ``[extract]``.
+EXTRACTED_KINDS = ("meshes", "materials", "textures", "prefabs")
+
 
 @dataclass(frozen=True)
 class GeometryTarget:
@@ -31,24 +34,13 @@ def prepare(path: str, layout: ProjectLayout) -> GeometryTarget:
             "Build the game's launcher first: .editor/authoring-schema.json must declare a "
             "static mesh component before geometry can become a renderable prefab."
         )
-    with open(layout.manifest, "rb") as handle:
-        extraction = tomllib.load(handle).get("extract", {})
-    if not isinstance(extraction, dict):
-        raise new_prefab.CreateError("The project's [extract] settings must be a TOML table.")
-
     stem = os.path.splitext(os.path.basename(path))[0]
     model = os.path.splitext(path)[0] + ".glb"
     new_prefab.refuse_target(model, layout)
-    directories = {}
-    for kind in ("meshes", "materials", "textures", "prefabs"):
-        directory = extraction.get(kind, extraction.get("directory"))
-        if directory is not None and not isinstance(directory, str):
-            raise new_prefab.CreateError(f"[extract].{kind} must name an assets-relative directory.")
-        destination = layout.resolve(directory) if directory is not None else os.path.dirname(path)
-        destination = os.path.abspath(destination)
+    directories = extraction_directories(layout, os.path.dirname(path))
+    for destination in directories.values():
         # The same boundary check also rejects symlinked output folders outside the project.
         new_prefab.refuse_target(os.path.join(destination, stem + ".prefab"), layout)
-        directories[kind] = destination
 
     for directory in set(directories.values()):
         if not os.path.isdir(directory):
@@ -61,3 +53,23 @@ def prepare(path: str, layout: ProjectLayout) -> GeometryTarget:
                 )
 
     return GeometryTarget(path, model, os.path.join(directories["prefabs"], stem + ".prefab"))
+
+
+def extraction_directories(
+    layout: ProjectLayout, beside: str, kinds: tuple[str, ...] = EXTRACTED_KINDS
+) -> dict[str, str]:
+    """Where the engine routes each kind it extracts from a GLB in the folder ``beside``: the
+    project's ``[extract]`` entry for that kind, else its ``directory``, else the GLB's own
+    folder -- the documented rule, read so a collision is refused before any file is written."""
+    with open(layout.manifest, "rb") as handle:
+        extraction = tomllib.load(handle).get("extract", {})
+    if not isinstance(extraction, dict):
+        raise new_prefab.CreateError("The project's [extract] settings must be a TOML table.")
+
+    directories = {}
+    for kind in kinds:
+        directory = extraction.get(kind, extraction.get("directory"))
+        if directory is not None and not isinstance(directory, str):
+            raise new_prefab.CreateError(f"[extract].{kind} must name an assets-relative directory.")
+        directories[kind] = os.path.abspath(layout.resolve(directory) if directory is not None else beside)
+    return directories

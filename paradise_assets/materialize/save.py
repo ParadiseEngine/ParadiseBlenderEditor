@@ -16,6 +16,10 @@ Override carriers (``meta.Target``) have no Blender object of their own: the loa
 the derived children it displays. They are document-owned data, like payloads, and travel
 through :func:`_merge`, recording edits and deletions of materialized children while preserving
 stale carriers for targets that were not displayed.
+
+An object that owns its mesh (``editable_mesh``) is written back to its GLB, not to the document:
+after every document check and before the document itself, so a refusal of either writes
+nothing and a document never names geometry that is not on disk yet.
 """
 
 from __future__ import annotations
@@ -38,8 +42,9 @@ from ..document import (
 )
 from ..document import prefab as prefab_document
 from ..document.asset_reference import AssetReference
+from ..document.editable_mesh import EditableMeshError
 from ..document.prefab import PrefabComponent, PrefabDocument, PrefabDocumentError, PrefabObject
-from . import shapes, store, tagging, transform_helpers
+from . import editable_mesh, shapes, store, tagging, transform_helpers
 from .shapes import default_row as shapes_default_row
 
 __all__ = ["SaveError", "SaveResult", "document_trs", "save_prefab"]
@@ -65,6 +70,8 @@ class SaveResult:
         self.added = 0
         self.removed = 0
         self.edited = 0
+        #: Owned meshes whose GLB this save rewrote (``editable_mesh.publish``).
+        self.meshes = 0
         self.warnings: list[str] = []
 
 
@@ -117,6 +124,13 @@ def save_prefab(scene: bpy.types.Scene, *, invoke_actions: bool = True) -> SaveR
             "or reload to put the deleted root back."
         ) from error
 
+    # Every document check has passed, so the meshes go next: a mesh refusal still leaves the
+    # document untouched, and the GLBs a document references are on disk before it is.
+    try:
+        result.meshes = editable_mesh.publish(scene, layout)
+    except EditableMeshError as error:
+        raise SaveError(str(error)) from error
+
     atomic.write_text(state.path, prefab_document.dumps(merged))
     store.write_state(scene, state.path)
 
@@ -124,6 +138,7 @@ def save_prefab(scene: bpy.types.Scene, *, invoke_actions: bool = True) -> SaveR
     # would re-apply on the next save over whatever someone else wrote meanwhile. The snapshot
     # is refreshed too, or add/remove vanish from the panel the moment the overlay clears.
     _refresh_snapshots(scene, merged, layout)
+    editable_mesh.refresh_display(scene, layout)
     transform_helpers.refresh(scene, vocabulary)
     for obj in _document_objects(scene) + _derived_objects(scene):
         component_edits.clear(obj)

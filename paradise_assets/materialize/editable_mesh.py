@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import os
 import shutil
 import tempfile
@@ -181,7 +182,8 @@ def _mesh(name, positions, normals, uvs, corners, slots) -> bpy.types.Mesh:
         # hard edges the split was for. Blender derives custom normals from final edges, so
         # they ride through the weld and validate() as a corner attribute and are set last.
         carried = mesh.attributes.new(_CORNER_NORMALS, "FLOAT_VECTOR", "CORNER")
-        carried.data.foreach_set("vector", _to_blender(np.concatenate(normals))[rows].astype(np.float32).ravel())
+        corner_normals = _to_blender(np.concatenate(normals))[rows]
+        carried.data.foreach_set("vector", corner_normals.astype(np.float32).ravel())
 
     mesh.update(calc_edges=True)
     _weld(mesh, _weld_distance(points))
@@ -200,7 +202,8 @@ def _weld_distance(points: np.ndarray) -> float:
     """How far apart two rows may be and still be one corner. glTF has no per-corner vertex: any
     attribute difference splits a corner into its own row, and those rows are only NEARLY equal
     once exporters and node transforms have rounded them to float32 -- a few ulps of the model's
-    largest coordinate. Detail finer than 10 µm is kept apart."""
+    largest coordinate. Never below 10 µm, so vertices closer than that always merge, and detail
+    coarser than the distance is kept apart."""
     return max(1e-5, 8 * float(np.finfo(np.float32).eps) * float(np.abs(points).max(initial=0.0)))
 
 
@@ -239,8 +242,11 @@ def _stitch(bm: bmesh.types.BMesh, distance: float) -> None:
             slivers.append(face)
     bmesh.ops.delete(bm, geom=slivers, context="FACES_ONLY")
     edges = list(bm.edges)
+    # Passes only add faces and delete faces, never vertices, so the positions and the tree
+    # built once serve every pass.
+    located = _Located(bm)
     for _ in range(_STITCH_PASSES):
-        on_edge = _junctions(bm, edges, distance)
+        on_edge = _junctions(located, edges, distance)
         if not on_edge:
             break
         replaced = {face for edge in on_edge for face in edge.link_faces if len(face.verts) == 3}
@@ -277,19 +283,24 @@ def _off_line(length, distance: float):
     return np.minimum(distance, np.multiply(length, _FLAT))
 
 
-def _junctions(bm: bmesh.types.BMesh, edges, distance: float) -> dict:
+class _Located:
+    """Every vertex of ``bm`` by index, with its position and a tree to find neighbours."""
+
+    def __init__(self, bm: bmesh.types.BMesh) -> None:
+        bm.verts.index_update()
+        self.verts = list(bm.verts)
+        self.co = np.array([vert.co[:] for vert in self.verts], dtype=np.float64).reshape(-1, 3)
+        self.tree = KDTree(len(self.verts))
+        for index, point in enumerate(self.co.tolist()):
+            self.tree.insert(point, index)
+        self.tree.balance()
+
+
+def _junctions(located: _Located, edges, distance: float) -> dict:
     """Each of ``edges`` with vertices of other faces strictly inside it (within
     :func:`_off_line` of the segment, farther than ``distance`` from both ends): the vertices,
     ordered from ``edge.verts[0]``."""
-    bm.verts.index_update()
-    bm.verts.ensure_lookup_table()
-    verts = bm.verts
-    co = np.array([vert.co[:] for vert in verts], dtype=np.float64).reshape(-1, 3)
-    tree = KDTree(len(verts))
-    for index, point in enumerate(co.tolist()):
-        tree.insert(point, index)
-    tree.balance()
-
+    co = located.co
     found = {}
     for edge in edges:
         start, end = edge.verts
@@ -297,7 +308,7 @@ def _junctions(bm: bmesh.types.BMesh, edges, distance: float) -> dict:
         length = float(np.linalg.norm(axis))
         if length <= 2 * distance:
             continue
-        near = np.array([index for _, index, _ in tree.find_range(
+        near = np.array([index for _, index, _ in located.tree.find_range(
             (start.co + end.co) / 2, length / 2 + distance)])
         offset = co[near] - co[start.index]
         along = offset @ axis / length
@@ -306,9 +317,10 @@ def _junctions(bm: bmesh.types.BMesh, edges, distance: float) -> dict:
         if not inside.any():
             continue
         own = {vert.index for face in edge.link_faces for vert in face.verts}
-        points = sorted((a, i) for a, i in zip(along[inside].tolist(), near[inside].tolist()) if i not in own)
+        candidates = zip(along[inside].tolist(), near[inside].tolist(), strict=True)
+        points = sorted((a, i) for a, i in candidates if i not in own)
         if points:
-            found[edge] = [verts[i] for _, i in points]
+            found[edge] = [located.verts[i] for _, i in points]
     return found
 
 
@@ -325,7 +337,7 @@ def _fan(a, b, c, ab, bc, ca) -> list[tuple]:
         return [(a, b, c)]
     chain = [a, *ab, b]
     triangles = []
-    for p, q in zip(chain, chain[1:]):
+    for p, q in itertools.pairwise(chain):
         triangles += _fan(p, q, c, [], bc if q is b else [], ca if p is a else [])
     return triangles
 

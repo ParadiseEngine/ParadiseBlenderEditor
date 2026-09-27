@@ -165,7 +165,9 @@ def _create_object(
 ) -> bpy.types.Object:
     reference = _mesh_reference(entry, mesh_fields)
     # The field names a mesh DOCUMENT; the model it was extracted from is what Blender shows.
-    source = mesh_document.displayable(layout, reference) if reference is not None else None
+    model = mesh_document.displayable(layout, reference) if reference is not None else None
+    # Only a whole GLB is ever owned or edited in place; an asset is one model of a .blend.
+    source = model.path if model is not None and model.asset is None else None
 
     obj = None
     if source is not None and ownership.owns(source, entry.guid):
@@ -178,7 +180,7 @@ def _create_object(
         obj = bpy.data.objects.new(entry.name or "object", None)
         obj.empty_display_size = 0.25
         if reference is not None:
-            collection = library.collection_for(source) if source is not None else None
+            collection = library.collection_for(model.path, model.asset) if model is not None else None
             if collection is not None:
                 obj.instance_type = "COLLECTION"
                 obj.instance_collection = collection

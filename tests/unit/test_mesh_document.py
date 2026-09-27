@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from paradise_assets.document import mesh_document
+from paradise_assets.document.model_source import Model
 from paradise_assets.document.project import ProjectLayout
 
 DOCUMENT = (
@@ -23,7 +24,7 @@ def test_a_document_resolves_to_the_glb_it_names(tmp_path):
     layout = project(tmp_path)
     (tmp_path / "assets" / "Models" / "Player.skinnedmesh").write_text(DOCUMENT, encoding="utf-8")
 
-    expected = layout.resolve("Models/Player.glb")
+    expected = Model(layout.resolve("Models/Player.glb"))
     assert mesh_document.source_for(layout, "Models/Player.skinnedmesh") == expected
     assert mesh_document.displayable(layout, "Models/Player.skinnedmesh") == expected
 
@@ -31,7 +32,7 @@ def test_a_document_resolves_to_the_glb_it_names(tmp_path):
 def test_a_glb_is_displayed_as_itself(tmp_path):
     layout = project(tmp_path)
 
-    assert mesh_document.displayable(layout, "Models/Crate.glb") == layout.resolve("Models/Crate.glb")
+    assert mesh_document.displayable(layout, "Models/Crate.glb") == Model(layout.resolve("Models/Crate.glb"))
     assert mesh_document.is_document("Models/Crate.mesh")
     assert not mesh_document.is_document("Models/Crate.glb")
 
@@ -44,3 +45,26 @@ def test_a_missing_or_unreadable_document_displays_nothing(tmp_path):
     assert mesh_document.source_for(layout, "Models/Absent.mesh") is None
     assert mesh_document.source_for(layout, "Models/Broken.mesh") is None
     assert mesh_document.source_for(layout, "Models/Sourceless.mesh") is None
+
+
+def test_a_document_of_one_asset_names_the_blend_and_the_asset(tmp_path):
+    layout = project(tmp_path)
+    (tmp_path / "assets" / "Models" / "Lamp_A.mesh").write_text(
+        'schema_version = 1\nasset = "Lamp_A"\nslot = "mesh"\n'
+        'source = { guid = "cfd24c3a-5972-53fd-a757-0b2c3b610597", path = "Models/Lamps.blend" }\n',
+        encoding="utf-8")
+
+    found = mesh_document.displayable(layout, "Models/Lamp_A.mesh")
+
+    assert found == Model(layout.resolve("Models/Lamps.blend"), "Lamp_A")
+    assert found.label == "Lamp_A in Lamps.blend"
+
+
+def test_an_asset_that_cannot_name_a_file_displays_nothing(tmp_path):
+    layout = project(tmp_path)
+    for name, asset in (("Escape", '"../Other"'), ("Empty", '""'), ("Number", "3")):
+        (tmp_path / "assets" / "Models" / f"{name}.mesh").write_text(
+            f'asset = {asset}\nsource = {{ guid = "cfd24c3a-5972-53fd-a757-0b2c3b610597", '
+            'path = "Models/Lamps.blend" }\n', encoding="utf-8")
+
+        assert mesh_document.source_for(layout, f"Models/{name}.mesh") is None, name

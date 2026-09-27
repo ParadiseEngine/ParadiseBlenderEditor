@@ -1,6 +1,7 @@
 """Model sources other than a ``.glb`` -- converted ones (a ``.blend``, an ``.fbx``, an ``.obj``
-with its ``.mtl`` and texture, an animation-only ``.bvh``) and a ``.gltf`` with its ``.bin`` and
-texture, which is read as it is -- placed, shown, made editable, edited at source or in place.
+with its ``.mtl`` and texture, an animation-only ``.bvh``, a ``.blend`` holding two asset
+collections) and a ``.gltf`` with its ``.bin`` and texture, which is read as it is -- placed,
+shown, made editable, edited at source or in place.
 
 Runs against a COPY of a real asset project (ShiningPie by default) with the real CLI, because the
 conversion is the engine's: ``paradise assets extract`` converts each source with a headless
@@ -33,7 +34,7 @@ from paradise_assets import clip_ops, context_menu, watch
 from paradise_assets.document import editable_mesh as ownership
 from paradise_assets.document import glb_clips, gltf, model_source, project, sidecar
 from paradise_assets.materialize import save, store
-from paradise_assets.materialize.meshes import SOURCE_KEY
+from paradise_assets.materialize.meshes import ASSET_KEY, SOURCE_KEY
 from paradise_assets.play import host
 
 LEVEL = "levels/test.prefab"
@@ -46,6 +47,7 @@ BVH = "models/model_sources/Sway.bvh"
 LAMP = "models/model_sources/Lamp.gltf"
 LAMP_BIN = "models/model_sources/Lamp.bin"
 LAMP_PNG = "models/model_sources/textures/Lamp_paint.png"
+POSTS = "models/model_sources/Posts.blend"
 #: A document of its own for the .bvh placement: no prefab seed exists for an animation-only
 #: source, and the build refuses a model reference, so it is removed before verify and build.
 CLIPS_LEVEL = "levels/model_sources_clips.prefab"
@@ -124,6 +126,30 @@ texture.image = paint
 tree.links.new(texture.outputs["Color"], tree.nodes["Principled BSDF"].inputs["Base Color"])
 cube.data.materials.append(material)
 bpy.ops.export_scene.gltf(filepath=lamp, export_format="GLTF_SEPARATE", export_texture_dir="textures")
+"""
+
+#: Run by a separate headless Blender: one .blend holding two models, each an asset collection
+#: laid out beside the other with its origin (``instance_offset``) at its own centre -- a unit
+#: cube at x = 10 and one three units tall at x = 20 -- and a monkey in no asset collection,
+#: which is no model at all.
+_MAKE_POSTS = """
+import bpy, sys
+path = sys.argv[sys.argv.index("--") + 1]
+bpy.ops.wm.read_factory_settings(use_empty=True)
+for name, x, height in (("Post_Short", 10.0, 1.0), ("Post_Tall", 20.0, 3.0)):
+    collection = bpy.data.collections.new(name)
+    bpy.context.scene.collection.children.link(collection)
+    bpy.ops.mesh.primitive_cube_add(size=1, location=(x, 0.0, 0.0))
+    post = bpy.context.active_object
+    post.name = name
+    post.scale.z = height
+    for parent in list(post.users_collection):
+        parent.objects.unlink(post)
+    collection.objects.link(post)
+    collection.instance_offset = (x, 0.0, 0.0)
+    collection.asset_mark()
+bpy.ops.mesh.primitive_monkey_add(location=(0.0, 0.0, 5.0))
+bpy.ops.wm.save_as_mainfile(filepath=path)
 """
 
 #: A .bvh placement: nothing seeds a prefab for an animation-only source, so an author names it
@@ -208,6 +234,8 @@ def run(source, root):
     lamp, lamp_bin, lamp_png = layout.resolve(LAMP), layout.resolve(LAMP_BIN), layout.resolve(LAMP_PNG)
     os.makedirs(os.path.dirname(blend))
     blender(_MAKE_SOURCES, blend, fbx, obj, png, bvh, lamp)
+    posts = layout.resolve(POSTS)
+    blender(_MAKE_POSTS, posts)
     assert Path(mtl).is_file() and "textures/Plank_wood.png" in Path(mtl).read_text(), \
         "no .mtl naming the PNG"
     assert Path(lamp_bin).is_file() and Path(lamp_png).is_file(), "no .bin or texture beside the .gltf"
@@ -217,10 +245,10 @@ def run(source, root):
     # the model prefab seeds all come from here.
     # A fresh watcher mints the new files' identities before it rebuilds the cold project.
     assert watch.start(root) is None
-    for model in (*sources, png, lamp, lamp_png):
+    for model in (*sources, png, lamp, lamp_png, posts):
         assert sidecar.wait_for(model, timeout=120) is not None, f"the watcher minted no sidecar for {model}"
     watch.stop_all()
-    for model in (*sources, lamp):
+    for model in (*sources, lamp, posts):
         cli(["assets", "extract", model], root)
     for model in sources:
         converted = model_source.converted_path(layout, model)
@@ -234,6 +262,16 @@ def run(source, root):
     assert not Path(model_source.converted_path(layout, lamp)).exists(), "extraction converted the .gltf"
     assert model_source.current_glb(lamp) == lamp
     print("PASS a .gltf is extracted as it is, with no converted GLB")
+
+    # -- a .blend of two asset collections is two models, each converted to a GLB of its own ------
+    for asset in ("Post_Short", "Post_Tall"):
+        converted = model_source.converted_path(layout, posts, asset)
+        assert model_source.is_current(posts, converted, asset), f"extract left no current {converted}"
+        assert Path(layout.resolve(f"prefabs/models/{asset}.prefab")).is_file(), f"no prefab seed for {asset}"
+    assert not Path(model_source.converted_path(layout, posts)).exists(), "the assets were converted whole"
+    assert not Path(layout.resolve("prefabs/models/Posts.prefab")).exists(), "the assets got a whole seed"
+    print("PASS a .blend of two asset collections extracts two models,"
+          " one converted GLB and prefab seed each")
 
     # -- the .bvh gives a skeleton and its clip, and nothing to place as a mesh -----------------
     assert not Path(layout.resolve("prefabs/models/Sway.prefab")).exists(), \
@@ -394,13 +432,47 @@ def run(source, root):
     assert plank.type == "MESH" and len(plank.material_slots) == 1
     print("PASS Make Mesh Editable works on an .obj placement")
 
+    # -- each asset of a .blend places at its own origin, not where it sits in the file ---------
+    short_guid = place(layout, seed_prefab(layout, "Post_Short"))
+    tall_guid = place(layout, seed_prefab(layout, "Post_Tall"))
+    reload(level, layout)
+    short, tall = placed(scene, short_guid), placed(scene, tall_guid)
+    for shown, asset in ((short, "Post_Short"), (tall, "Post_Tall")):
+        assert shown.instance_collection[SOURCE_KEY] == os.path.abspath(posts)
+        assert shown.instance_collection[ASSET_KEY] == asset
+    assert short.instance_collection != tall.instance_collection
+    assert bounds(world_points(short)) == ((3.5, 4.5), (-3.5, -2.5), (-0.5, 0.5)), bounds(world_points(short))
+    assert bounds(world_points(tall)) == ((3.5, 4.5), (-3.5, -2.5), (-1.5, 1.5)), bounds(world_points(tall))
+    assert not any(part.name.startswith("Suzanne") for shown in (short, tall)
+                   for part in shown.instance_collection.all_objects), "an object outside every asset showed"
+    print("PASS the two assets of one .blend place as two models, each at its own origin")
+
+    # -- Edit Source on an asset opens its .blend; Make Mesh Editable copies that asset's GLB ----
+    bpy.context.view_layer.objects.active = short
+    with patch.object(context_menu.subprocess, "Popen") as popen:
+        assert bpy.ops.paradise_assets.edit_model_source("EXEC_DEFAULT") == {"FINISHED"}
+    assert popen.call_args.args[0] == [bpy.app.binary_path, os.path.abspath(posts)], popen.call_args
+    print("PASS Edit Source on an asset of a .blend opens that .blend in a new Blender")
+
+    converted = model_source.converted_path(layout, posts, "Post_Tall")
+    primitives = sum(len(mesh["primitives"]) for mesh in gltf.read_json(converted)["meshes"])
+    shown = world_points(tall)
+    assert make_editable(tall) == {"FINISHED"}
+    tall = store.object_with_guid(scene, tall_guid)
+    assert tall.type == "MESH" and len(tall.material_slots) == primitives
+    assert bounds(world_points(tall)) == bounds(shown), "the editable mesh is not the asset it showed"
+    assert ownership.owner_of(owned_glb(layout, level, tall_guid)) == tall_guid
+    short = placed(scene, short_guid)
+    assert bounds(world_points(short))[2] == (-0.5, 0.5), "the other asset changed with it"
+    print("PASS Make Mesh Editable on an asset of a .blend copies that asset's own GLB")
+
     # -- an animation-only placement loads cleanly: clips authorable, no mesh to edit ------------
     clips_level = layout.resolve(CLIPS_LEVEL)
     Path(clips_level).write_text(_CLIPS_DOCUMENT.format(guid=SWAY_GUID, bvh=BVH), encoding="utf-8")
     open_fresh(clips_level, layout)   # asserts the load warned about nothing
     sway = placed(bpy.context.scene, SWAY_GUID)
     assert any(part.type == "ARMATURE" for part in sway.instance_collection.all_objects)
-    assert clip_ops.model_for_object(sway, layout) == bvh
+    assert clip_ops.model_for_object(sway, layout) == model_source.Model(bvh)
     view = glb_clips.view(bvh)
     assert view is not None and len(view.clips) == 1 and view.identified, view
     assert view.joints and view.root_joint == "Hips", view
@@ -427,7 +499,8 @@ def run(source, root):
     report = cli(["assets", "verify"], root)
     assert "has not been extracted" not in report.stdout + report.stderr, report.stdout + report.stderr
     cli(["assets", "build", "--profile", "dev"], root)
-    print("PASS verify is clean and the level builds with .blend, .fbx, .obj and .gltf models in it")
+    print("PASS verify is clean and the level builds with .blend, .fbx, .obj and .gltf models and"
+          " assets of a .blend in it")
     keep_warm(source, root)
 
 

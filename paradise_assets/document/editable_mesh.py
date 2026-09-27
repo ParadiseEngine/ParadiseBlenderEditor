@@ -349,7 +349,7 @@ def _is_our_mesh(layout: ProjectLayout, path: str, glb: str) -> bool:
     if not mesh_document.is_document(document):
         return False
     source = mesh_document.source_for(layout, layout.relative(document))
-    return source is not None and _same_file(source, glb)
+    return source is not None and source.asset is None and _same_file(source.path, glb)
 
 
 def _same_file(a: str, b: str) -> bool:

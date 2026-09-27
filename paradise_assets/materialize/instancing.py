@@ -202,8 +202,9 @@ def _show_prefab_mesh(obj, document, layout, prefab_path) -> None:
         return
     component, field = found
     value = component.data[field]
-    source = mesh_document.displayable(layout, value.get("path") if isinstance(value, dict) else value)
-    collection = MeshLibrary(bpy.context.scene).collection_for(source) if source is not None else None
+    model = mesh_document.displayable(layout, value.get("path") if isinstance(value, dict) else value)
+    library = MeshLibrary(bpy.context.scene)
+    collection = library.collection_for(model.path, model.asset) if model is not None else None
     if collection is not None:
         obj.instance_type = "COLLECTION"
         obj.instance_collection = collection

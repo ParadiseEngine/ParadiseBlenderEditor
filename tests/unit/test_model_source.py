@@ -51,14 +51,17 @@ def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def converted(layout: ProjectLayout, source: str, source_bytes: bytes, dependencies=(), **document) -> str:
-    """The converted GLB the pipeline would write for ``source``, stamped with those bytes and
-    ``dependencies``: ``(path relative to the source's directory, bytes)`` pairs."""
+def converted(layout: ProjectLayout, source: str, source_bytes: bytes, dependencies=(), asset=None,
+              **document) -> str:
+    """The converted GLB the pipeline would write for ``source`` (or its ``asset``), stamped with
+    those bytes and ``dependencies``: ``(path relative to the source's directory, bytes)`` pairs."""
     stamp = {"paradiseSourceSha256": sha256(source_bytes),
-             "paradiseConverterVersion": 2, "paradiseBlenderVersion": "Blender 5.2.1 LTS",
+             "paradiseConverterVersion": 3, "paradiseBlenderVersion": "Blender 5.2.1 LTS",
              "paradiseDependencies": [{"path": path, "sha256": sha256(data)} for path, data in dependencies]}
+    if asset is not None:
+        stamp["paradiseAsset"] = asset
     content = {"asset": {"version": "2.0", "extras": stamp}, **document}
-    return write(Path(model_source.converted_path(layout, source)), glb(content))
+    return write(Path(model_source.converted_path(layout, source, asset)), glb(content))
 
 
 def test_the_converted_glb_mirrors_the_source_path_under_editor_converted(tmp_path):
@@ -67,6 +70,54 @@ def test_the_converted_glb_mirrors_the_source_path_under_editor_converted(tmp_pa
 
     assert model_source.converted_path(layout, source) == str(
         tmp_path / ".editor" / "converted" / "models" / "props" / "car.blend.glb")
+
+
+def test_each_asset_of_a_blend_is_converted_into_a_folder_named_after_the_source(tmp_path):
+    layout = project(tmp_path)
+    source = layout.resolve("models/props/lamps.blend")
+
+    assert model_source.converted_path(layout, source, "Lamp_A") == str(
+        tmp_path / ".editor" / "converted" / "models" / "props" / "lamps.blend" / "Lamp_A.glb")
+
+
+def test_an_asset_reads_its_own_conversion_and_nothing_else(tmp_path):
+    layout = project(tmp_path)
+    source = write(tmp_path / "assets" / "models" / "lamps.blend", b"BLENDER-v1")
+    lamp_a = converted(layout, source, b"BLENDER-v1", asset="Lamp_A")
+    lamp_b = converted(layout, source, b"BLENDER-v1", asset="Lamp_B")
+
+    assert model_source.current_glb(source, "Lamp_A") == lamp_a
+    assert model_source.current_glb(source, "Lamp_B") == lamp_b
+    assert model_source.current_glb(source) is None, "a file of assets has no whole-file model"
+    assert model_source.current_glb(source, "Lamp_C") is None
+    # A GLB at an asset's path stamped for another asset is not that asset's conversion.
+    Path(lamp_b).write_bytes(Path(lamp_a).read_bytes())
+    assert model_source.current_glb(source, "Lamp_B") is None
+
+
+def test_saving_a_blend_makes_every_asset_conversion_stale(tmp_path):
+    layout = project(tmp_path)
+    source = write(tmp_path / "assets" / "models" / "lamps.blend", b"BLENDER-v1")
+    for asset in ("Lamp_A", "Lamp_B"):
+        converted(layout, source, b"BLENDER-v1", asset=asset)
+
+    write(Path(source), b"BLENDER-v2")
+
+    assert model_source.current_glb(source, "Lamp_A") is None
+    assert model_source.current_glb(source, "Lamp_B") is None
+
+
+def test_an_asset_name_that_is_a_path_or_an_asset_of_a_glb_reads_nothing(tmp_path):
+    layout = project(tmp_path)
+    source = write(tmp_path / "assets" / "models" / "lamps.blend", b"BLENDER-v1")
+    model = write(tmp_path / "assets" / "models" / "crate.glb", glb({"asset": {"version": "2.0"}}))
+    # Stamped for that asset, where the unchecked name would have led the reader.
+    converted(layout, source, b"BLENDER-v1", asset="../lamps")
+
+    for name in ("../lamps", "a/b", "a\\b", "", ".", ".."):
+        assert not model_source.is_asset_name(name), name
+        assert model_source.current_glb(source, name) is None, name
+    assert model_source.current_glb(model, "Crate") is None
 
 
 def test_a_glb_or_gltf_is_read_as_itself_and_a_blend_through_its_current_conversion(tmp_path):
@@ -176,6 +227,26 @@ def test_a_conversion_with_no_mesh_is_skeleton_only(tmp_path):
     assert not model_source.is_skeleton_only(crate)
 
 
+def test_an_asset_of_skeleton_and_clips_alone_is_skeleton_only(tmp_path):
+    layout = project(tmp_path)
+    source = write(tmp_path / "assets" / "models" / "cast.blend", b"BLENDER-cast")
+    converted(layout, source, b"BLENDER-cast", asset="Rig", nodes=[{"name": "Hips"}],
+              skins=[{"joints": [0]}], animations=[{"name": "Walk"}])
+    converted(layout, source, b"BLENDER-cast", asset="Prop", meshes=[{"primitives": []}])
+
+    assert model_source.is_skeleton_only(source, "Rig")
+    assert not model_source.is_skeleton_only(source, "Prop")
+    assert "Rig in cast.blend holds no mesh" in model_source.no_mesh_refusal(source, "Rig")
+
+
+def test_converting_one_asset_asks_the_cli_for_that_asset(tmp_path):
+    layout = project(tmp_path)
+    source = layout.resolve("models/lamps.blend")
+
+    assert model_source.convert_arguments(layout, source)[-2:] == ["--project", layout.root]
+    assert model_source.convert_arguments(layout, source, "Lamp_A")[-2:] == ["--asset", "Lamp_A"]
+
+
 def test_the_converted_path_is_the_last_line_the_cli_printed():
     stdout = "converting models/car.blend\n/root/.editor/converted/models/car.blend.glb\n\n"
 
@@ -202,3 +273,34 @@ def test_clip_settings_of_a_blend_read_its_conversion_and_land_in_its_own_sideca
     write(Path(source), b"BLENDER-hro2")
     with pytest.raises(glb_clips.ClipSettingsError, match="no current converted GLB"):
         glb_clips.set_root_motion(source, 0, True)
+
+
+def test_clip_settings_of_each_asset_are_keyed_by_the_asset_in_the_one_sidecar(tmp_path):
+    layout = project(tmp_path)
+    source = write(tmp_path / "assets" / "models" / "cast.blend", b"BLENDER-cast")
+    meta = tmp_path / "assets" / "models" / "cast.blend.meta"
+    meta.write_text(
+        f'schema_version = 1\nguid = "{GUID}"\n\n[glb]\n'
+        'clips = [ { index = 0, name = "Stale", root_motion = true } ]\n', encoding="utf-8")
+    rig = {"nodes": [{"name": "root"}], "skins": [{"joints": [0]}]}
+    converted(layout, source, b"BLENDER-cast", asset="Hero", animations=[{"name": "Idle"}, {"name": "Run"}],
+              **rig)
+    converted(layout, source, b"BLENDER-cast", asset="Guard", animations=[{"name": "Patrol"}], **rig)
+
+    glb_clips.set_root_motion(source, 1, True, "Hero")
+    glb_clips.set_root_bone(source, 0, "root", "Guard")
+
+    assert glb_clips.read_settings(str(meta), "Hero")[1].root_motion is True
+    assert glb_clips.read_settings(str(meta), "Guard")[0].root_bone == "root"
+    assert glb_clips.read_settings(str(meta))[0].name == "Stale", "another model's entry was dropped"
+    assert set(glb_clips.read_settings(str(meta), "Hero")) == {1}
+    assert [row.setting.root_motion for row in glb_clips.view(source, "Hero").clips] == [False, True]
+    assert [row.setting.root_bone for row in glb_clips.view(source, "Guard").clips] == ["root"]
+    text = meta.read_text(encoding="utf-8")
+    # The whole-file entry first, then each asset's in ordinal order, each by index.
+    assert text.index('name = "Stale"') < text.index('asset = "Guard"') < text.index('asset = "Hero"'), text
+    assert 'asset = "Hero", index = 1, name = "Run", root_motion = true' in text, text
+
+    glb_clips.set_root_motion(source, 1, False, "Hero")
+    assert glb_clips.read_settings(str(meta), "Hero") == {}
+    assert 'asset = "Hero"' not in meta.read_text(encoding="utf-8")

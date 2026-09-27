@@ -11,6 +11,12 @@ inline table::
     [glb]
     clips = [ { index = 2, name = "Walk_Loop", root_motion = true, root_bone = "root" } ]
 
+A ``.blend`` holding several models, one per asset collection, has one sidecar for all of them:
+an entry for an asset's clip names that asset, and is keyed by the asset AND the clip's index
+in the asset's own GLB. An entry without ``asset`` belongs to a whole-file model::
+
+    clips = [ { asset = "Lamp_A", index = 0, name = "Sway", root_motion = true } ]
+
 ``root_motion`` opts the clip in -- absent or ``false`` keeps the runtime's default, so an
 unflagged clip and a never-touched GLB are the same thing. ``root_bone`` names the joint whose
 motion is lifted onto the actor; absent means auto-detect, the skin's root joint. ``name`` is
@@ -56,6 +62,7 @@ __all__ = [
 #: theirs: index + name is the `NamedReference` keying extracted clip documents already use.
 DOMAIN = "glb"
 CLIPS_KEY = "clips"
+ASSET_KEY = "asset"
 INDEX_KEY = "index"
 NAME_KEY = "name"
 ROOT_MOTION_KEY = "root_motion"
@@ -125,10 +132,11 @@ _RIG_CACHE: dict[str, tuple[int, int, Rig | None]] = {}
 _META_CACHE: dict[str, tuple[str, dict | None]] = {}
 
 
-def rig(path: str) -> Rig | None:
-    """The clips and skin joints of the model at ``path`` -- read from its current converted GLB
-    for a converted source -- or ``None`` when there is no readable GLB to read them from."""
-    glb = model_source.current_glb(path)
+def rig(path: str, asset: str | None = None) -> Rig | None:
+    """The clips and skin joints of the model at ``path`` (or of its ``asset``) -- read from its
+    current converted GLB for a converted source -- or ``None`` when there is no readable GLB to
+    read them from."""
+    glb = model_source.current_glb(path, asset)
     if glb is None:
         return None
     try:
@@ -201,19 +209,20 @@ def _rig_of(document: dict) -> Rig | None:
     return Rig(clips, tuple(joints), root_joint)
 
 
-def view(glb_path: str) -> ClipView | None:
-    """The clips section for ``glb_path``, or ``None`` when it has no clips to show.
+def view(glb_path: str, asset: str | None = None) -> ClipView | None:
+    """The clips section for the model ``glb_path`` (or its ``asset``), or ``None`` when it has
+    no clips to show.
 
     ``None`` is also the answer for an unreadable GLB: the loader already warned about the
     mesh, and a panel section that cannot list clips says nothing it can act on.
     """
-    info = rig(glb_path)
+    info = rig(glb_path, asset)
     if info is None or not info.clips:
         return None
 
     root = _read_meta_cached(sidecar.path_for(glb_path))
     identified = _identified(root)
-    stored, orphans = _collect(_stored_entries(root), info.clips)
+    stored, orphans = _collect(_of_asset(_stored_entries(root), asset)[0], info.clips)
 
     problems: list[str] = []
     for entry in orphans:
@@ -265,34 +274,36 @@ def _identified(root: dict | None) -> bool:
     )
 
 
-def read_settings(meta_path: str) -> dict[int, ClipSetting]:
-    """The sidecar's clip settings by clip index, as stored -- no clip table to reconcile
-    against here, so names come from the file. Empty when there is no readable sidecar."""
+def read_settings(meta_path: str, asset: str | None = None) -> dict[int, ClipSetting]:
+    """The sidecar's clip settings of ``asset`` (``None``: the whole-file model) by clip index,
+    as stored -- no clip table to reconcile against here, so names come from the file. Empty
+    when there is no readable sidecar."""
     loaded = _read_meta(meta_path)
     if loaded is None:
         return {}
-    return _parse_entries(_stored_entries(loaded[1]))
+    return _parse_entries(_of_asset(_stored_entries(loaded[1]), asset)[0])
 
 
-def set_root_motion(glb_path: str, index: int, enabled: bool) -> None:
+def set_root_motion(glb_path: str, index: int, enabled: bool, asset: str | None = None) -> None:
     """Flag clip ``index`` as driving the actor's root (or back to in-place posing)."""
-    _apply(glb_path, index, root_motion=enabled)
+    _apply(glb_path, asset, index, root_motion=enabled)
 
 
-def set_root_bone(glb_path: str, index: int, bone: str) -> None:
+def set_root_bone(glb_path: str, index: int, bone: str, asset: str | None = None) -> None:
     """Set clip ``index``'s root bone; ``""`` returns it to the skin's root joint."""
-    _apply(glb_path, index, root_bone=bone)
+    _apply(glb_path, asset, index, root_bone=bone)
 
 
 def _apply(
     glb_path: str,
+    asset: str | None,
     index: int,
     *,
     root_motion: bool | None = None,
     root_bone: str | None = None,
 ) -> None:
-    info = rig(glb_path)
-    glb_name = os.path.basename(glb_path)
+    info = rig(glb_path, asset)
+    glb_name = model_source.Model(glb_path, asset).label
     if info is None:
         raise ClipSettingsError(
             f"{glb_name} has no current converted GLB to read its clips from; reload the document "
@@ -338,7 +349,8 @@ def _apply(
             f"[{DOMAIN}] in {os.path.basename(meta_path)} is not a table — fix it by hand "
             "rather than have this write guess")
 
-    merged, _orphans = _collect(_stored_entries(root), info.clips)
+    own, others = _of_asset(_stored_entries(root), asset)
+    merged, _orphans = _collect(own, info.clips)
 
     current = merged.get(index, ClipSetting(index, info.clips[index]))
     updated = ClipSetting(
@@ -352,25 +364,29 @@ def _apply(
     else:
         merged[index] = updated
 
-    _write_domain(meta_path, original, root, domain, merged, info.clips)
+    _write_domain(meta_path, original, root, domain, asset, merged, info.clips, others)
 
 
 def _write_domain(
-    meta_path: str, original: str, root: dict, domain,
-    merged: dict[int, ClipSetting], clip_names,
+    meta_path: str, original: str, root: dict, domain, asset: str | None,
+    merged: dict[int, ClipSetting], clip_names, others: list,
 ) -> None:
-    """Swap the domain's clip list for ``merged`` and write the sidecar back canonically.
+    """Swap ``asset``'s entries in the domain's clip list for ``merged`` and write the sidecar
+    back canonically.
 
-    Everything the edit did not touch passes through: structural keys, other domains, and the
-    other ``[glb]`` members. Entries are written sorted by index so the file's order is the
-    GLB's own -- a diff between two writes then means a setting changed, not a reorder.
+    Everything the edit did not touch passes through: structural keys, other domains, the
+    other ``[glb]`` members, and the other models' entries (``others``, as stored). The
+    whole-file model's entries come first, then each asset's in ordinal order; within one model
+    they are sorted by index so the file's order is the GLB's own -- a diff between two writes
+    then means a setting changed, not a reorder.
     """
-    if merged:
+    if merged or others:
         if not isinstance(domain, dict):
             domain = {}
             root[DOMAIN] = domain
         def _entry(setting: ClipSetting) -> canonical_toml.InlineTable:
-            items = [
+            items = [] if asset is None else [(ASSET_KEY, asset)]
+            items += [
                 (INDEX_KEY, setting.index),
                 # The name is re-stamped from the clip table, so a DCC rename cannot leave
                 # the entry labelled with a clip that is gone.
@@ -381,7 +397,8 @@ def _write_domain(
                 items.append((ROOT_BONE_KEY, setting.root_bone))
             return canonical_toml.InlineTable(items)
 
-        domain[CLIPS_KEY] = [_entry(merged[index]) for index in sorted(merged)]
+        entries = [*others, *(_entry(merged[index]) for index in sorted(merged))]
+        domain[CLIPS_KEY] = sorted(entries, key=_entry_order)
     elif isinstance(domain, dict):
         domain.pop(CLIPS_KEY, None)
 
@@ -419,6 +436,26 @@ def _stored_entries(root: dict | None):
         return []
     entries = domain.get(CLIPS_KEY)
     return entries if isinstance(entries, list) else []
+
+
+def _of_asset(entries, asset: str | None) -> tuple[list, list]:
+    """``entries`` split into those of ``asset`` (``None``: without an ``asset`` key) and the
+    other models', which a write passes through as they are. Anything that is not an entry is
+    in neither, as a write has always dropped it."""
+    own: list = []
+    others: list = []
+    for entry in entries:
+        if isinstance(entry, dict):
+            (own if entry.get(ASSET_KEY) == asset else others).append(entry)
+    return own, others
+
+
+def _entry_order(entry: dict) -> tuple:
+    """Whole-file entries first, then by asset name (ordinal), then by clip index."""
+    asset = entry.get(ASSET_KEY)
+    index = entry.get(INDEX_KEY)
+    return (0 if asset is None else 1, asset if isinstance(asset, str) else "",
+            index if type(index) is int else 0)
 
 
 def _parse_entries(entries) -> dict[int, ClipSetting]:

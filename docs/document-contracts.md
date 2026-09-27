@@ -120,6 +120,22 @@ saving the `.blend` -- or editing the `.mtl` -- is what re-imports it on the nex
 source's identity and `[glb]` settings live in its own sidecar (`car.blend.meta`), exactly as a
 `.glb`'s do.
 
+**A `.blend` of asset collections is one model per asset.** A collection marked as an asset
+(Mark as Asset) is a model of its own, named by the collection and exported about the
+collection's `instance_offset`, so variants laid side by side in one file each place at their own
+origin; objects in no asset collection are not part of any model. A `.blend` without an asset
+collection stays one whole-file model. Each asset converts to
+`.editor/converted/<assets-relative source>/<asset>.glb`, stamped like a whole-file conversion
+plus `paradiseAsset`, and its documents (`.mesh`, `.skinnedmesh`, `.skeleton`, `.anim`) carry a
+top-level `asset = "<name>"` beside `source`. `mesh_document.source_for` returns a
+`model_source.Model(path, asset)`; the library keeps one collection per (source, asset), named
+`GLB/<file>.blend/<asset>` and tagged `paradise_glb_asset`, and `meshes.glb_of(source, asset)`
+converts through `paradise assets convert <source> --asset <asset>`. A conversion stamped for
+another asset, or a whole-file reference to a `.blend` that now holds assets, is not current and
+reports what changed rather than showing another model. The file keeps one sidecar; its clip
+settings name the asset on each `[glb].clips` entry (`{ asset, index, ... }`, keyed by asset and
+the index in that asset's GLB), and a write leaves the other models' entries as they are.
+
 **A `.gltf` is the GLB its buffers make.** Every reader in `document/gltf.py` hands a `.gltf` out
 as the GLB the engine's pipeline reads it as: its JSON, with the buffers (a file named relative to
 the `.gltf`, percent-decoded, or a `data:` URI) concatenated 4-byte aligned into one BIN chunk and
@@ -341,8 +357,10 @@ placement builds from the converted GLB (`meshes.glb_of`): its primitives are wh
 extracted, so slot `i` is still the `Slots[i]` the placement had. Edit Shared Mesh refuses one
 (its poll names the reason): the converted GLB is derived, and the next conversion would drop a
 splice. "Edit Source in New Blender" opens a `.blend` source as the main file of a second
-Blender instead, where quads and modifiers are intact; its save is picked up by the watcher,
-which converts and re-extracts, and the library's source stamp re-imports it on the next load.
+Blender instead, where quads and modifiers are intact -- the whole file for an asset of a
+`.blend`, whose Make Mesh Editable builds from that asset's own GLB; its save is picked up by the
+watcher, which converts and re-extracts, and the library's source stamp re-imports it on the next
+load.
 Every other format is interchange, so it is refused with the advice to re-export it from its
 DCC, the message naming the format (`model_source.edit_in_place_refusal`). A model whose GLB holds
 no mesh -- a `.bvh`, or any skeleton-and-clips file -- refuses Make Mesh Editable, Edit Shared

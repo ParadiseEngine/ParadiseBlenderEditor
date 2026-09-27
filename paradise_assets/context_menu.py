@@ -23,7 +23,7 @@ from bpy.types import Operator
 
 from .document import model_source
 from .materialize import store
-from .materialize.meshes import SOURCE_KEY
+from .materialize.meshes import model_of
 
 __all__ = ["classes", "register_menu", "unregister_menu"]
 
@@ -131,16 +131,15 @@ def _spawn(argv: list[str], cwd: str) -> str | None:
     return None
 
 
-def _model_source_of(obj) -> str | None:
-    """The model file the placement ``obj`` shows, as the library imported it."""
-    collection = obj.instance_collection if obj is not None else None
-    source = collection.get(SOURCE_KEY) if collection is not None else None
-    return source if isinstance(source, str) else None
+def _model_of(obj) -> model_source.Model | None:
+    """The model the placement ``obj`` shows, as the library imported it."""
+    return model_of(obj.instance_collection) if obj is not None else None
 
 
 class PARADISE_ASSETS_OT_edit_model_source(Operator):
-    """Open the .blend this object's model comes from in a new Blender. Saving it there
-    re-extracts the model, and every placement shows the change on its next reload"""
+    """Open the .blend this object's model comes from in a new Blender -- the whole file, when
+    the model is one of its asset collections. Saving it there re-extracts the model, and every
+    placement shows the change on its next reload"""
 
     bl_idname = "paradise_assets.edit_model_source"
     bl_label = "Edit Source in New Blender"
@@ -148,19 +147,20 @@ class PARADISE_ASSETS_OT_edit_model_source(Operator):
 
     @classmethod
     def poll(cls, context) -> bool:
-        source = _model_source_of(context.active_object)
-        if source is None or not model_source.is_converted(source):
+        model = _model_of(context.active_object)
+        if model is None or not model_source.is_converted(model.path):
             return False
-        if model_source.is_skeleton_only(source):
-            cls.poll_message_set(model_source.no_mesh_refusal(source))
+        if model_source.is_skeleton_only(model.path, model.asset):
+            cls.poll_message_set(model_source.no_mesh_refusal(model.path, model.asset))
             return False
-        if not source.lower().endswith(".blend"):
-            cls.poll_message_set(model_source.edit_in_place_refusal(source))
+        if not model.path.lower().endswith(".blend"):
+            cls.poll_message_set(model_source.edit_in_place_refusal(model.path))
             return False
         return True
 
     def execute(self, context):
-        source = _model_source_of(context.active_object)
+        model = _model_of(context.active_object)
+        source = model.path if model is not None else None
         if source is None or not source.lower().endswith(".blend") or not os.path.isfile(source):
             self.report({"ERROR"}, "This object does not show a model made from a .blend on disk.")
             return {"CANCELLED"}
@@ -217,7 +217,8 @@ def _draw(self, context) -> None:
             icon="EDITMODE_HLT")
         # A converted model's GLB is derived, so it is edited where it comes from instead; any
         # other format's row stays, greyed, so its tooltip can say where that is.
-        if model_source.is_converted(_model_source_of(obj) or ""):
+        shown = _model_of(obj)
+        if shown is not None and model_source.is_converted(shown.path):
             column.operator(
                 PARADISE_ASSETS_OT_edit_model_source.bl_idname,
                 text="Edit Source in New Blender",

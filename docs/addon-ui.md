@@ -71,10 +71,11 @@ edit its source prefab to clear it, or use **Revert to Prefab** to restore the i
 The Components panel gains an **Animation clips** section when the selected object's mesh
 resolves to a model that carries animations (`document/glb_clips.py` reads the JSON chunk of the
 GLB -- the model itself for a `.glb` or `.gltf`, or the current converted GLB of any other source,
-a `.bvh` included).
+a `.bvh` included, or of the one asset of a `.blend` the mesh document names).
 Each clip row is a
 root-motion toggle and a root-bone picker; both write the model's `.meta` sidecar immediately —
-the `[glb].clips` domain, keyed by glTF animation index — because the setting belongs to the
+the `[glb].clips` domain, keyed by glTF animation index (and by asset, for an asset of a
+`.blend`, whose one sidecar holds every asset's clips) — because the setting belongs to the
 model, not to the open document, and the `.blend` is disposable. A static mesh draws nothing at
 all, and neither does a converted model whose GLB is older than its source or a file it read:
 the draw never starts a conversion, and the next load (or the watcher) brings it current.
@@ -89,7 +90,7 @@ model; on one of a prefab's children Make Mesh Editable stays greyed, and its to
 unpack the instance first. Edit Shared Mesh works there, since it writes no document. On a
 converted model its row is "Edit Source in New Blender" instead: splicing a converted GLB would
 be overwritten by the next conversion, so a `.blend` opens in a second Blender
-(`bpy.app.binary_path <source>`); any other format's row (FBX, OBJ, USD, ...) is greyed with a
+(`bpy.app.binary_path <source>`, the whole file for an asset of it); any other format's row (FBX, OBJ, USD, ...) is greyed with a
 tooltip, naming that format, that says to edit it where it was exported from. A model whose GLB
 holds no mesh -- a `.bvh` -- greys all three, Make Mesh Editable included, with a tooltip saying
 there is no geometry and pointing at the Animation clips section.

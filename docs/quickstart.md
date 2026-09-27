@@ -134,7 +134,8 @@ disk refuses the save), plus:
   is refused rather than stripped.
 
 A model made from a `.blend` offers **Edit Source in New Blender** instead: the `.blend` opens in
-a second Blender, where its quads and modifiers are still there. Save it; the watcher re-extracts
+a second Blender, where its quads and modifiers are still there -- the whole file, when the model
+is one of its asset collections. Save it; the watcher re-extracts
 it, and placements show the change when their document is reloaded. A model made from any other
 format (`.fbx`, `.obj`, `.usd`, ...) is edited in the application that exported it, then exported
 again. A model with no mesh -- a `.bvh`, a skeleton and its animation -- has nothing to make
@@ -231,6 +232,14 @@ records every file the import read beside the source -- an `.obj`'s `.mtl`, its 
 editing any of them converts it again too. A `.bvh` (animation only)
 extracts a `.skeleton` and its `.anim` clips, and no mesh or prefab. Keeping the `.blend` as the model means its quads,
 modifiers and welded topology stay editable: save it and the watcher converts and extracts again.
+
+One `.blend` can hold several models: mark a collection as an asset (Mark as Asset) and it is a
+model of its own, named after the collection, with the collection's instance offset as its
+origin, so variants can sit side by side in one file. Each asset gets its own converted GLB
+(`.editor/converted/models/Lamps.blend/Lamp_A.glb`), its own prefab seed
+(`prefabs/models/Lamp_A.prefab`), meshes and materials, while the file keeps one sidecar; objects
+outside every asset collection are not part of any model. A `.blend` with no asset collection is
+one model, as above.
 
 Models without prefabs receive one, making them placeable. The destination is the model's
 extraction directory override, then `[extract] prefabs` or `[extract] directory` in

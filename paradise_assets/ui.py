@@ -511,12 +511,12 @@ def _draw_clip_settings(layout, context, obj) -> None:
     model = clip_ops.model_for_object(obj, located)
     if model is None:
         return
-    view = glb_clips.view(model)
+    view = glb_clips.view(model.path, model.asset)
     if view is None:
         return
 
     box = layout.box()
-    box.label(text=f"Animation clips — {os.path.basename(model)}", icon="ACTION")
+    box.label(text=f"Animation clips — {model.label}", icon="ACTION")
     if not view.identified:
         warning = box.row()
         warning.alert = True
@@ -534,7 +534,8 @@ def _draw_clip_settings(layout, context, obj) -> None:
             text="",
             icon="CHECKBOX_HLT" if clip.setting.root_motion else "CHECKBOX_DEHLT",
         )
-        toggle.model = model
+        toggle.model = model.path
+        toggle.asset = model.asset or ""
         toggle.index = clip.index
         toggle.enabled = not clip.setting.root_motion
         row.label(text=clip.name or f"clip {clip.index}")
@@ -544,12 +545,14 @@ def _draw_clip_settings(layout, context, obj) -> None:
                 text=clip.setting.root_bone or f"auto ({view.root_joint or '?'})",
                 icon="BONE_DATA",
             )
-            pick.model = model
+            pick.model = model.path
+            pick.asset = model.asset or ""
             pick.index = clip.index
             if clip.setting.root_bone:
                 clear = row.operator(
                     "paradise_assets.clip_root_bone", text="", icon="X")
-                clear.model = model
+                clear.model = model.path
+                clear.asset = model.asset or ""
                 clear.index = clip.index
                 clear.auto = True
 

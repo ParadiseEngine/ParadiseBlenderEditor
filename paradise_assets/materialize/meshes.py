@@ -7,6 +7,9 @@ re-exported ``.bin`` is re-imported. A converted model (``.blend``, ``.fbx``, ``
 shown through the GLB the pipeline converts it to (``document/model_source.py``), but the library
 keys, names and stamps the collection by the SOURCE plus that GLB's stamp: saving the ``.blend``
 -- or an ``.obj``'s ``.mtl`` -- is what makes the next load convert and re-import it.
+
+One ``.blend`` may hold several models, one per asset collection: each is its own library
+collection, keyed by the source AND the asset, imported from that asset's own GLB.
 """
 
 from __future__ import annotations
@@ -19,7 +22,7 @@ from ..document import gltf, model_source, project
 from ..play import host
 from . import store
 
-__all__ = ["LIBRARY_COLLECTION", "MeshLibrary", "glb_of"]
+__all__ = ["LIBRARY_COLLECTION", "MeshLibrary", "glb_of", "model_of"]
 
 #: One collection per imported model, excluded from the view layer.
 LIBRARY_COLLECTION = "ParadiseAssets/Library"
@@ -29,27 +32,37 @@ LIBRARY_COLLECTION = "ParadiseAssets/Library"
 #: existing workfile's library.
 SOURCE_KEY = "paradise_glb_source"
 
+#: The asset of a multi-asset source the collection shows; absent for a whole-file model.
+ASSET_KEY = "paradise_glb_asset"
+
 #: ``(mtime, size)`` at import -- of the source and a ``.gltf``'s buffer files, and of the
 #: converted GLB when there is one; a moved stamp means re-import.
 STAMP_KEY = "paradise_glb_stamp"
 
 
-def glb_of(source: str) -> str:
-    """The GLB to read for the model ``source``, converting a source whose converted GLB is
-    missing or stale -- the source or a file it depends on changed -- through
+def glb_of(source: str, asset: str | None = None) -> str:
+    """The GLB to read for the model ``source`` (or its ``asset``), converting a source whose
+    converted GLB is missing or stale -- the source or a file it depends on changed -- through
     ``paradise assets convert``. Synchronous: the load needs the file before it can show
     anything, and a current conversion costs no process at all.
 
     Raises :class:`model_source.ConversionError` with the reason, for the caller to report."""
-    found = model_source.current_glb(source)
-    if found is not None or not model_source.is_converted(source):
-        return found or source
-    name = os.path.basename(source)
+    found = model_source.current_glb(source, asset)
+    if found is not None:
+        return found
+    name = model_source.Model(source, asset).label
+    if not model_source.is_converted(source):
+        if asset is None:
+            return source
+        raise model_source.ConversionError(
+            f"{name}: a {os.path.splitext(source)[1]} holds one model, not assets")
     layout = project.locate(source)
     if layout is None:
         raise model_source.ConversionError(
             f"{name} is not inside an asset project, so it cannot be converted")
-    result = host.run_cli(model_source.convert_arguments(layout, source), layout.root)
+    if asset is not None and not model_source.is_asset_name(asset):
+        raise model_source.ConversionError(f"'{asset}' cannot name an asset of {os.path.basename(source)}")
+    result = host.run_cli(model_source.convert_arguments(layout, source, asset), layout.root)
     if result is None:
         raise model_source.ConversionError(
             f"{name} needs converting to a GLB, and the Paradise CLI could not be started. Set it "
@@ -60,7 +73,22 @@ def glb_of(source: str) -> str:
     if glb is None or not os.path.isfile(glb):
         raise model_source.ConversionError(
             f"`paradise assets convert` finished without naming the GLB it wrote for {name}")
+    if not model_source.is_current(source, glb, asset):
+        # The .blend converted fine, just not to this model: its asset collections were renamed,
+        # removed, or added since the reference was extracted.
+        raise model_source.ConversionError(
+            f"{os.path.basename(source)} has no asset collection named '{asset}'" if asset is not None
+            else f"{name} now holds asset collections; re-extract it and place one of their prefabs")
     return glb
+
+
+def model_of(collection: bpy.types.Collection | None) -> model_source.Model | None:
+    """The model a library collection shows, or ``None`` for any other collection."""
+    source = collection.get(SOURCE_KEY) if collection is not None else None
+    if not isinstance(source, str):
+        return None
+    asset = collection.get(ASSET_KEY)
+    return model_source.Model(source, asset if isinstance(asset, str) else None)
 
 
 class MeshLibrary:
@@ -69,7 +97,7 @@ class MeshLibrary:
     def __init__(self, scene: bpy.types.Scene, warn=None) -> None:
         self._scene = scene
         self._warn = warn or (lambda message: None)
-        self._by_path: dict[str, bpy.types.Collection | None] = {}
+        self._by_path: dict[tuple[str, str | None], bpy.types.Collection | None] = {}
         self._root = _library_root(scene)
 
     @property
@@ -81,26 +109,28 @@ class MeshLibrary:
     def sources(self) -> set[str]:
         """The model sources actually read, so a cache can key on what a load TOUCHED rather
         than a second reference-discovery that goes stale silently."""
-        return {path for path, value in self._by_path.items() if value is not None}
+        return {path for (path, _asset), value in self._by_path.items() if value is not None}
 
-    def collection_for(self, path: str) -> bpy.types.Collection | None:
-        """The collection for ``path``, importing on first use; ``None`` leaves the object an
-        empty, since a placement whose mesh is missing is still authored data."""
-        key = os.path.normcase(os.path.abspath(path))
+    def collection_for(self, path: str, asset: str | None = None) -> bpy.types.Collection | None:
+        """The collection for the model ``path`` (or its ``asset``), importing on first use;
+        ``None`` leaves the object an empty, since a placement whose mesh is missing is still
+        authored data."""
+        key = (os.path.normcase(os.path.abspath(path)), asset)
         if key in self._by_path:
             return self._by_path[key]
 
-        collection = self._import(path)
+        collection = self._import(path, asset)
         self._by_path[key] = collection
         return collection
 
-    def _import(self, path: str) -> bpy.types.Collection | None:
+    def _import(self, path: str, asset: str | None) -> bpy.types.Collection | None:
         if not os.path.isfile(path):
             self._warn(f"mesh not found: {path}")
             return None
 
+        label = model_source.Model(path, asset).label
         try:
-            glb = glb_of(path)
+            glb = glb_of(path, asset)
         except model_source.ConversionError as error:
             self._warn(str(error))
             return None
@@ -108,20 +138,22 @@ class MeshLibrary:
         # viewport must not show what the game will never get.
         refusal = gltf.reference_refusal(glb)
         if refusal is not None:
-            self._warn(f"could not import {os.path.basename(path)}: {refusal}")
+            self._warn(f"could not import {label}: {refusal}")
             return None
 
         basename = os.path.basename(path)
         # Only a ``.glb`` is named by its stem: ``car.blend`` or ``car.gltf`` beside ``car.glb``
         # must not take over that model's collection.
         name = f"GLB/{os.path.splitext(basename)[0] if path.lower().endswith('.glb') else basename}"
+        if asset is not None:
+            name += f"/{asset}"
         stamp = "|".join(store.stamp_of(part) for part in (path, *gltf.buffer_files(path)))
         if glb != path:
             stamp += f"|{store.stamp_of(glb)}"
         existing = bpy.data.collections.get(name)
-        if existing is not None and _is_current_import(existing, path, stamp):
+        if existing is not None and _is_current_import(existing, path, asset, stamp):
             return existing
-        if existing is not None and _same_source(existing, path):
+        if existing is not None and _same_source(existing, path, asset):
             # Drop the stale collection, or the import lands on GLB/Foo.001 and leaks the old mesh.
             _discard_library_collection(existing)
 
@@ -134,7 +166,7 @@ class MeshLibrary:
         try:
             bpy.ops.import_scene.gltf(filepath=glb)
         except RuntimeError as error:
-            self._warn(f"could not import {basename}: {error}")
+            self._warn(f"could not import {label}: {error}")
             return None
 
         created = [obj for obj in bpy.data.objects if obj not in before]
@@ -142,11 +174,13 @@ class MeshLibrary:
             found for found in bpy.data.collections if found not in collections_before
         ]
         if not created:
-            self._warn(f"{basename} imported nothing")
+            self._warn(f"{label} imported nothing")
             return None
 
         collection = bpy.data.collections.new(name)
         collection[SOURCE_KEY] = os.path.abspath(path)
+        if asset is not None:
+            collection[ASSET_KEY] = asset
         collection[STAMP_KEY] = stamp
         self._root.children.link(collection)
 
@@ -212,11 +246,13 @@ def _view_layer_collection(scene: bpy.types.Scene):
     return None if view_layer is None else view_layer.layer_collection
 
 
-def _is_current_import(collection: bpy.types.Collection, path: str, stamp: str) -> bool:
-    return _same_source(collection, path) and collection.get(STAMP_KEY) == stamp
+def _is_current_import(collection: bpy.types.Collection, path: str, asset: str | None, stamp: str) -> bool:
+    return _same_source(collection, path, asset) and collection.get(STAMP_KEY) == stamp
 
 
-def _same_source(collection: bpy.types.Collection, path: str) -> bool:
+def _same_source(collection: bpy.types.Collection, path: str, asset: str | None) -> bool:
+    if collection.get(ASSET_KEY) != asset:
+        return False
     stored = collection.get(SOURCE_KEY)
     if not isinstance(stored, str) or not stored:
         return False

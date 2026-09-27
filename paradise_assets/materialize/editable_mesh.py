@@ -38,7 +38,7 @@ from ..document import gltf, material_document, model_source, shared_mesh
 from ..document import guid as document_guid
 from ..document.project import ProjectLayout
 from . import store
-from .meshes import SOURCE_KEY, MeshLibrary, glb_of
+from .meshes import SOURCE_KEY, MeshLibrary, glb_of, model_of
 
 __all__ = [
     "begin_shared",
@@ -574,20 +574,21 @@ def write_initial(obj: bpy.types.Object, target: str) -> int:
     """Copy the shared model ``obj`` shows into ``target``, a GLB ``obj`` owns. Returns the slot
     count. The file lands whole (temp beside it, then replace) or not at all.
 
-    A converted model is copied from its converted GLB: that file's primitives are the slots the
-    engine binds, so slot ``i`` here is the ``Slots[i]`` the placement already had."""
-    collection = obj.instance_collection
-    source = collection.get(SOURCE_KEY) if collection is not None else None
-    if not isinstance(source, str) or not os.path.isfile(source):
+    A converted model is copied from its converted GLB -- an asset of a ``.blend`` from that
+    asset's own: that file's primitives are the slots the engine binds, so slot ``i`` here is the
+    ``Slots[i]`` the placement already had."""
+    model = model_of(obj.instance_collection)
+    if model is None or not os.path.isfile(model.path):
         raise contract.EditableMeshError(f"'{obj.name}' does not show a model this scene imported.")
+    source = model.path
 
     name = store.document_name(obj) or obj.name
     try:
-        glb = glb_of(source)
+        glb = glb_of(source, model.asset)
     except model_source.ConversionError as error:
         raise contract.EditableMeshError(str(error)) from error
     if not gltf.read_json(glb).get("meshes"):
-        raise contract.EditableMeshError(model_source.no_mesh_refusal(source))
+        raise contract.EditableMeshError(model_source.no_mesh_refusal(source, model.asset))
     mesh = build_mesh(glb, name)
     slots = len(mesh.materials)
     os.makedirs(os.path.dirname(target), exist_ok=True)
@@ -596,7 +597,7 @@ def write_initial(obj: bpy.types.Object, target: str) -> int:
         written = _write_glb(mesh, staged, name, store.guid_of(obj))
         if written != slots:
             raise contract.EditableMeshError(
-                f"{os.path.basename(source)} has {slots} material part(s) but only {written} could be "
+                f"{model.label} has {slots} material part(s) but only {written} could be "
                 "written; a part with no triangles cannot keep its material binding."
             )
         os.replace(staged, target)
@@ -633,14 +634,14 @@ def _sha256(path: str) -> str:
 def shared_source(obj: bpy.types.Object, layout: ProjectLayout) -> str:
     """The shared model (a GLB or ``.gltf``) the instance ``obj`` shows, if it can be edited in
     place; else raise."""
-    collection = obj.instance_collection
-    source = collection.get(SOURCE_KEY) if collection is not None else None
-    if not isinstance(source, str) or not os.path.isfile(source):
+    model = model_of(obj.instance_collection)
+    if model is None or not os.path.isfile(model.path):
         raise contract.EditableMeshError(f"'{obj.name}' does not show a model this scene imported.")
+    source = model.path
     if not contract.is_inside(source, layout.assets):
         raise contract.EditableMeshError(f"{source} is outside {layout.assets}.")
-    if model_source.is_skeleton_only(source):
-        raise contract.EditableMeshError(model_source.no_mesh_refusal(source))
+    if model_source.is_skeleton_only(source, model.asset):
+        raise contract.EditableMeshError(model_source.no_mesh_refusal(source, model.asset))
     if model_source.is_converted(source):
         raise contract.EditableMeshError(model_source.edit_in_place_refusal(source))
     problem = shared_mesh.unsupported(gltf.read_json(source)) or gltf.rewrite_refusal(source)

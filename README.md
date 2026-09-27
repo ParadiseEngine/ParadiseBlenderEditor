@@ -133,8 +133,9 @@ Right-clicking a **document object** — in the Outliner or in the viewport — 
   its geometry in its `.bin`), keeping its materials, textures and nodes, so every placement
   changes. **Finish Editing Shared Mesh** returns it to an ordinary
   placement.
-- **Edit Source in New Blender** — instead of Edit Shared Mesh, on a model made from a `.blend`:
-  opens that `.blend` in a *second* Blender, where quads and modifiers stay. Saving it there
+- **Edit Source in New Blender** — instead of Edit Shared Mesh, on a model made from a `.blend`
+  (or from one of its asset collections): opens that `.blend` in a *second* Blender, where quads
+  and modifiers stay. Saving it there
   re-extracts the model, and placements show the change on their next reload. A model made from
   any other format (an `.fbx`, an `.obj`, ...) is edited in the application that exported it.
 
@@ -146,7 +147,9 @@ images live beside it, and may only name files under `assets/`. `.blend`, `.fbx`
 shows the same GLB, running `paradise assets convert` when it is missing or older than its source
 or any file the import read (an `.obj`'s `.mtl`, a texture). A `.bvh` holds a skeleton and animation
 only: it gives `.skeleton` and `.anim` documents and its clips are set up in the Components panel,
-but it has no mesh to make editable.
+but it has no mesh to make editable. A `.blend` whose collections are marked as assets is one
+model per asset collection, each at its collection's instance offset, with its own converted GLB
+and prefab seed.
 
 On something that belongs to a **prefab instance**, three more appear. Editing a field on an
 instance, or moving one of its children, records an *override*; these are how one ends:

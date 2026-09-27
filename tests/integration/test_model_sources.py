@@ -208,7 +208,8 @@ def run(source, root):
     lamp, lamp_bin, lamp_png = layout.resolve(LAMP), layout.resolve(LAMP_BIN), layout.resolve(LAMP_PNG)
     os.makedirs(os.path.dirname(blend))
     blender(_MAKE_SOURCES, blend, fbx, obj, png, bvh, lamp)
-    assert Path(mtl).is_file() and "textures/Plank_wood.png" in Path(mtl).read_text(), "no .mtl naming the PNG"
+    assert Path(mtl).is_file() and "textures/Plank_wood.png" in Path(mtl).read_text(), \
+        "no .mtl naming the PNG"
     assert Path(lamp_bin).is_file() and Path(lamp_png).is_file(), "no .bin or texture beside the .gltf"
     sources = (blend, fbx, obj, bvh)
 
@@ -228,14 +229,17 @@ def run(source, root):
     recorded = {entry["path"]: entry["sha256"] for entry in extras["paradiseDependencies"]}
     for relative, path in (("Plank.mtl", mtl), ("textures/Plank_wood.png", png)):
         assert recorded.get(relative) == hashlib.sha256(Path(path).read_bytes()).hexdigest(), extras
-    print("PASS extraction converts every source into .editor/converted/, recording the .obj's .mtl and texture")
+    print("PASS extraction converts every source into .editor/converted/,"
+          " recording the .obj's .mtl and texture")
     assert not Path(model_source.converted_path(layout, lamp)).exists(), "extraction converted the .gltf"
     assert model_source.current_glb(lamp) == lamp
     print("PASS a .gltf is extracted as it is, with no converted GLB")
 
     # -- the .bvh gives a skeleton and its clip, and nothing to place as a mesh -----------------
-    assert not Path(layout.resolve("prefabs/models/Sway.prefab")).exists(), "an animation-only source got a prefab seed"
-    assert not list(Path(layout.resolve("meshes")).glob("Sway*")), "an animation-only source got a mesh document"
+    assert not Path(layout.resolve("prefabs/models/Sway.prefab")).exists(), \
+        "an animation-only source got a prefab seed"
+    assert not list(Path(layout.resolve("meshes")).glob("Sway*")), \
+        "an animation-only source got a mesh document"
     assert list(Path(layout.resolve("animations")).glob("Sway*.skeleton")), "the .bvh extracted no .skeleton"
     assert list(Path(layout.resolve("animations")).glob("Sway*.anim")), "the .bvh extracted no .anim"
     print("PASS a .bvh extracts a skeleton and its clip, and no mesh or prefab")
@@ -365,7 +369,8 @@ def run(source, root):
         assert "OBJ" in str(error) and "export" in str(error), str(error)
     else:
         raise AssertionError("Edit Source opened an OBJ")
-    print("PASS a .blend's Edit Source opens it in a new Blender; an FBX or OBJ is refused, naming its format")
+    print("PASS a .blend's Edit Source opens it in a new Blender;"
+          " an FBX or OBJ is refused, naming its format")
 
     # -- Make Mesh Editable copies the converted GLB: slot i is its primitive i -----------------
     converted = model_source.converted_path(layout, blend)
@@ -414,7 +419,8 @@ def run(source, root):
     for leftover in (clips_level, sidecar.path_for(clips_level)):
         with contextlib.suppress(FileNotFoundError):
             os.unlink(leftover)
-    print("PASS a .bvh placement loads without a warning, its clip is authorable, and mesh editing is refused")
+    print("PASS a .bvh placement loads without a warning, its clip is authorable,"
+          " and mesh editing is refused")
 
     # -- the engine side: the project verifies and the level builds -----------------------------
     watch.stop_all()

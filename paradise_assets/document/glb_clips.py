@@ -3,9 +3,9 @@
 The engine reads per-clip import settings from ``<model>.meta`` (the ``[glb]`` domain -- the
 same place ``optimize`` lives; a ``.gltf`` or a converted model has the same domain as a
 ``.glb``), keyed by the clip's **glTF animation index** because that survives a rename in the
-DCC where a name does not. For a converted source (a ``.blend``, an ``.fbx``, a ``.bvh`` ...) the index is the one in
-its converted GLB, which is what the pipeline extracts clips from and so what the clip table is
-read from here. Each entry is one
+DCC where a name does not. For a converted source (a ``.blend``, an ``.fbx``, a ``.bvh`` ...)
+the index is the one in its converted GLB, which is what the pipeline extracts clips from and so
+what the clip table is read from here. Each entry is one
 inline table::
 
     [glb]

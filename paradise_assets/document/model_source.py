@@ -24,7 +24,6 @@ from __future__ import annotations
 import hashlib
 import os
 from collections.abc import Callable
-from typing import TypeVar
 
 from . import gltf, project
 
@@ -57,8 +56,6 @@ CONVERTED = (
 
 #: Every extension a model source may have.
 SUFFIXES = (*DIRECT, *CONVERTED)
-
-T = TypeVar("T")
 
 #: Under the project's ``.editor/``: derived data, rebuilt on demand.
 CONVERTED_DIR = "converted"
@@ -169,7 +166,7 @@ def _article(label: str) -> str:
 _CACHE: dict[tuple[str, str], tuple[int, int, object]] = {}
 
 
-def _stamped(path: str, compute: Callable[[str], T]) -> T | None:
+def _stamped[T](path: str, compute: Callable[[str], T]) -> T | None:
     try:
         stat = os.stat(path)
     except OSError:

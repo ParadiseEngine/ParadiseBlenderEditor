@@ -1,9 +1,10 @@
-"""A model that is not a ``.glb`` or ``.gltf`` is read through the GLB the pipeline converted it to.
+"""A model that is not a ``.glb`` or ``.gltf`` is cooked from the GLB the pipeline converted it to,
+and shown in a level from its source, loaded the way the converter loads it.
 
-The viewport, Make Mesh Editable and the clip settings all read that GLB, so the one question
-that matters is whether the file under ``.editor/converted/`` is the conversion of the source as
-it is NOW: the stamp inside it names the source bytes and those of every file the import read,
-and a saved ``.blend`` -- or an edited ``.mtl`` -- must stop matching.
+Make Mesh Editable and the clip settings read that GLB, so the one question that matters there is
+whether the file under ``.editor/converted/`` is the conversion of the source as it is NOW: the
+stamp inside it names the source bytes and those of every file the import read, and a saved
+``.blend`` -- or an edited ``.mtl`` -- must stop matching.
 """
 
 from __future__ import annotations
@@ -162,6 +163,37 @@ def test_every_format_blender_imports_is_a_converted_model_and_gltf_is_read_dire
         assert model_source.is_model(name) and not model_source.is_converted(name), name
     for name in ("a.dae", "a.svg", "a.png", "a.mesh", "a.glb.meta"):
         assert not model_source.is_model(name), name
+
+
+def test_a_placement_is_imported_as_the_converter_imports_it_and_a_blend_is_linked():
+    assert set(model_source.IMPORTERS) == set(model_source.CONVERTED) - {".blend"}, \
+        "a converted format has no importer to show it with, or one the converter lacks"
+    assert model_source.importer_for("/a/Barrel.FBX") == model_source.Importer(
+        "import_scene.fbx", (("automatic_bone_orientation", True),))
+    assert model_source.importer_for("/a/set.usdz").operator == "wm.usd_import"
+    assert model_source.importer_for("/a/walk.bvh").operator == "import_anim.bvh"
+    for name in ("/a/crate.glb", "/a/lamp.GLTF"):
+        assert model_source.importer_for(name) == model_source.GLTF_IMPORTER, name
+        assert not model_source.is_linked(name), name
+    assert model_source.importer_for("/a/crate.blend") is None
+    assert model_source.is_linked("/a/Crate.BLEND")
+    assert model_source.importer_for("/a/crate.dae") is None
+
+
+def test_an_import_depends_on_the_obj_material_libraries_and_gltf_buffers(tmp_path):
+    models = tmp_path / "assets" / "models"
+    source = write(models / "props" / "tree.obj",
+                   b"# tree\nmtllib ../shared/tree.mtl\nmtllib bark.mtl\nv 0 0 0\n")
+    assert model_source.native_dependencies(source) == [
+        str(models / "shared" / "tree.mtl"), str(models / "props" / "bark.mtl")]
+
+    lamp = models / "lamp.gltf"
+    lamp.write_text('{"asset": {"version": "2.0"}, "buffers": [{"uri": "lamp.bin", "byteLength": 0}]}',
+                    encoding="utf-8")
+    assert model_source.native_dependencies(str(lamp)) == [str(models / "lamp.bin")]
+
+    assert model_source.native_dependencies(write(models / "barrel.fbx", b"Kaydara")) == []
+    assert model_source.native_dependencies(str(models / "gone.obj")) == []
 
 
 def test_editing_a_file_the_import_read_makes_the_conversion_stale(tmp_path):

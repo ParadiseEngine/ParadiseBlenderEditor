@@ -5,7 +5,8 @@ to one), but Blender can only show the model. The document is a small TOML the e
 writes -- ``source = { guid, path }`` naming the model (a ``.glb``, a ``.gltf`` or a converted
 source), assets-relative, and beside it ``asset = "<name>"`` when the model is one asset of a
 ``.blend`` that holds several -- so the viewport reads those two fields and shows what they point
-at (``model_source`` says which GLB that is). Nothing else in the document is interpreted here.
+at (``model_source`` says how that source is loaded). Nothing else in the document is interpreted
+here.
 """
 
 from __future__ import annotations

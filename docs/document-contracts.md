@@ -96,29 +96,55 @@ camera and key light, then materializes. A gate that trusted `bpy.data.is_dirty`
 follows undo pushes, so a script's edits do not set it) deleted that camera and rendered every
 prefab black. Within the opt-in, `is_dirty` still protects a session someone has worked in.
 
-The glTF importer's own leftovers are handled where they are made: `meshes.py` diffs
+The importers' own leftovers are handled where they are made: `meshes.py` diffs
 `bpy.data.collections` across the import the same way it diffs objects, and drops the ones its
-move left empty — `glTF_not_exported` otherwise sits in the Outliner beside the library for the
-life of the session.
+move left empty — the glTF importer's `glTF_not_exported` otherwise sits in the Outliner beside the
+library for the life of the session.
 
-**A converted model is shown through the GLB the pipeline extracts from.** A model is a file
-under `assets/` with one of `model_source.SUFFIXES`: one of `model_source.DIRECT` -- `.glb` or
-`.gltf` -- read as it is, or one of `model_source.CONVERTED` -- `.blend`, `.fbx`, `.obj`, `.ply`,
-`.stl`, `.usd`/`.usda`/`.usdc`/`.usdz`, `.abc` or `.bvh` -- every other format Blender 5.2
-imports headlessly (Collada left Blender 5; SVG is not a model). The engine converts those with a
-headless Blender into `.editor/converted/<assets-relative source>.glb`, stamped in `asset.extras`
-with the source's SHA-256 (`paradiseSourceSha256`) and `paradiseDependencies`: `{path, sha256}`
-for every file the import read besides the source -- textures, an `.obj`'s `.mtl`, linked
-libraries -- with `path` relative to the source's directory. The engine extracts meshes,
-clips and materials from that file. The library imports the same file rather than opening the
-source with Blender's own importers, so what the viewport shows is what the game gets; when it is
-missing, or the source's or any dependency's bytes no longer match (a dependency gone counts),
-`meshes.glb_of` runs `paradise assets convert` (the converted path is the last line it prints).
-The library collection is keyed and stamped by the SOURCE, plus the converted GLB's stamp, so
-saving the `.blend` -- or editing the `.mtl` -- is what re-imports it on the next load. Readers that must not start a process -- the clip panel's draw -- use
-`model_source.current_glb`, which answers only from a conversion that is already current. A
+**A placement shows the model's source, loaded natively; the converted GLB is what the engine
+cooks.** A model is a file under `assets/` with one of `model_source.SUFFIXES`: one of
+`model_source.DIRECT` -- `.glb` or `.gltf` -- read as it is, or one of `model_source.CONVERTED` --
+`.blend`, `.fbx`, `.obj`, `.ply`, `.stl`, `.usd`/`.usda`/`.usdc`/`.usdz`, `.abc` or `.bvh` --
+every other format Blender 5.2 imports headlessly (Collada left Blender 5; SVG is not a model).
+The engine converts those with a headless Blender into
+`.editor/converted/<assets-relative source>.glb`, stamped in `asset.extras` with the source's
+SHA-256 (`paradiseSourceSha256`) and `paradiseDependencies`: `{path, sha256}` for every file the
+import read besides the source -- textures, an `.obj`'s `.mtl`, linked libraries -- with `path`
+relative to the source's directory. The engine extracts meshes, clips and materials from that file.
+
+The level does not import that GLB: a designer works with the model as authored -- quads, live
+modifiers, its own materials and object hierarchy. `meshes.MeshLibrary` LINKS a `.blend`
+(`bpy.data.libraries.load(link=True, relative=True)`, read-only in the level): an asset's
+collection, or the objects of the file's scene for a whole-file model, less the cameras and lights
+the converter's glTF export leaves out; the library collection holds the linked objects and takes
+the asset collection's `instance_offset`. A whole-file `.blend` with several scenes shows the one
+it was saved showing -- the default scene of the converter's glTF export, which the engine reads.
+Linking cannot see it, so it is read from the file's render-info chunk (Blender's
+`blend_render_info`); a file that does not single one out shows the first by name, with a warning.
+Any other converted source is imported by `model_source.importer_for` -- the importer call and
+options of the engine's `BlenderModelConverter`, mirrored in `model_source.IMPORTERS` -- and a
+`.glb` or `.gltf` by the glTF importer. The importers' changes to the scene's frame range are put
+back. Loading a level never runs `paradise assets convert`. The library collection is keyed by the
+SOURCE (and asset) and stamped with the `(mtime, size)` of the source and every file the load read
+(`paradise_glb_dependencies`: a `.gltf`'s buffers, an `.obj`'s `.mtl`, image files), so saving any
+of them re-imports it on the next load; a `.blend`'s `Library` carries the same stamp, and a moved
+one reloads it (`Library.reload()`) -- every model of that file at once -- and re-reads the
+collection's membership in place. The converted GLB stays what reads the ENGINE's structure: Make
+Mesh Editable (`editable_mesh.glb_of`, which converts when it is stale), clip authoring and
+`model_source.is_skeleton_only`. Readers that must not start a process -- the clip panel's draw --
+use `model_source.current_glb`, which answers only from a conversion that is already current. A
 source's identity and `[glb]` settings live in its own sidecar (`car.blend.meta`), exactly as a
 `.glb`'s do.
+
+**Materials on a placement are the source's own.** A per-instance `Materials.Slots` binding is not
+drawn on a linked or natively imported placement: a linked material is read-only, and an imported
+one is shown as its source has it. No library instance ever drew the bindings: the load sets
+`Slots[0]`'s base colour on the placement's `obj.color`, and a glTF import wires its UNTEXTURED
+materials' Base Color to that object colour (`meshes.tint_by_object_colour`) -- a textured
+material, and every slot after the first, always showed the model's own. That tint now reaches
+only a `.glb` or `.gltf` placement; a converted model got it while it was shown through its GLB.
+The game binds `Slots[i]` to primitive `i` of the converted GLB; an owned mesh (Make Mesh
+Editable) shows those bindings.
 
 **A `.blend` of asset collections is one model per asset.** A collection marked as an asset
 (Mark as Asset) is a model of its own, named by the collection and exported about the
@@ -129,10 +155,11 @@ collection stays one whole-file model. Each asset converts to
 plus `paradiseAsset`, and its documents (`.mesh`, `.skinnedmesh`, `.skeleton`, `.anim`) carry a
 top-level `asset = "<name>"` beside `source`. `mesh_document.source_for` returns a
 `model_source.Model(path, asset)`; the library keeps one collection per (source, asset), named
-`GLB/<file>.blend/<asset>` and tagged `paradise_glb_asset`, and `meshes.glb_of(source, asset)`
-converts through `paradise assets convert <source> --asset <asset>`. A conversion stamped for
-another asset, or a whole-file reference to a `.blend` that now holds assets, is not current and
-reports what changed rather than showing another model. The file keeps one sidecar; its clip
+`GLB/<file>.blend/<asset>` (a name that predates native loading) and tagged `paradise_glb_asset`,
+linking that asset collection; `editable_mesh.glb_of(source, asset)` converts through
+`paradise assets convert <source> --asset <asset>`. An asset the file no longer marks, or a
+whole-file reference to a `.blend` that now holds assets, is reported rather than showing another
+model. The file keeps one sidecar; its clip
 settings name the asset on each `[glb].clips` entry (`{ asset, index, ... }`, keyed by asset and
 the index in that asset's GLB), and a write leaves the other models' entries as they are.
 
@@ -142,9 +169,9 @@ the `.gltf`, percent-decoded, or a `data:` URI) concatenated 4-byte aligned into
 the buffer views re-pointed into it. A buffer or image uri that is absolute, remote or outside
 `assets/` is refused (`gltf.GltfError`, `gltf.reference_refusal`), as the engine refuses it: the
 library does not import such a file, and building an editable mesh from it fails with the reason.
-Blender's importer opens the `.gltf` itself; the library stamps it with its buffer files, so a
-re-exported `.bin` re-imports on the next load, and it keeps the extension in its collection name
-(`GLB/Lamp.gltf`) so a `Lamp.glb` beside it keeps its own.
+Blender's importer opens the `.gltf` itself; the library stamps it with its buffer and image files,
+so a re-exported `.bin` re-imports on the next load, and it keeps the extension in its collection
+name (`GLB/Lamp.gltf`) so a `Lamp.glb` beside it keeps its own.
 
 **A GROUP is an Empty, and the format knows nothing about it.** A document object carrying only
 `meta` and `transform` whose members are its children is shown exactly like every other object:
@@ -353,19 +380,20 @@ this scene, and Finish Editing Shared Mesh saves, drops the object and reloads. 
 a given model at a time (`shared_editor`), or two would each overwrite the other.
 
 **A converted model is edited where it comes from.** Make Mesh Editable on a converted
-placement builds from the converted GLB (`meshes.glb_of`): its primitives are what the engine
-extracted, so slot `i` is still the `Slots[i]` the placement had. Edit Shared Mesh refuses one
-(its poll names the reason): the converted GLB is derived, and the next conversion would drop a
-splice. "Edit Source in New Blender" opens a `.blend` source as the main file of a second
-Blender instead, where quads and modifiers are intact -- the whole file for an asset of a
-`.blend`, whose Make Mesh Editable builds from that asset's own GLB; its save is picked up by the
-watcher, which converts and re-extracts, and the library's source stamp re-imports it on the next
-load.
+placement builds from the converted GLB (`editable_mesh.glb_of`, converting it first when it is
+stale): its primitives are what the engine extracted, so slot `i` is still the `Slots[i]` the
+placement had. Edit Shared Mesh refuses one (its poll names the reason): the converted GLB is
+derived, and the next conversion would drop a splice. "Edit Source in New Blender" opens a
+`.blend` source as the main file of a second Blender instead, where quads and modifiers are
+intact -- the whole file for an asset of a `.blend`, whose Make Mesh Editable builds from that
+asset's own GLB; its save is picked up by the watcher, which converts and re-extracts, and the
+library's stamp reloads the linked `.blend` on the next load.
 Every other format is interchange, so it is refused with the advice to re-export it from its
 DCC, the message naming the format (`model_source.edit_in_place_refusal`). A model whose GLB holds
 no mesh -- a `.bvh`, or any skeleton-and-clips file -- refuses Make Mesh Editable, Edit Shared
-Mesh and Edit Source alike (`model_source.no_mesh_refusal`); it still places without a warning
-(the empty shows its armature) and its clips are authored in the Animation clips section.
+Mesh and Edit Source alike (`model_source.no_mesh_refusal`); it still places without a warning --
+the placement shows its armature, imported by the converter's importer and posed by its clip --
+and its clips are authored in the Animation clips section.
 
 ## Schema, identity and extraction
 

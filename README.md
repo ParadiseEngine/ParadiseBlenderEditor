@@ -136,20 +136,28 @@ Right-clicking a **document object** — in the Outliner or in the viewport — 
 - **Edit Source in New Blender** — instead of Edit Shared Mesh, on a model made from a `.blend`
   (or from one of its asset collections): opens that `.blend` in a *second* Blender, where quads
   and modifiers stay. Saving it there
-  re-extracts the model, and placements show the change on their next reload. A model made from
-  any other format (an `.fbx`, an `.obj`, ...) is edited in the application that exported it.
+  re-extracts the model, and placements -- which link the `.blend` -- show the change on their
+  next reload. A model made from any other format (an `.fbx`, an `.obj`, ...) is edited in the
+  application that exported it.
 
 Models are files under `assets/` in any format Blender imports. `.glb` and `.gltf` are read as
 they are -- a `.gltf` is the same asset as a GLB whose buffers (a `.bin`, or `data:` URIs) and
 images live beside it, and may only name files under `assets/`. `.blend`, `.fbx`, `.obj`, `.ply`,
 `.stl`, `.usd`/`.usda`/`.usdc`/`.usdz`, `.abc` or `.bvh` are converted to a GLB under
-`.editor/converted/` by a headless Blender, and the pipeline extracts from that. The viewport
-shows the same GLB, running `paradise assets convert` when it is missing or older than its source
-or any file the import read (an `.obj`'s `.mtl`, a texture). A `.bvh` holds a skeleton and animation
-only: it gives `.skeleton` and `.anim` documents and its clips are set up in the Components panel,
-but it has no mesh to make editable. A `.blend` whose collections are marked as assets is one
-model per asset collection, each at its collection's instance offset, with its own converted GLB
-and prefab seed.
+`.editor/converted/` by a headless Blender, and the pipeline extracts from that. A placement in a
+level shows the original source instead, loaded natively, so its quads, live modifiers, materials
+and object hierarchy are what you see: a `.blend` is linked (read-only here; edit it at source),
+any other format is imported with the converter's own importer and options. Loading a level
+never converts anything; the converted GLB is only what the engine cooks and what reads the
+engine's structure -- Make Mesh Editable and the Animation clips section. A placement shows the
+source's own materials: its `Materials.Slots` bindings show only once the mesh is made editable
+(a `.glb` or `.gltf` placement still tints its untextured materials with `Slots[0]`'s colour).
+Saving the source, or a file it read (an `.obj`'s `.mtl`, a texture), refreshes placements on the
+next reload. A `.bvh` holds a skeleton and animation only: a placement shows its armature, posed
+by the clip; it gives `.skeleton` and `.anim` documents and its clips are set up in the Components
+panel, but it has no mesh to make editable. A `.blend` whose collections are marked as assets is
+one model per asset collection, each at its collection's instance offset, with its own converted
+GLB and prefab seed.
 
 On something that belongs to a **prefab instance**, three more appear. Editing a field on an
 instance, or moving one of its children, records an *override*; these are how one ends:

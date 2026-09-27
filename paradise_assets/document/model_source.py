@@ -1,20 +1,24 @@
-"""The files a model can come from, and the GLB Blender reads for each.
+"""The files a model can come from, how a level shows each, and the GLB the engine reads for it.
 
 A ``.glb`` or a ``.gltf`` (:data:`DIRECT`) is read as it is -- a ``.gltf`` is the same asset as a
 GLB whose buffers live beside it (``document/gltf.py``). Every other model format
 (:data:`CONVERTED`) is converted to a GLB by the engine's pipeline -- headless Blender, fixed
-import and export settings -- and the pipeline extracts meshes, clips and materials from THAT GLB.
-So the viewport imports the very same file, at
-``<root>/.editor/converted/<assets-relative source>.glb``, rather than opening the source
-itself: anything Blender's own importer did differently from the converter would be a preview
-of a model the game never gets.
+import and export settings -- and the pipeline extracts meshes, clips and materials from THAT GLB,
+kept at ``<root>/.editor/converted/<assets-relative source>.glb``.
+
+A placement in a level shows the SOURCE, loaded natively, so a level designer sees the model as
+authored -- quads, live modifiers, its own materials and object hierarchy -- rather than the
+triangulated export: a ``.blend`` is linked (``materialize/meshes.py``), any other source goes
+through :func:`importer_for`, the very importer call the converter makes. The converted GLB is only
+what the engine cooks and what reads the engine's structure: Make Mesh Editable (slot ``i`` is its
+primitive ``i``), clip authoring and :func:`is_skeleton_only`.
 
 The converted GLB records the SHA-256 of the source bytes it was made from
 (``asset.extras.paradiseSourceSha256``) and of every external file Blender loaded while
 importing it -- textures, an ``.obj``'s ``.mtl``, linked libraries (``paradiseDependencies``,
 paths relative to the source's directory). The pipeline refreshes it whenever it reads the
 source; this module only answers whether the file on disk is current. Running the conversion is
-the CLI's (``paradise assets convert``) -- see ``materialize/meshes.glb_of``.
+the CLI's (``paradise assets convert``) -- see ``materialize/editable_mesh.glb_of``.
 
 A ``.blend`` whose collections are marked as assets holds one model per asset collection, named
 by the collection (:class:`Model`'s ``asset``). Each is converted to a GLB of its own,
@@ -36,18 +40,24 @@ from . import gltf, project
 __all__ = [
     "CONVERTED",
     "DIRECT",
+    "GLTF_IMPORTER",
+    "IMPORTERS",
     "SUFFIXES",
     "ConversionError",
+    "Importer",
     "Model",
     "convert_arguments",
     "converted_path",
     "current_glb",
     "edit_in_place_refusal",
+    "importer_for",
     "is_asset_name",
     "is_converted",
     "is_current",
+    "is_linked",
     "is_model",
     "is_skeleton_only",
+    "native_dependencies",
     "no_mesh_refusal",
     "printed_path",
 ]
@@ -64,6 +74,36 @@ CONVERTED = (
 
 #: Every extension a model source may have.
 SUFFIXES = (*DIRECT, *CONVERTED)
+
+
+@dataclass(frozen=True)
+class Importer:
+    """A Blender import operator, ``<module>.<name>`` under ``bpy.ops``, and the options it is
+    called with besides ``filepath``."""
+
+    operator: str
+    options: tuple[tuple[str, object], ...] = ()
+
+
+#: The importer each converted source is read with, options included. Mirrors ``s_importers`` in
+#: the engine's ``BlenderModelConverter`` (Paradise.Assets.Pipeline): a placement must show what
+#: the converter itself imported, so a change there is a change here. A ``.blend`` has none -- the
+#: converter opens it and the level links it.
+IMPORTERS: dict[str, Importer] = {
+    ".fbx": Importer("import_scene.fbx", (("automatic_bone_orientation", True),)),
+    ".obj": Importer("wm.obj_import"),
+    ".ply": Importer("wm.ply_import"),
+    ".stl": Importer("wm.stl_import"),
+    ".usd": Importer("wm.usd_import"),
+    ".usda": Importer("wm.usd_import"),
+    ".usdc": Importer("wm.usd_import"),
+    ".usdz": Importer("wm.usd_import"),
+    ".abc": Importer("wm.alembic_import"),
+    ".bvh": Importer("import_anim.bvh"),
+}
+
+#: A ``.glb`` or ``.gltf`` is what the engine reads itself, so Blender's glTF importer shows it.
+GLTF_IMPORTER = Importer("import_scene.gltf")
 
 #: Under the project's ``.editor/``: derived data, rebuilt on demand.
 CONVERTED_DIR = "converted"
@@ -112,6 +152,41 @@ def is_model(path: str) -> bool:
 
 def is_converted(path: str) -> bool:
     return path.lower().endswith(CONVERTED)
+
+
+def is_linked(path: str) -> bool:
+    """Whether a placement of ``path`` links it rather than importing it: a ``.blend``, whose
+    data a level shows read-only, as the file holds it."""
+    return path.lower().endswith(".blend")
+
+
+def importer_for(path: str) -> Importer | None:
+    """The importer a placement of ``path`` is shown through; ``None`` for a ``.blend``
+    (:func:`is_linked`) and for a file that is no model."""
+    extension = os.path.splitext(path)[1].lower()
+    return GLTF_IMPORTER if extension in DIRECT else IMPORTERS.get(extension)
+
+
+def native_dependencies(path: str) -> list[str]:
+    """The files besides ``path`` an import of it reads that no datablock it makes names -- a
+    ``.gltf``'s buffers, an ``.obj``'s material libraries -- absolute. Images are named by the
+    datablocks the import makes, so the caller reads them there."""
+    if gltf.is_gltf(path):
+        return gltf.buffer_files(path)
+    if not path.lower().endswith(".obj"):
+        return []
+    directory = os.path.dirname(os.path.abspath(path))
+    found = []
+    try:
+        with open(path, encoding="utf-8", errors="replace") as source:
+            for line in source:
+                if line.startswith("mtllib"):
+                    name = line[len("mtllib"):].strip()
+                    if name:
+                        found.append(os.path.normpath(os.path.join(directory, name)))
+    except OSError:
+        return []
+    return found
 
 
 def converted_path(layout: project.ProjectLayout, source: str, asset: str | None = None) -> str:

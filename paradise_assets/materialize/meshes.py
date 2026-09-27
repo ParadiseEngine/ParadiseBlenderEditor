@@ -1,85 +1,66 @@
-"""Each referenced model imported ONCE into a hidden library collection, instanced per object
+"""Each referenced model loaded ONCE into a hidden library collection, instanced per object
 (ShiningPie: ~117 files across 225 objects). Instancing also makes the geometry uneditable in
 place, which is right: the model owns geometry, and an edit here would vanish on the next load.
 
-A ``.gltf`` is imported as it is, like a ``.glb``; its stamp covers its buffer files too, so a
-re-exported ``.bin`` is re-imported. A converted model (``.blend``, ``.fbx``, ``.obj`` ...) is
-shown through the GLB the pipeline converts it to (``document/model_source.py``), but the library
-keys, names and stamps the collection by the SOURCE plus that GLB's stamp: saving the ``.blend``
--- or an ``.obj``'s ``.mtl`` -- is what makes the next load convert and re-import it.
+A placement shows the model's SOURCE, loaded natively (``document/model_source.py``), so the level
+shows quads, live modifiers, the source's own materials and its object hierarchy:
 
-One ``.blend`` may hold several models, one per asset collection: each is its own library
-collection, keyed by the source AND the asset, imported from that asset's own GLB.
+- A ``.blend`` is LINKED, read-only: an asset's collection, or for a whole-file model the objects
+  of the file's scene. The library collection holds those linked objects and takes the asset
+  collection's ``instance_offset``, so each asset places at its own origin, as the converter
+  exports it.
+- Any other source is imported by the importer call the converter makes
+  (:func:`model_source.importer_for`); a ``.glb`` or ``.gltf`` by Blender's glTF importer.
+
+Loading never converts anything: the converted GLB is what the engine cooks, and only what reads
+the engine's structure reads it -- Make Mesh Editable (``editable_mesh.glb_of``) and the clips
+(``document/glb_clips.py``).
+
+The library keys, names and stamps each collection by the SOURCE (and the asset), its stamp
+covering every file the load read: a ``.gltf``'s buffers, an ``.obj``'s ``.mtl``, the image files.
+A moved stamp re-imports an imported model; a linked one has its ``Library`` reloaded -- every
+model of that file follows at once -- and its collection's membership read again.
+
+Materials are the source's own. A placement's ``Materials.Slots`` are not shown on them: only a
+glTF import keeps wiring its untextured materials to the object colour, which the load sets from
+``Slots[0]`` (:func:`tint_by_object_colour`); a linked material is read-only, and an imported
+source's materials are shown as the source has them.
 """
 
 from __future__ import annotations
 
 import os
+import struct
 
+import blend_render_info  # Blender's own .blend header reader, in its scripts/modules
 import bpy
 
-from ..document import gltf, model_source, project
-from ..play import host
+from ..document import gltf, model_source
 from . import store
 
-__all__ = ["LIBRARY_COLLECTION", "MeshLibrary", "glb_of", "model_of"]
+__all__ = ["LIBRARY_COLLECTION", "MeshLibrary", "model_of"]
 
-#: One collection per imported model, excluded from the view layer.
+#: One collection per model, excluded from the view layer.
 LIBRARY_COLLECTION = "ParadiseAssets/Library"
 
-#: The model source the collection shows: the ``.glb`` or ``.gltf`` imported, or the converted
-#: source whose GLB was. The key predates converted sources; renaming it would orphan every
-#: existing workfile's library.
+#: The model source the collection shows. The key -- like the ``GLB/`` collection names --
+#: predates native sources; renaming it would orphan every existing workfile's library.
 SOURCE_KEY = "paradise_glb_source"
 
 #: The asset of a multi-asset source the collection shows; absent for a whole-file model.
 ASSET_KEY = "paradise_glb_asset"
 
-#: ``(mtime, size)`` at import -- of the source and a ``.gltf``'s buffer files, and of the
-#: converted GLB when there is one; a moved stamp means re-import.
+#: ``(mtime, size)`` of the source and each of its dependencies when it was loaded; a moved stamp
+#: means load again. Also on a linked ``Library``, for when it was last read.
 STAMP_KEY = "paradise_glb_stamp"
 
+#: The files besides the source the load read, newline-separated, so the next load can tell
+#: whether any moved without loading the model to find out.
+DEPENDENCIES_KEY = "paradise_glb_dependencies"
 
-def glb_of(source: str, asset: str | None = None) -> str:
-    """The GLB to read for the model ``source`` (or its ``asset``), converting a source whose
-    converted GLB is missing or stale -- the source or a file it depends on changed -- through
-    ``paradise assets convert``. Synchronous: the load needs the file before it can show
-    anything, and a current conversion costs no process at all.
-
-    Raises :class:`model_source.ConversionError` with the reason, for the caller to report."""
-    found = model_source.current_glb(source, asset)
-    if found is not None:
-        return found
-    name = model_source.Model(source, asset).label
-    if not model_source.is_converted(source):
-        if asset is None:
-            return source
-        raise model_source.ConversionError(
-            f"{name}: a {os.path.splitext(source)[1]} holds one model, not assets")
-    layout = project.locate(source)
-    if layout is None:
-        raise model_source.ConversionError(
-            f"{name} is not inside an asset project, so it cannot be converted")
-    if asset is not None and not model_source.is_asset_name(asset):
-        raise model_source.ConversionError(f"'{asset}' cannot name an asset of {os.path.basename(source)}")
-    result = host.run_cli(model_source.convert_arguments(layout, source, asset), layout.root)
-    if result is None:
-        raise model_source.ConversionError(
-            f"{name} needs converting to a GLB, and the Paradise CLI could not be started. Set it "
-            "in the addon preferences.")
-    if not result.ok:
-        raise model_source.ConversionError(f"could not convert {name} to a GLB: {result.summary()}")
-    glb = model_source.printed_path(result.stdout)
-    if glb is None or not os.path.isfile(glb):
-        raise model_source.ConversionError(
-            f"`paradise assets convert` finished without naming the GLB it wrote for {name}")
-    if not model_source.is_current(source, glb, asset):
-        # The .blend converted fine, just not to this model: its asset collections were renamed,
-        # removed, or added since the reference was extracted.
-        raise model_source.ConversionError(
-            f"{os.path.basename(source)} has no asset collection named '{asset}'" if asset is not None
-            else f"{name} now holds asset collections; re-extract it and place one of their prefabs")
-    return glb
+#: What the converter's glTF export leaves out of a converted model (``export_cameras`` and
+#: ``export_lights`` are off): shown, a model's lamp would light the level the game never lights.
+_NOT_EXPORTED = frozenset({"CAMERA", "LIGHT", "LIGHT_PROBE"})
 
 
 def model_of(collection: bpy.types.Collection | None) -> model_source.Model | None:
@@ -92,7 +73,7 @@ def model_of(collection: bpy.types.Collection | None) -> model_source.Model | No
 
 
 class MeshLibrary:
-    """Imports models on demand and hands back a collection to instance."""
+    """Loads models on demand and hands back a collection to instance."""
 
     def __init__(self, scene: bpy.types.Scene, warn=None) -> None:
         self._scene = scene
@@ -102,7 +83,7 @@ class MeshLibrary:
 
     @property
     def imported(self) -> int:
-        """How many distinct models were imported (a failed import does not count)."""
+        """How many distinct models were loaded (a failed load does not count)."""
         return sum(1 for value in self._by_path.values() if value is not None)
 
     @property
@@ -112,76 +93,168 @@ class MeshLibrary:
         return {path for (path, _asset), value in self._by_path.items() if value is not None}
 
     def collection_for(self, path: str, asset: str | None = None) -> bpy.types.Collection | None:
-        """The collection for the model ``path`` (or its ``asset``), importing on first use;
+        """The collection for the model ``path`` (or its ``asset``), loading it on first use;
         ``None`` leaves the object an empty, since a placement whose mesh is missing is still
         authored data."""
         key = (os.path.normcase(os.path.abspath(path)), asset)
         if key in self._by_path:
             return self._by_path[key]
 
-        collection = self._import(path, asset)
+        collection = self._load(path, asset)
         self._by_path[key] = collection
         return collection
 
-    def _import(self, path: str, asset: str | None) -> bpy.types.Collection | None:
+    def _load(self, path: str, asset: str | None) -> bpy.types.Collection | None:
         if not os.path.isfile(path):
             self._warn(f"mesh not found: {path}")
             return None
-
-        label = model_source.Model(path, asset).label
-        try:
-            glb = glb_of(path, asset)
-        except model_source.ConversionError as error:
-            self._warn(str(error))
-            return None
-        # Blender's importer would follow a uri anywhere; the engine refuses these, so the
-        # viewport must not show what the game will never get.
-        refusal = gltf.reference_refusal(glb)
-        if refusal is not None:
-            self._warn(f"could not import {label}: {refusal}")
-            return None
-
         basename = os.path.basename(path)
         # Only a ``.glb`` is named by its stem: ``car.blend`` or ``car.gltf`` beside ``car.glb``
         # must not take over that model's collection.
         name = f"GLB/{os.path.splitext(basename)[0] if path.lower().endswith('.glb') else basename}"
         if asset is not None:
             name += f"/{asset}"
-        stamp = "|".join(store.stamp_of(part) for part in (path, *gltf.buffer_files(path)))
-        if glb != path:
-            stamp += f"|{store.stamp_of(glb)}"
         existing = bpy.data.collections.get(name)
-        if existing is not None and _is_current_import(existing, path, asset, stamp):
+        if existing is not None and (existing.library is not None or not _same_source(existing, path, asset)):
+            existing = None
+        if model_source.is_linked(path):
+            return self._link(path, asset, name, existing)
+        if asset is not None:
+            self._warn(f"{model_source.Model(path, asset).label}: a {os.path.splitext(path)[1]} holds one "
+                       "model, not assets")
+            return None
+        return self._import(path, name, existing)
+
+    def _link(self, path: str, asset: str | None, name: str,
+              existing: bpy.types.Collection | None) -> bpy.types.Collection | None:
+        """Link the model from the ``.blend`` at ``path``; the library collection holds the
+        linked objects themselves, so an edit saved in the source shows once it is reloaded."""
+        label = model_source.Model(path, asset).label
+        library = _library_of(path)
+        if library is not None and library.get(STAMP_KEY) != _stamp(path, _stored_dependencies(library)):
+            # Every placement of every model of the file follows: one reload re-reads them all.
+            library.reload()
+            _stamp_library(library, path)
+        if (existing is not None and library is not None
+                and existing.get(STAMP_KEY) == library.get(STAMP_KEY) and existing.all_objects):
             return existing
-        if existing is not None and _same_source(existing, path, asset):
+
+        try:
+            # Only asset-marked collections are models of their own, as the converter reads it.
+            with bpy.data.libraries.load(path, link=True, relative=True, assets_only=True) as (listed, _):
+                assets = set(listed.collections)
+            with bpy.data.libraries.load(path, link=True, relative=True) as (source, target):
+                if asset is not None:
+                    if asset not in assets:
+                        self._warn(f"{os.path.basename(path)} has no asset collection named '{asset}'")
+                        return None
+                    target.collections = [asset]
+                elif assets:
+                    self._warn(f"{label} now holds asset collections; re-extract it and place one of "
+                               "their prefabs")
+                    return None
+                elif not source.scenes:
+                    self._warn(f"{label} holds no scene to show")
+                    return None
+                else:
+                    shown = _saved_scene(path, list(source.scenes))
+                    if shown is None:
+                        shown = sorted(source.scenes)[0]
+                        self._warn(f"{label} holds {len(source.scenes)} scenes and does not say which it was "
+                                   f"saved showing, the one the game gets: the level shows '{shown}'. Keep "
+                                   "one scene in a model file")
+                    target.scenes = [shown]
+        except OSError as error:
+            self._warn(f"could not link {label}: {error}")
+            return None
+
+        if asset is not None:
+            container = target.collections[0]
+            members, offset = list(container.all_objects), container.instance_offset.copy()
+        else:
+            container = target.scenes[0]
+            members, offset = list(container.collection.all_objects), None
+        library = container.library
+        # Again after every link: each model brings the images it uses, and the stamp must cover
+        # them all for a texture saved alone to reload the file.
+        _stamp_library(library, path)
+        if asset is None:
+            # Only its objects were wanted; a linked scene would sit in the scene switcher.
+            bpy.data.scenes.remove(container)
+
+        collection = existing if existing is not None else bpy.data.collections.new(name)
+        _empty(collection)
+        _tag(collection, path, asset, library.get(STAMP_KEY), _stored_dependencies(library))
+        if existing is None:
+            self._root.children.link(collection)
+        if offset is not None:
+            collection.instance_offset = offset
+        for obj in members:
+            if obj.type not in _NOT_EXPORTED:
+                collection.objects.link(obj)
+        if not collection.objects:
+            self._warn(f"{label} holds nothing to show")
+        return collection
+
+    def _import(self, path: str, name: str,
+                existing: bpy.types.Collection | None) -> bpy.types.Collection | None:
+        label = os.path.basename(path)
+        importer = model_source.importer_for(path)
+        if importer is None:
+            self._warn(f"{label} is no model format Blender imports")
+            return None
+        is_gltf = importer == model_source.GLTF_IMPORTER
+        if is_gltf:
+            # Blender's importer would follow a uri anywhere; the engine refuses these, so the
+            # viewport must not show what the game will never get.
+            refusal = gltf.reference_refusal(path)
+            if refusal is not None:
+                self._warn(f"could not import {label}: {refusal}")
+                return None
+
+        if existing is not None:
+            stamp = _stamp(path, _stored_dependencies(existing))
+            if existing.get(STAMP_KEY) == stamp and existing.all_objects:
+                return existing
             # Drop the stale collection, or the import lands on GLB/Foo.001 and leaks the old mesh.
             _discard_library_collection(existing)
 
-        # The importer cannot be redirected; diff the tables, since names get suffixed. The
-        # COLLECTIONS are diffed too because the glTF importer makes its own -- `glTF_not_exported`
-        # on any file that has such nodes -- and links them to the scene, where they sat in the
-        # Outliner beside the library for the life of the session.
+        # The importers cannot be redirected; diff the tables, since names get suffixed. The
+        # COLLECTIONS are diffed too because an importer may make its own -- the glTF one makes
+        # `glTF_not_exported` on any file that has such nodes -- and links them to the scene,
+        # where they sat in the Outliner beside the library for the life of the session.
         before = set(bpy.data.objects)
         collections_before = set(bpy.data.collections)
+        images_before = set(bpy.data.images)
+        scene = bpy.context.scene
+        # The USD and Alembic importers set the scene's frame range to the file's by default;
+        # the options must stay the converter's, so the level's range is put back instead.
+        frames = (scene.frame_start, scene.frame_end, scene.render.fps, scene.render.fps_base)
+        module, operator = importer.operator.split(".")
         try:
-            bpy.ops.import_scene.gltf(filepath=glb)
+            getattr(getattr(bpy.ops, module), operator)(filepath=path, **dict(importer.options))
         except RuntimeError as error:
             self._warn(f"could not import {label}: {error}")
             return None
+        finally:
+            scene.frame_start, scene.frame_end, scene.render.fps, scene.render.fps_base = frames
 
         created = [obj for obj in bpy.data.objects if obj not in before]
         imported_collections = [
             found for found in bpy.data.collections if found not in collections_before
         ]
+        if not is_gltf:
+            for obj in [obj for obj in created if obj.type in _NOT_EXPORTED]:
+                created.remove(obj)
+                bpy.data.objects.remove(obj, do_unlink=True)
         if not created:
             self._warn(f"{label} imported nothing")
             return None
 
+        images = [image for image in bpy.data.images if image not in images_before]
+        dependencies = [*model_source.native_dependencies(path), *_image_files(images)]
         collection = bpy.data.collections.new(name)
-        collection[SOURCE_KEY] = os.path.abspath(path)
-        if asset is not None:
-            collection[ASSET_KEY] = asset
-        collection[STAMP_KEY] = stamp
+        _tag(collection, path, None, _stamp(path, dependencies), dependencies)
         self._root.children.link(collection)
 
         for obj in created:
@@ -190,14 +263,14 @@ class MeshLibrary:
             collection.objects.link(obj)
 
         # Only the ones the move left EMPTY: a collection still holding something is structure
-        # the GLB declared, and dropping it would take that something with it.
+        # the importer declared, and dropping it would take that something with it.
         for found in imported_collections:
             if not found.objects and not found.children:
                 bpy.data.collections.remove(found)
 
-        tint_by_object_colour(created)
+        if is_gltf:
+            tint_by_object_colour(created)
         return collection
-
 
 def tint_by_object_colour(objects) -> None:
     """Wire Object Info colour into an UNTEXTURED material's Base Color: instances share one
@@ -246,8 +319,67 @@ def _view_layer_collection(scene: bpy.types.Scene):
     return None if view_layer is None else view_layer.layer_collection
 
 
-def _is_current_import(collection: bpy.types.Collection, path: str, asset: str | None, stamp: str) -> bool:
-    return _same_source(collection, path, asset) and collection.get(STAMP_KEY) == stamp
+def _saved_scene(path: str, scenes: list[str]) -> str | None:
+    """The scene of the ``.blend`` at ``path`` it was saved showing, among ``scenes``, or ``None``
+    when the file cannot tell. The converter's glTF export marks that scene the default, and the
+    engine reads the default. Linking cannot see it, but the render-info chunk Blender writes for
+    background renders names it (with any scene flagged for background rendering, hence the
+    uniqueness check)."""
+    if len(scenes) == 1:
+        return scenes[0]
+    try:
+        named = {name for _start, _end, name in blend_render_info.read_blend_rend_chunk(path)}
+    except (OSError, ValueError, struct.error):
+        return None
+    candidates = [scene for scene in scenes if scene in named]
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _library_of(path: str) -> bpy.types.Library | None:
+    """The ``Library`` this file already links ``path`` through, if any."""
+    wanted = os.path.normcase(os.path.abspath(path))
+    for library in bpy.data.libraries:
+        if library.parent is not None:
+            continue
+        if os.path.normcase(os.path.abspath(bpy.path.abspath(library.filepath))) == wanted:
+            return library
+    return None
+
+
+def _stamp(path: str, dependencies) -> str:
+    return "|".join(store.stamp_of(part) for part in (path, *dependencies))
+
+
+def _stored_dependencies(block) -> list[str]:
+    stored = block.get(DEPENDENCIES_KEY)
+    return stored.split("\n") if isinstance(stored, str) and stored else []
+
+
+def _stamp_library(library: bpy.types.Library, path: str) -> None:
+    """Record what ``library`` was read from: the ``.blend`` and the image files its data names."""
+    dependencies = _image_files(image for image in bpy.data.images if image.library == library)
+    library[DEPENDENCIES_KEY] = "\n".join(dependencies)
+    library[STAMP_KEY] = _stamp(path, dependencies)
+
+
+def _image_files(images) -> list[str]:
+    """The files ``images`` read, absolute; a packed or generated image reads none."""
+    found = set()
+    for image in images:
+        if image.source in {"FILE", "SEQUENCE", "TILED"} and image.filepath and image.packed_file is None:
+            found.add(os.path.normpath(bpy.path.abspath(image.filepath, library=image.library)))
+    return sorted(found)
+
+
+def _tag(collection: bpy.types.Collection, path: str, asset: str | None, stamp: str,
+         dependencies: list[str]) -> None:
+    collection[SOURCE_KEY] = os.path.abspath(path)
+    if asset is not None:
+        collection[ASSET_KEY] = asset
+    elif ASSET_KEY in collection:
+        del collection[ASSET_KEY]
+    collection[STAMP_KEY] = stamp
+    collection[DEPENDENCIES_KEY] = "\n".join(dependencies)
 
 
 def _same_source(collection: bpy.types.Collection, path: str, asset: str | None) -> bool:
@@ -259,9 +391,20 @@ def _same_source(collection: bpy.types.Collection, path: str, asset: str | None)
     return os.path.normcase(os.path.abspath(stored)) == os.path.normcase(os.path.abspath(path))
 
 
-def _discard_library_collection(collection: bpy.types.Collection) -> None:
+def _empty(collection: bpy.types.Collection) -> None:
+    """Take everything out of ``collection``: an object this addon imported goes with it, a
+    linked one stays its library's."""
+    for child in list(collection.children):
+        collection.children.unlink(child)
     for obj in list(collection.objects):
-        bpy.data.objects.remove(obj, do_unlink=True)
+        if obj.library is None:
+            bpy.data.objects.remove(obj, do_unlink=True)
+        else:
+            collection.objects.unlink(obj)
+
+
+def _discard_library_collection(collection: bpy.types.Collection) -> None:
+    _empty(collection)
     bpy.data.collections.remove(collection)
 
 

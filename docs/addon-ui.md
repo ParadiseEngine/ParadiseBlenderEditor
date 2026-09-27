@@ -78,7 +78,8 @@ the `[glb].clips` domain, keyed by glTF animation index (and by asset, for an as
 `.blend`, whose one sidecar holds every asset's clips) — because the setting belongs to the
 model, not to the open document, and the `.blend` is disposable. A static mesh draws nothing at
 all, and neither does a converted model whose GLB is older than its source or a file it read:
-the draw never starts a conversion, and the next load (or the watcher) brings it current.
+the draw never starts a conversion, and loading a level does not either (placements show the
+source itself); the watcher, `paradise assets extract` or Make Mesh Editable brings it current.
 
 Entries also hang off the object context menus (`context_menu.py`) — the Outliner's and the
 viewport's, one `_draw` for both — gated on the active object being a DOCUMENT object, since a

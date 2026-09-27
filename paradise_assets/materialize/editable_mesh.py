@@ -34,11 +34,12 @@ import numpy as np
 from mathutils.kdtree import KDTree
 
 from ..document import editable_mesh as contract
-from ..document import gltf, material_document, model_source, shared_mesh
+from ..document import gltf, material_document, model_source, project, shared_mesh
 from ..document import guid as document_guid
 from ..document.project import ProjectLayout
+from ..play import host
 from . import store
-from .meshes import SOURCE_KEY, MeshLibrary, glb_of, model_of
+from .meshes import SOURCE_KEY, MeshLibrary, model_of
 
 __all__ = [
     "begin_shared",
@@ -46,6 +47,7 @@ __all__ = [
     "display_names",
     "drop",
     "fingerprint",
+    "glb_of",
     "materialize",
     "publish",
     "refresh_display",
@@ -568,6 +570,49 @@ def _write_glb(mesh: bpy.types.Mesh, path: str, name: str, owner: str | None) ->
         bpy.data.scenes.remove(scene)
     meshes = gltf.read_json(path).get("meshes") or []
     return sum(len(item.get("primitives") or []) for item in meshes if isinstance(item, dict))
+
+
+def glb_of(source: str, asset: str | None = None) -> str:
+    """The GLB the engine reads for the model ``source`` (or its ``asset``), converting a source
+    whose converted GLB is missing or stale -- the source or a file it depends on changed --
+    through ``paradise assets convert``. Only what reads the engine's structure asks for it; a
+    placement shows the source itself (``meshes.py``). Synchronous: a current conversion costs no
+    process at all.
+
+    Raises :class:`model_source.ConversionError` with the reason, for the caller to report."""
+    found = model_source.current_glb(source, asset)
+    if found is not None:
+        return found
+    name = model_source.Model(source, asset).label
+    if not model_source.is_converted(source):
+        if asset is None:
+            return source
+        raise model_source.ConversionError(
+            f"{name}: a {os.path.splitext(source)[1]} holds one model, not assets")
+    layout = project.locate(source)
+    if layout is None:
+        raise model_source.ConversionError(
+            f"{name} is not inside an asset project, so it cannot be converted")
+    if asset is not None and not model_source.is_asset_name(asset):
+        raise model_source.ConversionError(f"'{asset}' cannot name an asset of {os.path.basename(source)}")
+    result = host.run_cli(model_source.convert_arguments(layout, source, asset), layout.root)
+    if result is None:
+        raise model_source.ConversionError(
+            f"{name} needs converting to a GLB, and the Paradise CLI could not be started. Set it "
+            "in the addon preferences.")
+    if not result.ok:
+        raise model_source.ConversionError(f"could not convert {name} to a GLB: {result.summary()}")
+    glb = model_source.printed_path(result.stdout)
+    if glb is None or not os.path.isfile(glb):
+        raise model_source.ConversionError(
+            f"`paradise assets convert` finished without naming the GLB it wrote for {name}")
+    if not model_source.is_current(source, glb, asset):
+        # The .blend converted fine, just not to this model: its asset collections were renamed,
+        # removed, or added since the reference was extracted.
+        raise model_source.ConversionError(
+            f"{os.path.basename(source)} has no asset collection named '{asset}'" if asset is not None
+            else f"{name} now holds asset collections; re-extract it and place one of their prefabs")
+    return glb
 
 
 def write_initial(obj: bpy.types.Object, target: str) -> int:

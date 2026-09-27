@@ -306,8 +306,8 @@ def _apply(
     glb_name = model_source.Model(glb_path, asset).label
     if info is None:
         raise ClipSettingsError(
-            f"{glb_name} has no current converted GLB to read its clips from; reload the document "
-            "to convert it" if model_source.is_converted(glb_path)
+            f"{glb_name} has no current converted GLB to read its clips from; let the asset watcher "
+            "convert it, or run `paradise assets extract` on it" if model_source.is_converted(glb_path)
             else f"{glb_name} is not a readable glTF model")
     if not 0 <= index < len(info.clips):
         raise ClipSettingsError(

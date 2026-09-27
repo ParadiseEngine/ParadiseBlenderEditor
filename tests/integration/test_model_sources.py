@@ -5,9 +5,10 @@ shown, made editable, edited at source or in place.
 
 Runs against a COPY of a real asset project (ShiningPie by default) with the real CLI, because the
 conversion is the engine's: ``paradise assets extract`` converts each source with a headless
-Blender and extracts from that GLB, and the viewport must show exactly that GLB -- modifiers
-applied -- not whatever Blender's own importers would make of the source. The sources are made
-here, by a second headless Blender, so nothing about them is checked in.
+Blender and extracts from that GLB. A placement shows the SOURCE instead -- a ``.blend`` linked,
+modifiers live; any other format through the converter's own importer -- and loading a level
+converts nothing; Make Mesh Editable and the clips still read the converted GLB. The sources are
+made here, by a second headless Blender, so nothing about them is checked in.
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ from warm_project import copy_project, keep_warm
 from paradise_assets import clip_ops, context_menu, watch
 from paradise_assets.document import editable_mesh as ownership
 from paradise_assets.document import glb_clips, gltf, model_source, project, sidecar
-from paradise_assets.materialize import save, store
+from paradise_assets.materialize import editable_mesh, save, store
 from paradise_assets.materialize.meshes import ASSET_KEY, SOURCE_KEY
 from paradise_assets.play import host
 
@@ -54,10 +55,12 @@ CLIPS_LEVEL = "levels/model_sources_clips.prefab"
 
 #: Run by a separate headless Blender. The crate is a 2 x 1 x 0.5 box with a live Bevel
 #: modifier and two materials (top red, the rest blue) -- quads and a modifier in the .blend,
-#: triangles with the bevel applied in the GLB. The barrel is a cylinder, exported as FBX. The
-#: plank is a unit cube exported as OBJ, its material in a .mtl naming a PNG in textures/. Sway is
-#: a two-bone armature with one 20-frame clip, exported as BVH -- no mesh at all. The lamp is a
-#: unit cube with a textured material, exported as a .gltf beside its .bin and textures/ PNG.
+#: triangles with the bevel applied in the GLB -- saved showing its scene beside an empty one,
+#: "Aside", which a link listing scenes by name would pick instead. The barrel is a cylinder,
+#: exported as FBX. The plank is a unit cube exported as OBJ, its material in a .mtl naming a PNG
+#: in textures/. Sway is a two-bone armature with one 20-frame clip, exported as BVH -- no mesh at
+#: all. The lamp is a unit cube with a textured material, exported as a .gltf beside its .bin and
+#: textures/ PNG.
 _MAKE_SOURCES = """
 import bpy, os, sys
 blend, fbx, obj, png, bvh, lamp = sys.argv[sys.argv.index("--") + 1:]
@@ -72,6 +75,7 @@ for name in ("Blue", "Red"):
     crate.data.materials.append(bpy.data.materials.new(name))
 for polygon in crate.data.polygons:
     polygon.material_index = 1 if polygon.normal.z > 0.5 else 0
+bpy.data.scenes.new("Aside")
 bpy.ops.wm.save_as_mainfile(filepath=blend)
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
@@ -218,6 +222,29 @@ def bounds(points):
         for axis in range(3))
 
 
+@contextlib.contextmanager
+def conversions():
+    """The ``paradise assets convert`` runs made inside the block, listed as they happen."""
+    real, runs = host.run_cli, []
+
+    def run_cli(arguments, *args, **kwargs):
+        if arguments[:2] == ["assets", "convert"]:
+            runs.append(arguments)
+        return real(arguments, *args, **kwargs)
+
+    with patch.object(host, "run_cli", run_cli):
+        yield runs
+
+
+def file_of(library) -> str:
+    return os.path.normcase(os.path.abspath(bpy.path.abspath(library.filepath)))
+
+
+def has_polygons_beyond_triangles(obj) -> bool:
+    """A GLB is triangles only: a quad or n-gon shows the source's own importer made the mesh."""
+    return any(len(polygon.vertices) > 3 for polygon in obj.data.polygons)
+
+
 def placed(scene, guid):
     obj = store.object_with_guid(scene, guid)
     assert obj is not None and obj.instance_collection is not None, "the placement shows no model"
@@ -282,52 +309,84 @@ def run(source, root):
     assert list(Path(layout.resolve("animations")).glob("Sway*.anim")), "the .bvh extracted no .anim"
     print("PASS a .bvh extracts a skeleton and its clip, and no mesh or prefab")
 
-    open_fresh(level, layout)
+    with conversions() as runs:
+        open_fresh(level, layout)
     scene = bpy.context.scene
+    blend_file = os.path.normcase(os.path.abspath(blend))
 
-    # -- a .blend placement shows the converted GLB: bevel applied, where it was placed ----------
-    crate_guid = place(layout, seed_prefab(layout, blend))
-    reload(level, layout)
+    # -- a .blend placement links the source: quads, live modifier, its own materials ------------
+    with conversions() as more:
+        crate_guid = place(layout, seed_prefab(layout, blend))
+        reload(level, layout)
+    runs += more
     crate = placed(scene, crate_guid)
     assert crate.instance_collection[SOURCE_KEY] == os.path.abspath(blend)
     shown = [obj for obj in crate.instance_collection.all_objects if obj.type == "MESH"]
-    assert sum(len(obj.data.vertices) for obj in shown) > 8, "the bevel modifier was not applied"
+    assert [obj.library and file_of(obj.library) for obj in shown] == [blend_file], \
+        "the placement does not show the object linked from the .blend"
+    assert [modifier.type for modifier in shown[0].modifiers] == ["BEVEL"], "the modifier is not live"
+    assert len(shown[0].data.vertices) == 8, "the placement shows the bevel applied: a converted GLB"
+    materials = [slot.material for slot in shown[0].material_slots]
+    assert [material.name for material in materials] == ["Blue", "Red"], materials
+    assert all(material.library == shown[0].library for material in materials), \
+        "the materials are not the source's own"
     extent = bounds(world_points(crate))
     assert extent == ((3.0, 5.0), (-3.5, -2.5), (-0.25, 0.25)), extent
-    print("PASS a .blend placement shows its converted GLB, modifiers applied, where it was placed")
+    print("PASS a .blend placement links its source: modifier live, its own materials, where it was placed")
 
-    # -- an .fbx placement shows too --------------------------------------------------------------
+    # -- an .fbx placement is imported by the converter's own FBX importer ----------------------
     barrel_guid = place(layout, seed_prefab(layout, fbx))
-    reload(level, layout)
+    with conversions() as more:
+        reload(level, layout)
+    runs += more
     barrel = placed(scene, barrel_guid)
     assert barrel.instance_collection[SOURCE_KEY] == os.path.abspath(fbx)
+    parts = [obj for obj in barrel.instance_collection.all_objects if obj.type == "MESH"]
+    assert parts and all(obj.library is None and has_polygons_beyond_triangles(obj) for obj in parts), \
+        "the .fbx placement shows triangles: the converted GLB, not the FBX importer's mesh"
     extent = bounds(world_points(barrel))
     assert extent == ((3.5, 4.5), (-3.5, -2.5), (-0.5, 0.5)), extent
-    print("PASS an .fbx placement shows its converted GLB")
+    print("PASS an .fbx placement is imported natively, as the converter imports it")
 
-    # -- an .obj placement shows too, and editing its .mtl reconverts it on reload -------------
-    watch.stop_all()   # nothing else may convert it: this is the load's own `assets convert`
+    # -- an .obj placement is imported natively, and an edited .mtl re-imports it on reload -----
+    watch.stop_all()   # nothing else may convert it: the load must not, either
     plank_guid = place(layout, seed_prefab(layout, obj))
-    reload(level, layout)
+    with conversions() as more:
+        reload(level, layout)
+    runs += more
     plank = placed(scene, plank_guid)
     assert plank.instance_collection[SOURCE_KEY] == os.path.abspath(obj)
+    part = next(part for part in plank.instance_collection.all_objects if part.type == "MESH")
+    assert has_polygons_beyond_triangles(part), "the .obj placement shows the converted GLB's triangles"
+    tree = part.material_slots[0].material.node_tree
+    image = next(node.image for node in tree.nodes if node.type == "TEX_IMAGE")
+    assert os.path.normcase(bpy.path.abspath(image.filepath)) == os.path.normcase(png), image.filepath
     extent = bounds(world_points(plank))
     assert extent == ((3.5, 4.5), (-3.5, -2.5), (-0.5, 0.5)), extent
+
+    def roughness(placement):
+        part = next(part for part in placement.instance_collection.all_objects if part.type == "MESH")
+        nodes = part.material_slots[0].material.node_tree.nodes
+        principled = next(node for node in nodes if node.type == "BSDF_PRINCIPLED")
+        return principled.inputs["Roughness"].default_value
+
+    before = roughness(plank)
     converted = model_source.converted_path(layout, obj)
     Path(mtl).write_text(Path(mtl).read_text() + "Ns 12.0\n", encoding="utf-8")   # the author retunes it
-    assert not model_source.is_current(obj, converted), "an edited .mtl left the conversion current"
-    reload(level, layout)
-    assert model_source.is_current(obj, converted), "reload did not convert the .obj again"
-    recorded = {entry["path"]: entry["sha256"]
-                for entry in gltf.read_json(converted)["asset"]["extras"]["paradiseDependencies"]}
-    assert recorded["Plank.mtl"] == hashlib.sha256(Path(mtl).read_bytes()).hexdigest(), recorded
-    placed(scene, plank_guid)
-    print("PASS an .obj placement shows its converted GLB, and an edited .mtl is converted again on reload")
+    with conversions() as more:
+        reload(level, layout)
+    runs += more
+    assert roughness(placed(scene, plank_guid)) != before, "an edited .mtl did not re-import the .obj"
+    assert not model_source.is_current(obj, converted), "the reload converted the .obj"
+    print("PASS an .obj placement is imported natively with its .mtl and texture, and an edited .mtl"
+          " re-imports it on reload")
 
     # -- a .gltf placement shows the .gltf itself, read with its .bin and texture ---------------
     lamp_guid = place(layout, seed_prefab(layout, lamp))
     other_lamp_guid = place(layout, seed_prefab(layout, lamp))
-    reload(level, layout)
+    with conversions() as more:
+        reload(level, layout)
+    runs += more
     shown = placed(scene, lamp_guid)
     assert shown.instance_collection[SOURCE_KEY] == os.path.abspath(lamp)
     assert bounds(world_points(shown)) == ((3.5, 4.5), (-3.5, -2.5), (-0.5, 0.5)), bounds(world_points(shown))
@@ -368,18 +427,34 @@ def run(source, root):
     assert ownership.owner_of(owned_glb(layout, level, other_lamp_guid)) == other_lamp_guid
     print("PASS Make Mesh Editable works on a .gltf placement")
 
-    # -- saving the .blend refreshes the placement on reload: the addon converts it itself ------
-    watch.stop_all()   # nothing else may convert it: this is the load's own `assets convert`
+    # -- saving the .blend refreshes the placement on reload: its library is reloaded ------------
+    watch.stop_all()   # nothing else may convert it: the load must not, either
     stale = model_source.converted_path(layout, blend)
+    showing = placed(scene, crate_guid).instance_collection
     blender(_STRETCH, blend=blend)
-    assert not model_source.is_current(blend, stale)
-    reload(level, layout)
+    with conversions() as more:
+        reload(level, layout)
+    runs += more
     crate = placed(scene, crate_guid)
+    assert crate.instance_collection == showing, "the placement's library collection was replaced"
     assert bounds(world_points(crate))[0] == (2.0, 6.0), bounds(world_points(crate))
-    assert model_source.is_current(blend, stale)
-    recorded = gltf.read_json(stale)["asset"]["extras"]["paradiseSourceSha256"]
-    assert recorded == hashlib.sha256(Path(blend).read_bytes()).hexdigest()
-    print("PASS a saved .blend is converted again on reload and every placement shows the edit")
+    parts = crate.instance_collection.all_objects
+    assert [part.library and file_of(part.library) for part in parts] == [blend_file]
+    assert [file_of(library) for library in bpy.data.libraries].count(blend_file) == 1, \
+        "the .blend was linked twice"
+    assert not model_source.is_current(blend, stale), "the reload converted the .blend"
+    assert runs == [], f"loading the level ran `paradise assets convert`: {runs}"
+    print("PASS a saved .blend is reloaded in place and every placement shows the edit;"
+          " no load ran `paradise assets convert`")
+
+    # -- what the engine's structure is read from converts on demand, the load no longer does ----
+    # With no watcher running, as Make Mesh Editable would: the fresh watcher that operator starts
+    # then only re-extracts them, rather than converting both first and outwaiting its 30 s.
+    with conversions() as more:
+        assert os.path.samefile(editable_mesh.glb_of(blend), stale)
+        assert os.path.samefile(editable_mesh.glb_of(obj), model_source.converted_path(layout, obj))
+    assert [os.path.basename(arguments[2]) for arguments in more] == ["Crate.blend", "Plank.obj"], more
+    print("PASS a stale conversion is converted by the feature that reads it (editable_mesh.glb_of)")
 
     # -- Edit Shared Mesh is refused for converted models; a .blend opens in a new Blender ------
     bpy.context.view_layer.objects.active = crate
@@ -437,15 +512,21 @@ def run(source, root):
     tall_guid = place(layout, seed_prefab(layout, "Post_Tall"))
     reload(level, layout)
     short, tall = placed(scene, short_guid), placed(scene, tall_guid)
+    posts_file = os.path.normcase(os.path.abspath(posts))
     for shown, asset in ((short, "Post_Short"), (tall, "Post_Tall")):
         assert shown.instance_collection[SOURCE_KEY] == os.path.abspath(posts)
         assert shown.instance_collection[ASSET_KEY] == asset
+        assert [(part.name, part.library and file_of(part.library))
+                for part in shown.instance_collection.all_objects] == [(asset, posts_file)], \
+            f"{asset} does not show its collection's objects linked from the .blend"
+    assert [file_of(library) for library in bpy.data.libraries].count(posts_file) == 1, \
+        "the two assets linked their .blend twice"
     assert short.instance_collection != tall.instance_collection
     assert bounds(world_points(short)) == ((3.5, 4.5), (-3.5, -2.5), (-0.5, 0.5)), bounds(world_points(short))
     assert bounds(world_points(tall)) == ((3.5, 4.5), (-3.5, -2.5), (-1.5, 1.5)), bounds(world_points(tall))
     assert not any(part.name.startswith("Suzanne") for shown in (short, tall)
                    for part in shown.instance_collection.all_objects), "an object outside every asset showed"
-    print("PASS the two assets of one .blend place as two models, each at its own origin")
+    print("PASS the two assets of one .blend are linked as two models, each at its own origin")
 
     # -- Edit Source on an asset opens its .blend; Make Mesh Editable copies that asset's GLB ----
     bpy.context.view_layer.objects.active = short
@@ -471,7 +552,9 @@ def run(source, root):
     Path(clips_level).write_text(_CLIPS_DOCUMENT.format(guid=SWAY_GUID, bvh=BVH), encoding="utf-8")
     open_fresh(clips_level, layout)   # asserts the load warned about nothing
     sway = placed(bpy.context.scene, SWAY_GUID)
-    assert any(part.type == "ARMATURE" for part in sway.instance_collection.all_objects)
+    # What it shows is its armature, imported by the converter's BVH importer and posed by its clip.
+    rigs = [part for part in sway.instance_collection.all_objects if part.type == "ARMATURE"]
+    assert len(rigs) == 1 and rigs[0].animation_data and rigs[0].animation_data.action, rigs
     assert clip_ops.model_for_object(sway, layout) == model_source.Model(bvh)
     view = glb_clips.view(bvh)
     assert view is not None and len(view.clips) == 1 and view.identified, view
@@ -491,8 +574,8 @@ def run(source, root):
     for leftover in (clips_level, sidecar.path_for(clips_level)):
         with contextlib.suppress(FileNotFoundError):
             os.unlink(leftover)
-    print("PASS a .bvh placement loads without a warning, its clip is authorable,"
-          " and mesh editing is refused")
+    print("PASS a .bvh placement shows its armature and clip, loads without a warning, its clip is"
+          " authorable, and mesh editing is refused")
 
     # -- the engine side: the project verifies and the level builds -----------------------------
     watch.stop_all()

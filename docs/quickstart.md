@@ -232,6 +232,8 @@ records every file the import read beside the source -- an `.obj`'s `.mtl`, its 
 editing any of them converts it again too. A `.bvh` (animation only)
 extracts a `.skeleton` and its `.anim` clips, and no mesh or prefab. Keeping the `.blend` as the model means its quads,
 modifiers and welded topology stay editable: save it and the watcher converts and extracts again.
+A level shows each placement from the source itself -- a `.blend` linked, anything else imported
+with the converter's own importer -- so the converted GLB is only what the game is built from.
 
 One `.blend` can hold several models: mark a collection as an asset (Mark as Asset) and it is a
 model of its own, named after the collection, with the collection's instance offset as its

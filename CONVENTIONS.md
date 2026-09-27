@@ -107,8 +107,9 @@ library and name-derived GUIDs are not part of this workflow.
 ## 4. Names — Blender's namespace is not the document's
 
 Blender guarantees object names are unique within a file and silently uniquifies to get there
-(`Wall` → `Wall.001`), truncating at 63 bytes, in one namespace shared with every node of every
-imported GLB. A document allows two objects one name and has no length limit.
+(`Wall` → `Wall.001`), truncating at 63 bytes, in one namespace shared with every object of every
+imported model (a linked `.blend`'s objects keep a namespace of their own). A document allows two
+objects one name and has no length limit.
 
 So `obj.name` alone cannot say whether the AUTHOR renamed anything. `store.tag_name` records both
 the document's `meta.Name` and the name Blender showed at load; `store.document_name` returns the

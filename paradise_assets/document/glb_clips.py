@@ -399,7 +399,11 @@ def _write_domain(
                 items.append((ROOT_BONE_KEY, setting.root_bone))
             return canonical_toml.InlineTable(items)
 
-        entries = [*others, *(_entry(merged[index]) for index in sorted(merged))]
+        # Another model's entries pass through as stored, but inline: one spelled as a
+        # `[[glb.clips]]` block reads back as a plain dict, which a mixed array cannot hold.
+        inline = canonical_toml.InlineTable
+        passed = [entry if isinstance(entry, inline) else inline(entry) for entry in others]
+        entries = [*passed, *(_entry(merged[index]) for index in sorted(merged))]
         domain[CLIPS_KEY] = sorted(entries, key=_entry_order)
     elif isinstance(domain, dict):
         domain.pop(CLIPS_KEY, None)

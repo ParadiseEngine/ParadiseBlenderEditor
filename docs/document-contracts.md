@@ -114,7 +114,8 @@ relative to the source's directory. The engine extracts meshes, clips and materi
 
 The level does not import that GLB: a designer works with the model as authored -- quads, live
 modifiers, its own materials and object hierarchy. `meshes.MeshLibrary` LINKS a `.blend`
-(`bpy.data.libraries.load(link=True, relative=True)`, read-only in the level): an asset's
+(`bpy.data.libraries.load(link=True, relative=False)` on the file's physical absolute path, so a
+level opened through a symlinked workspace view resolves it; read-only in the level): an asset's
 collection, or the objects of the file's scene for a whole-file model, less the cameras and lights
 the converter's glTF export leaves out; the library collection holds the linked objects and takes
 the asset collection's `instance_offset`. A whole-file `.blend` with several scenes shows the one

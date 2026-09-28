@@ -182,6 +182,23 @@ class TestWriting:
         assert "[texture]" in text and "srgb = true" in text
         assert "root_motion = true" in text
 
+    def test_another_models_entries_spelled_as_header_arrays_survive_a_write(self, tmp_path):
+        # A hand-edited sidecar may spell the clips as [[glb.clips]] blocks; another asset's
+        # entries pass through as stored and must still be written, inline like the rest.
+        glb = write_glb(tmp_path / "cast.glb", clips=("Idle",))
+        meta = tmp_path / "cast.glb.meta"
+        meta.write_text(
+            f'schema_version = 1\nguid = "{GUID}"\n\n'
+            '[[glb.clips]]\nasset = "11111111-1111-4111-8111-111111111111"\nindex = 0\n'
+            'name = "Idle"\nroot_motion = true\n',
+            encoding="utf-8")
+
+        glb_clips.set_root_motion(glb, 0, True)
+
+        text = Path(meta).read_text(encoding="utf-8")
+        assert text.count("root_motion = true") == 2
+        assert '"11111111-1111-4111-8111-111111111111"' in text and "[[glb.clips]]" not in text
+
     def test_no_identity_means_no_write(self, tmp_path):
         glb = write_glb(tmp_path / "new.glb", clips=("Run",))
         with pytest.raises(glb_clips.ClipSettingsError, match="no identity"):

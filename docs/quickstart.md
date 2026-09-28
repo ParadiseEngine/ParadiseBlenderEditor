@@ -63,8 +63,8 @@ The Project panel appears whenever this `.blend` sits inside a project — the w
    — that is where your camera and selection live. Its objects are then rematerialized from the
    document regardless, so an edit made by another tool is never shown stale.
 2. The document's objects appear, meshes instanced from the models the document references (a
-   `.glb` or `.gltf` is imported as it is; any other model -- `.blend`, `.fbx`, `.obj`, ... -- is
-   shown through the GLB the pipeline converts it to).
+   `.glb` or `.gltf` is imported as it is, a `.blend` is linked, and any other model -- `.fbx`,
+   `.obj`, ... -- is imported with the same Blender importer the pipeline converts it with).
 3. `paradise assets watch` starts for the project.
 
 ## 4. Place something

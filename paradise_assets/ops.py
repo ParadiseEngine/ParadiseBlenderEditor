@@ -337,7 +337,9 @@ class PARADISE_ASSETS_OT_open_watch_log(Operator):
         text.write(content)
         # The log is the watcher's; a copy the save would put in the workfile is dead weight.
         text.use_fake_user = False
-        editors = [area for area in context.screen.areas if area.type == "TEXT_EDITOR"]
+        # No screen when run headless (a script, a test): the text is still loaded.
+        screen = getattr(context, "screen", None)
+        editors = [area for area in screen.areas if area.type == "TEXT_EDITOR"] if screen else []
         if editors:
             editors[0].spaces.active.text = text
             editors[0].spaces.active.top = max(0, len(text.lines) - 40)

@@ -374,23 +374,35 @@ def _asset_collection(path: str, guid: str, hint: str | None,
 
 
 def _library_of(path: str) -> bpy.types.Library | None:
-    """The ``Library`` this file already links ``path`` (a physical path) through, if any. One
-    whose file is missing but names the same file under ``assets/`` -- linked through another
-    spelling of the checkout, a symlinked view or a moved clone -- is pointed back at ``path``."""
+    """The ``Library`` this file links ``path`` (a physical path) through, if any. One whose file
+    is missing but names the same file under ``assets/`` -- linked through another spelling of the
+    checkout, a symlinked view or a moved clone -- is pointed back at ``path`` when no library
+    reaches it, and removed when one does, so a workfile keeps one library per model file."""
     wanted = os.path.normcase(path)
-    stranded = None
+    tail = _under_assets(wanted)
+    found, stranded = None, []
     for library in bpy.data.libraries:
         if library.parent is not None:
             continue
-        linked = os.path.normcase(os.path.realpath(bpy.path.abspath(library.filepath)))
-        if linked == wanted:
-            return library
-        if stranded is None and not os.path.isfile(linked) and _under_assets(linked) == _under_assets(wanted):
-            stranded = library
-    if stranded is not None and _under_assets(wanted) is not None:
-        stranded.filepath = path
-        stranded.reload()
-    return stranded
+        # Lexically, as Blender resolves `//..`: the OS would apply `..` after following a
+        # symlinked view and find a file Blender cannot open.
+        linked = os.path.normpath(bpy.path.abspath(library.filepath))
+        if os.path.isfile(linked):
+            if found is None and os.path.normcase(os.path.realpath(linked)) == wanted:
+                found = library
+        elif tail is not None and _under_assets(linked) == tail:
+            stranded.append(library)
+    if found is None and stranded:
+        found = stranded.pop(0)
+        found.filepath = path
+        found.reload()
+    for library in stranded:
+        bpy.data.libraries.remove(library)
+    if found is not None and found.filepath != path:
+        # Blender tells libraries apart by the path as written: linking `path` again would open a
+        # second library of the same file beside one spelled through a view or relatively.
+        found.filepath = path
+    return found
 
 
 def _under_assets(path: str) -> str | None:

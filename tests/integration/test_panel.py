@@ -17,8 +17,8 @@ What it pins:
 - Every operator any panel draws exists.
 - The landing state offers the project's documents, and offers them BY PATH -- a row that did
   not set ``filepath`` would silently open the file browser instead.
-- Every panel is TOP-LEVEL. A ``bl_parent_id`` naming a panel that is not registered makes
-  Blender drop the child silently, so the registration order and the parent set are checked.
+- A sub-panel's ``bl_parent_id`` names a panel registered BEFORE it: Blender drops a child
+  whose parent is missing or registers later silently, so the registration order is checked.
 """
 
 from __future__ import annotations
@@ -225,15 +225,22 @@ def main() -> int:
                 [cls.bl_idname for cls in ui.classes] == [
                     "PARADISE_ASSETS_PT_document",
                     "PARADISE_ASSETS_PT_project",
+                    "PARADISE_ASSETS_PT_watch_log",
                     "PARADISE_ASSETS_PT_play",
                     "PARADISE_ASSETS_PT_tree",
                     "PARADISE_ASSETS_PT_object",
                 ],
-                "five panels, in the order they read down the sidebar",
+                "the panels, in the order they read down the sidebar",
+            )
+            registered = [cls.bl_idname for cls in ui.classes]
+            children = [cls for cls in ui.classes if getattr(cls, "bl_parent_id", "")]
+            check(
+                all(cls.bl_parent_id in registered[:registered.index(cls.bl_idname)] for cls in children),
+                "every sub-panel's parent is registered before it: Blender drops an orphan silently",
             )
             check(
-                not any(getattr(cls, "bl_parent_id", "") for cls in ui.classes),
-                "all top-level: a bl_parent_id naming an unregistered panel is dropped silently",
+                "paradise_assets.open_watch_log" in draw(ui.PARADISE_ASSETS_PT_watch_log, context).operators,
+                "the Watcher Log offers the whole log",
             )
 
             print("\n== every operator any panel draws exists ==")

@@ -26,7 +26,7 @@ from bpy.types import Operator, PropertyGroup
 
 from . import edits
 from .document import assets as asset_index
-from .document import component_schema, project
+from .document import component_schema, model_source, project
 from .materialize import light_preview, store
 
 __all__ = ["attach", "classes", "detach", "draw_item", "sync"]
@@ -412,9 +412,10 @@ def _bind_range(slot, field) -> None:
         slot.range_max = 1.0
 
 
-#: Extensions that name the same KIND of thing, so a picker offered one offers the other. Only
-#: glTF has such a pair; every other document kind is one suffix.
-_INTERCHANGEABLE = ((".glb", ".gltf"),)
+#: Extensions that name the same KIND of thing, so a picker offered one offers the others. Only
+#: models have such sets: the formats that hold geometry, and the animation-only ones, which a
+#: mesh slot must not be offered.
+_INTERCHANGEABLE = (model_source.MESH_SUFFIXES, model_source.ANIMATION_ONLY)
 
 
 def _kinds_of(field, value) -> list:

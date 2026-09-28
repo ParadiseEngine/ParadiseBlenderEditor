@@ -25,11 +25,13 @@ license = ["SPDX:MIT"]
 #
 # Declared for disclosure. Nothing enforces them; they are here because they are true.
 #
-# This addon reads prefab documents and their GLB/PNG sources out of a project's `assets/`
-# directory, and writes prefab documents back to it. It opens no sockets. It starts
-# subprocesses: the `paradise` CLI (`assets watch` while a document is open; `build`, `verify`,
-# `clean` from the Play panel), the configured game runtime (Play), and a background Blender
-# that renders the Asset Browser catalogue.
+# This addon reads prefab documents and their model (GLB, or the GLB converted from a .blend or
+# .fbx) and PNG sources out of a project's `assets/` directory, and writes prefab documents back
+# to it. It opens no sockets. It starts subprocesses: the `paradise` CLI (`assets watch` while a
+# document is open; `assets convert` when a converted model is stale; `build`, `verify`, `clean`
+# from the Play panel), the configured game runtime (Play), a background Blender that renders the
+# Asset Browser catalogue, and a second Blender on a prefab or a model's source `.blend` when the
+# author asks for one.
 [permissions]
 files = "Read and write scene documents and their assets"
 

@@ -1,4 +1,6 @@
-"""Editing a SHARED model in place: the geometry Blender edits goes back into the model's own GLB.
+"""Editing a SHARED model in place: the geometry Blender edits goes back into the model's own GLB
+-- or its own ``.gltf``, read as the GLB it stands for and written back as JSON and its buffer file
+(``gltf.container_files``).
 
 An owned mesh (``editable_mesh.py``) is a copy, so its GLB can be whatever Blender's exporter
 writes. A shared model is an artist's file that every placement, in every document, shows -- and

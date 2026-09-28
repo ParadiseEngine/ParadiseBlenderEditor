@@ -498,35 +498,35 @@ class PARADISE_ASSETS_PT_object(_AssetsPanel, Panel):
 
 
 def _draw_clip_settings(layout, context, obj) -> None:
-    """The GLB's animation clips and their root-motion settings, when the object has clips.
+    """The model's animation clips and their root-motion settings, when the object has clips.
 
     The flag and the bone live on the MODEL's sidecar (``document/glb_clips.py``), not on the
-    object: the same GLB placed twice is one rig, and the engine keys the settings off the
-    container. The section is a per-clip row only where the resolved GLB carries animations;
+    object: the same model placed twice is one rig, and the engine keys the settings off the
+    container. The section is a per-clip row only where the resolved model carries animations;
     a static mesh draws nothing at all.
     """
     located = store.project_of(context.scene)
     if located is None:
         return
-    glb = clip_ops.glb_for_object(obj, located)
-    if glb is None:
+    model = clip_ops.model_for_object(obj, located)
+    if model is None:
         return
-    view = glb_clips.view(glb)
+    view = glb_clips.view(model)
     if view is None:
         return
 
     box = layout.box()
-    box.label(text=f"Animation clips — {os.path.basename(glb)}", icon="ACTION")
+    box.label(text=f"Animation clips — {os.path.basename(model)}", icon="ACTION")
     if not view.identified:
         warning = box.row()
         warning.alert = True
         warning.label(
-            text="The watcher has not identified this GLB yet; clip settings cannot be "
+            text="The watcher has not identified this model yet; clip settings cannot be "
             "written until its .meta exists.", icon="ERROR")
 
     for clip in view.clips:
         row = box.row(align=True)
-        # An unidentified GLB refuses every write — draw the rows greyed rather
+        # An unidentified model refuses every write — draw the rows greyed rather
         # than letting each click report the same refusal.
         row.enabled = view.identified
         toggle = row.operator(
@@ -534,7 +534,7 @@ def _draw_clip_settings(layout, context, obj) -> None:
             text="",
             icon="CHECKBOX_HLT" if clip.setting.root_motion else "CHECKBOX_DEHLT",
         )
-        toggle.glb = glb
+        toggle.model = model
         toggle.index = clip.index
         toggle.enabled = not clip.setting.root_motion
         row.label(text=clip.name or f"clip {clip.index}")
@@ -544,12 +544,12 @@ def _draw_clip_settings(layout, context, obj) -> None:
                 text=clip.setting.root_bone or f"auto ({view.root_joint or '?'})",
                 icon="BONE_DATA",
             )
-            pick.glb = glb
+            pick.model = model
             pick.index = clip.index
             if clip.setting.root_bone:
                 clear = row.operator(
                     "paradise_assets.clip_root_bone", text="", icon="X")
-                clear.glb = glb
+                clear.model = model
                 clear.index = clip.index
                 clear.auto = True
 

@@ -1,6 +1,12 @@
-"""Each referenced GLB imported ONCE into a hidden library collection, instanced per object
+"""Each referenced model imported ONCE into a hidden library collection, instanced per object
 (ShiningPie: ~117 files across 225 objects). Instancing also makes the geometry uneditable in
-place, which is right: the GLB owns geometry, and an edit here would vanish on the next load.
+place, which is right: the model owns geometry, and an edit here would vanish on the next load.
+
+A ``.gltf`` is imported as it is, like a ``.glb``; its stamp covers its buffer files too, so a
+re-exported ``.bin`` is re-imported. A converted model (``.blend``, ``.fbx``, ``.obj`` ...) is
+shown through the GLB the pipeline converts it to (``document/model_source.py``), but the library
+keys, names and stamps the collection by the SOURCE plus that GLB's stamp: saving the ``.blend``
+-- or an ``.obj``'s ``.mtl`` -- is what makes the next load convert and re-import it.
 """
 
 from __future__ import annotations
@@ -9,21 +15,56 @@ import os
 
 import bpy
 
+from ..document import gltf, model_source, project
+from ..play import host
 from . import store
 
-__all__ = ["LIBRARY_COLLECTION", "MeshLibrary"]
+__all__ = ["LIBRARY_COLLECTION", "MeshLibrary", "glb_of"]
 
-#: One collection per imported GLB, excluded from the view layer.
+#: One collection per imported model, excluded from the view layer.
 LIBRARY_COLLECTION = "ParadiseAssets/Library"
 
+#: The model source the collection shows: the ``.glb`` or ``.gltf`` imported, or the converted
+#: source whose GLB was. The key predates converted sources; renaming it would orphan every
+#: existing workfile's library.
 SOURCE_KEY = "paradise_glb_source"
 
-#: ``(mtime, size)`` at import; a moved stamp means re-import.
+#: ``(mtime, size)`` at import -- of the source and a ``.gltf``'s buffer files, and of the
+#: converted GLB when there is one; a moved stamp means re-import.
 STAMP_KEY = "paradise_glb_stamp"
 
 
+def glb_of(source: str) -> str:
+    """The GLB to read for the model ``source``, converting a source whose converted GLB is
+    missing or stale -- the source or a file it depends on changed -- through
+    ``paradise assets convert``. Synchronous: the load needs the file before it can show
+    anything, and a current conversion costs no process at all.
+
+    Raises :class:`model_source.ConversionError` with the reason, for the caller to report."""
+    found = model_source.current_glb(source)
+    if found is not None or not model_source.is_converted(source):
+        return found or source
+    name = os.path.basename(source)
+    layout = project.locate(source)
+    if layout is None:
+        raise model_source.ConversionError(
+            f"{name} is not inside an asset project, so it cannot be converted")
+    result = host.run_cli(model_source.convert_arguments(layout, source), layout.root)
+    if result is None:
+        raise model_source.ConversionError(
+            f"{name} needs converting to a GLB, and the Paradise CLI could not be started. Set it "
+            "in the addon preferences.")
+    if not result.ok:
+        raise model_source.ConversionError(f"could not convert {name} to a GLB: {result.summary()}")
+    glb = model_source.printed_path(result.stdout)
+    if glb is None or not os.path.isfile(glb):
+        raise model_source.ConversionError(
+            f"`paradise assets convert` finished without naming the GLB it wrote for {name}")
+    return glb
+
+
 class MeshLibrary:
-    """Imports GLBs on demand and hands back a collection to instance."""
+    """Imports models on demand and hands back a collection to instance."""
 
     def __init__(self, scene: bpy.types.Scene, warn=None) -> None:
         self._scene = scene
@@ -33,13 +74,13 @@ class MeshLibrary:
 
     @property
     def imported(self) -> int:
-        """How many distinct GLBs were imported (a failed import does not count)."""
+        """How many distinct models were imported (a failed import does not count)."""
         return sum(1 for value in self._by_path.values() if value is not None)
 
     @property
     def sources(self) -> set[str]:
-        """The GLBs actually read, so a cache can key on what a load TOUCHED rather than a
-        second reference-discovery that goes stale silently."""
+        """The model sources actually read, so a cache can key on what a load TOUCHED rather
+        than a second reference-discovery that goes stale silently."""
         return {path for path, value in self._by_path.items() if value is not None}
 
     def collection_for(self, path: str) -> bpy.types.Collection | None:
@@ -58,8 +99,25 @@ class MeshLibrary:
             self._warn(f"mesh not found: {path}")
             return None
 
-        name = f"GLB/{os.path.splitext(os.path.basename(path))[0]}"
-        stamp = store.stamp_of(path)
+        try:
+            glb = glb_of(path)
+        except model_source.ConversionError as error:
+            self._warn(str(error))
+            return None
+        # Blender's importer would follow a uri anywhere; the engine refuses these, so the
+        # viewport must not show what the game will never get.
+        refusal = gltf.reference_refusal(glb)
+        if refusal is not None:
+            self._warn(f"could not import {os.path.basename(path)}: {refusal}")
+            return None
+
+        basename = os.path.basename(path)
+        # Only a ``.glb`` is named by its stem: ``car.blend`` or ``car.gltf`` beside ``car.glb``
+        # must not take over that model's collection.
+        name = f"GLB/{os.path.splitext(basename)[0] if path.lower().endswith('.glb') else basename}"
+        stamp = "|".join(store.stamp_of(part) for part in (path, *gltf.buffer_files(path)))
+        if glb != path:
+            stamp += f"|{store.stamp_of(glb)}"
         existing = bpy.data.collections.get(name)
         if existing is not None and _is_current_import(existing, path, stamp):
             return existing
@@ -74,9 +132,9 @@ class MeshLibrary:
         before = set(bpy.data.objects)
         collections_before = set(bpy.data.collections)
         try:
-            bpy.ops.import_scene.gltf(filepath=path)
+            bpy.ops.import_scene.gltf(filepath=glb)
         except RuntimeError as error:
-            self._warn(f"could not import {os.path.basename(path)}: {error}")
+            self._warn(f"could not import {basename}: {error}")
             return None
 
         created = [obj for obj in bpy.data.objects if obj not in before]
@@ -84,7 +142,7 @@ class MeshLibrary:
             found for found in bpy.data.collections if found not in collections_before
         ]
         if not created:
-            self._warn(f"{os.path.basename(path)} imported nothing")
+            self._warn(f"{basename} imported nothing")
             return None
 
         collection = bpy.data.collections.new(name)

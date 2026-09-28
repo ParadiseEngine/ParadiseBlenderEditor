@@ -62,7 +62,9 @@ The Project panel appears whenever this `.blend` sits inside a project — the w
 1. If a working `.blend` exists under `.editor/blend/levels/shiningpie.blend`, it is opened first
    — that is where your camera and selection live. Its objects are then rematerialized from the
    document regardless, so an edit made by another tool is never shown stale.
-2. The document's objects appear, meshes instanced from the GLBs the document references.
+2. The document's objects appear, meshes instanced from the models the document references (a
+   `.glb` or `.gltf` is imported as it is; any other model -- `.blend`, `.fbx`, `.obj`, ... -- is
+   shown through the GLB the pipeline converts it to).
 3. `paradise assets watch` starts for the project.
 
 ## 4. Place something
@@ -116,10 +118,10 @@ shared model and its other placements stay as they were. An instance is unpacked
   says so; run it again once the watcher is idle. Rigged or animated models are refused.
 
 **Reshaping the model itself.** To change a model everywhere instead, right-click a placement and
-choose **Edit Shared Mesh…**. No new file is made: that placement becomes an editable mesh, and
-every save writes the geometry back into the shared GLB, so every placement of it, in every
-document, changes. The rules above apply (triangles, slot order, a GLB changed on disk refuses the
-save), plus:
+choose **Edit Shared Mesh…** (for a `.glb` or `.gltf` model). No new file is made: that placement
+becomes an editable mesh, and every save writes the geometry back into the shared model -- a
+`.gltf` as its JSON and its `.bin` -- so every placement of it, in every document, changes. The rules above apply (triangles, slot order, a GLB changed on
+disk refuses the save), plus:
 
 - Only the geometry is rewritten. The model's materials, textures, node names and transforms stay
   exactly as they were, so its extracted materials and every prefab that uses it are untouched.
@@ -130,6 +132,13 @@ save), plus:
   may edit it too, since no document is written.
 - A model with morph targets, vertex colours, a second UV set, or data the rewrite would not carry
   is refused rather than stripped.
+
+A model made from a `.blend` offers **Edit Source in New Blender** instead: the `.blend` opens in
+a second Blender, where its quads and modifiers are still there. Save it; the watcher re-extracts
+it, and placements show the change when their document is reloaded. A model made from any other
+format (`.fbx`, `.obj`, `.usd`, ...) is edited in the application that exported it, then exported
+again. A model with no mesh -- a `.bvh`, a skeleton and its animation -- has nothing to make
+editable; its clips are set up in the Components panel's Animation clips section.
 
 ## 5. Edit components
 
@@ -207,11 +216,21 @@ preserve their stored identities. Linked `.blend` libraries are unnecessary: can
 
 ## 9. Import an existing model
 
-Drop a `.glb` under `assets/` and run:
+Drop a `.glb`, `.blend`, `.fbx`, `.gltf`, `.obj`, `.ply`, `.stl`, `.usd`/`.usda`/`.usdc`/`.usdz`, `.abc` or `.bvh` under `assets/` and run:
 
 ```bash
-paradise assets extract assets/models/Crate.glb
+paradise assets extract assets/models/Crate.blend
 ```
+
+A `.glb` or `.gltf` is extracted as it is: a `.gltf` is read with its `.bin` and images beside it
+(files it names outside `assets/` are refused), so editing the `.bin` rebuilds it like editing the
+`.gltf`. Anything else is converted to a GLB by a headless Blender first
+(`.editor/converted/models/Crate.blend.glb`), with each importer's default axes and scale, and
+everything is extracted from that GLB; the source file itself is never written. The conversion
+records every file the import read beside the source -- an `.obj`'s `.mtl`, its textures -- so
+editing any of them converts it again too. A `.bvh` (animation only)
+extracts a `.skeleton` and its `.anim` clips, and no mesh or prefab. Keeping the `.blend` as the model means its quads,
+modifiers and welded topology stay editable: save it and the watcher converts and extracts again.
 
 Models without prefabs receive one, making them placeable. The destination is the model's
 extraction directory override, then `[extract] prefabs` or `[extract] directory` in
@@ -228,6 +247,7 @@ nothing deletes it.
 |---|---|
 | `assets/` | the source of truth — documents, models, textures, and a `.meta` beside each |
 | `.editor/blend/` | working `.blend` files, one per document. Disposable |
+| `.editor/converted/` | GLBs converted from every model that is not a `.glb` or `.gltf`. Disposable |
 | `.editor/asset-library/` | the Asset Browser catalogue and its thumbnails. Disposable |
 | `.editor/authoring-schema.json` | the game's component schema, dumped by its launcher build |
 | `build/` | what the CLI compiles and the game loads. Disposable |

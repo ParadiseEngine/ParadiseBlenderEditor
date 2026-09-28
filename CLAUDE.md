@@ -36,7 +36,9 @@ it through that verification and report any concrete blocker.
 ## Commands
 
 Choose unit or Blender integration checks for the changed behavior. Integration tests accept
-`PARADISE_ASSETS_PROJECT` and skip project-dependent checks when no project is available.
+`PARADISE_ASSETS_PROJECT` and skip project-dependent checks when no project is available. The
+ones that build a copied project reuse the last passing run's outputs (`PARADISE_TEST_WARM_DIR`,
+`tests/integration/warm_project.py`); only a first run pays for a full build.
 
 ```bash
 .venv/bin/python -m pytest tests/unit -q

@@ -136,6 +136,13 @@ if command -v "$BLENDER" >/dev/null 2>&1; then
     tests/integration/test_shared_mesh.py "$DEFAULT_NOISE" \
     "${PARADISE_ASSETS_PROJECT:-../shiningpie}"
 
+  # Converted models (.blend, .fbx, .obj with its .mtl and texture, an animation-only .bvh):
+  # converted by the CLI, shown as that GLB, made editable, reconverted on reload after the
+  # .blend or the .mtl is saved, opened at source in a second Blender, clips authored.
+  integration "converted model sources, display, editing, clips and build" \
+    tests/integration/test_model_sources.py "$DEFAULT_NOISE" \
+    "${PARADISE_ASSETS_PROJECT:-../shiningpie}"
+
   # Asset Browser thumbnails. Renders, so it wants the same real project -- and its load-bearing
   # check is that the catalogue came out with no geometry in it.
   integration "prefab thumbnails and the catalogue's weight" \

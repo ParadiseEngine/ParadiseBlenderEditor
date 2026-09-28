@@ -265,3 +265,31 @@ OWNER = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
 
 def _attributes(document: dict) -> dict:
     return document["meshes"][0]["primitives"][0]["attributes"]
+
+
+def test_an_edit_splices_into_a_gltf_that_stays_a_gltf_beside_its_bin(tmp_path):
+    """The shared model is a ``.gltf`` and its ``.bin``: read as the GLB it stands for, spliced
+    like one, and written back as JSON naming the same ``.bin``."""
+    (tmp_path / "assets" / "models").mkdir(parents=True)
+    (tmp_path / "assets" / "project.toml").write_text('name = "test"\n', encoding="utf-8")
+    document, binary = shared_model()
+    document["buffers"] = [{"uri": "ship.bin", "byteLength": len(binary)}]
+    path = tmp_path / "assets" / "models" / "ship.gltf"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    (tmp_path / "assets" / "models" / "ship.bin").write_bytes(binary)
+    original = gltf.read_glb(str(path))
+    assert shared_mesh.unsupported(gltf.read_json(str(path))) is None
+
+    for target, data in gltf.container_files(str(path), shared_mesh.splice(original, export_of(EDITED))):
+        with open(target, "wb") as handle:
+            handle.write(data)
+
+    written = json.loads(path.read_text(encoding="utf-8"))
+    bin_size = (tmp_path / "assets" / "models" / "ship.bin").stat().st_size
+    assert written["buffers"] == [{"uri": "ship.bin", "byteLength": bin_size}]
+    assert written["materials"] == document["materials"] and written["images"] == document["images"]
+    edited, edited_binary = gltf.read_glb(str(path))
+    assert rounded(world_points(edited, edited_binary)) == rounded(EDITED)
+    view = edited["bufferViews"][edited["images"][0]["bufferView"]]
+    assert edited_binary[view["byteOffset"]:view["byteOffset"] + view["byteLength"]] == IMAGE
+    assert sorted(item.name for item in path.parent.iterdir()) == ["ship.bin", "ship.gltf"]

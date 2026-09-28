@@ -133,7 +133,7 @@ def unsupported(document) -> str | None:
     A GLB on disk is untrusted -- a merge, a teammate, a hand edit -- so a field of the wrong
     shape is an answer here, never an exception for the caller to miss."""
     if not isinstance(document, dict) or not document:
-        return "it is not a readable GLB"
+        return "it is not a readable glTF model"
     try:
         return _unsupported(document)
     except (TypeError, ValueError, KeyError, IndexError, AttributeError):
@@ -348,7 +348,7 @@ def _is_our_mesh(layout: ProjectLayout, path: str, glb: str) -> bool:
     document = path[: -len(sidecar.SUFFIX)] if path.endswith(sidecar.SUFFIX) else path
     if not mesh_document.is_document(document):
         return False
-    source = mesh_document.glb_for(layout, layout.relative(document))
+    source = mesh_document.source_for(layout, layout.relative(document))
     return source is not None and _same_file(source, glb)
 
 

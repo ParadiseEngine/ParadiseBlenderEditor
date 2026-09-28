@@ -314,6 +314,57 @@ class PARADISE_ASSETS_OT_toggle_watch(Operator):
         return {"FINISHED"}
 
 
+class PARADISE_ASSETS_OT_open_watch_log(Operator):
+    """Show the asset watcher's whole log in Blender's Text Editor"""
+
+    bl_idname = "paradise_assets.open_watch_log"
+    bl_label = "Open Log"
+
+    #: The Text datablock the log is shown in, reloaded from disk each time.
+    TEXT = "Paradise Watch Log"
+
+    @classmethod
+    def poll(cls, context):
+        layout = store.project_of(context.scene)
+        return layout is not None and os.path.isfile(watch.log_path(layout.root))
+
+    def execute(self, context):
+        path = watch.log_path(store.project_of(context.scene).root)
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            content = handle.read()
+        text = bpy.data.texts.get(self.TEXT) or bpy.data.texts.new(self.TEXT)
+        text.clear()
+        text.write(content)
+        # The log is the watcher's; a copy the save would put in the workfile is dead weight.
+        text.use_fake_user = False
+        editors = [area for area in context.screen.areas if area.type == "TEXT_EDITOR"]
+        if editors:
+            editors[0].spaces.active.text = text
+            editors[0].spaces.active.top = max(0, len(text.lines) - 40)
+            self.report({"INFO"}, "Watch log shown in the Text Editor")
+        else:
+            self.report({"INFO"}, f"Watch log loaded as '{self.TEXT}'; open a Text Editor to read it")
+        return {"FINISHED"}
+
+
+class PARADISE_ASSETS_OT_copy_watch_errors(Operator):
+    """Copy every error and warning of the watcher's latest rebuild to the clipboard"""
+
+    bl_idname = "paradise_assets.copy_watch_errors"
+    bl_label = "Copy Errors"
+
+    def execute(self, context):
+        layout = store.project_of(context.scene)
+        rebuild = watch.last_rebuild(layout.root) if layout is not None else None
+        if rebuild is None or not rebuild.diagnostics:
+            self.report({"INFO"}, "The latest rebuild reported nothing")
+            return {"CANCELLED"}
+        context.window_manager.clipboard = "\n".join(
+            [rebuild.summary] + [f"{severity}: {message}" for severity, message in rebuild.diagnostics])
+        self.report({"INFO"}, f"Copied {len(rebuild.diagnostics)} line(s)")
+        return {"FINISHED"}
+
+
 class PARADISE_ASSETS_OT_add_prefab_instance(Operator):
     """Place an instance of a prefab in the open document"""
 
@@ -1026,6 +1077,8 @@ classes = (
     PARADISE_ASSETS_OT_save_prefab,
     PARADISE_ASSETS_OT_create_prefab,
     PARADISE_ASSETS_OT_toggle_watch,
+    PARADISE_ASSETS_OT_open_watch_log,
+    PARADISE_ASSETS_OT_copy_watch_errors,
     PARADISE_ASSETS_OT_add_prefab_instance,
     PARADISE_ASSETS_OT_extract_prefab,
     PARADISE_ASSETS_OT_unpack_instance,

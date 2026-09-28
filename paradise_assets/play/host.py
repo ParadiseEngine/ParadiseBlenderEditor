@@ -23,6 +23,7 @@ __all__ = [
     "run_cli",
     "start_cli",
     "subprocess_environment",
+    "workspace_cli",
 ]
 
 
@@ -176,6 +177,11 @@ def resolve_cli_command(project_root: str | None = None) -> list[str] | None:
             return found
 
     if project_root:
+        source = workspace_cli(project_root)
+        if source is not None:
+            found = _dotnet_run(source)
+            if found is not None:
+                return found
         version = project_engine_version(project_root)
         if version is not None:
             pinned = _versioned_cli(version)
@@ -184,6 +190,35 @@ def resolve_cli_command(project_root: str | None = None) -> list[str] | None:
             print(f"[paradise_assets] paradise {version} unavailable; using whatever is installed")
 
     return _ladder("", "paradise")
+
+
+#: What a workspace's ``Directory.Build.targets`` defines when it builds its games against the
+#: engine source beside them (``paradise-workspace``'s source override).
+_ENGINE_SOURCE_OVERRIDE = "_ParadiseEngineSrc"
+
+_WORKSPACE_CLI = os.path.join("ParadiseEngine", "src", "Tools", "Paradise.Cli", "Paradise.Cli.csproj")
+
+
+def workspace_cli(project_root: str) -> str | None:
+    """The CLI project of the engine checkout a workspace builds this project against, or
+    ``None``. Such a workspace compiles the game against engine SOURCE, so the documents in it
+    follow that source, not the package version the project pins -- and a pinned CLI older than
+    the tree cannot read them. Found by walking up from the project's physical directory to a
+    ``Directory.Build.targets`` that defines the source override beside a ``ParadiseEngine``."""
+    directory = os.path.realpath(project_root)
+    while True:
+        targets = os.path.join(directory, "Directory.Build.targets")
+        project = os.path.join(directory, _WORKSPACE_CLI)
+        if os.path.isfile(targets) and os.path.isfile(project):
+            try:
+                if _ENGINE_SOURCE_OVERRIDE in pathlib.Path(targets).read_text(encoding="utf-8"):
+                    return project
+            except OSError:
+                pass
+        parent = os.path.dirname(directory)
+        if parent == directory:
+            return None
+        directory = parent
 
 
 def _with_dotnet_on_path() -> dict[str, str]:
@@ -213,19 +248,18 @@ def subprocess_environment() -> dict[str, str]:
     return environment
 
 
-def _cli_csproj() -> str | None:
+def _cli_csproj(project_root: str | None = None) -> str | None:
+    """The CLI project to build before running, when the CLI comes from source."""
     configured = _preference("cli").strip()
-    if not configured:
-        return None
-    resolved = os.path.realpath(os.path.expanduser(configured))
-    if resolved.endswith(".csproj") and os.path.exists(resolved):
-        return resolved
-    return None
+    if configured:
+        resolved = os.path.realpath(os.path.expanduser(configured))
+        return resolved if resolved.endswith(".csproj") and os.path.exists(resolved) else None
+    return workspace_cli(project_root) if project_root else None
 
 
-def _build_stage() -> list[str] | None:
+def _build_stage(project_root: str | None = None) -> list[str] | None:
     """The ``dotnet build`` the CLI needs before it has anything to run, or ``None``."""
-    project = _cli_csproj()
+    project = _cli_csproj(project_root)
     if project is None or os.path.isfile(_built_output(project)):
         return None
     dotnet = _dotnet()
@@ -234,11 +268,11 @@ def _build_stage() -> list[str] | None:
     return [dotnet, "build", project, "-v", "q", "--nologo"]
 
 
-def ensure_cli_built() -> str | None:
+def ensure_cli_built(project_root: str | None = None) -> str | None:
     """Compile the CLI csproj if there is nothing to run yet; a string is why not."""
-    stage = _build_stage()
+    stage = _build_stage(project_root)
     if stage is None:
-        if _cli_csproj() is not None and _dotnet() is None:
+        if _cli_csproj(project_root) is not None and _dotnet() is None:
             return "No dotnet SDK found to build the Paradise CLI."
         return None
 
@@ -353,7 +387,7 @@ def start_cli(arguments: list[str], cwd: str) -> CliJob | None:
     if command is None:
         return None
     stages = []
-    build = _build_stage()
+    build = _build_stage(cwd)
     if build is not None:
         stages.append(build)
     stages.append([*command, *arguments])
@@ -369,7 +403,7 @@ def run_cli(arguments: list[str], cwd: str, timeout: float = 900.0) -> CliResult
         return None
 
     environment = subprocess_environment()
-    problem = ensure_cli_built()
+    problem = ensure_cli_built(cwd)
     if problem:
         return CliResult(-1, "", f"error: {problem}")
 

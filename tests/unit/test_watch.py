@@ -259,3 +259,48 @@ def test_adopt_loaded_file_skips_a_restricted_startup_data(monkeypatch):
     watch.adopt_loaded_file()
 
     assert watch._WATCHERS == {}
+
+
+def test_last_rebuild_lists_every_diagnostic_of_the_latest_rebuild_only(tmp_path, monkeypatch):
+    # The panel shows what the latest rebuild said; an earlier failure that was since fixed must
+    # not linger, and the CLI's doubled prefixes and absolute paths read as the author wrote them.
+    root = tmp_path / "game"
+    log = tmp_path / "watch.log"
+    monkeypatch.setattr(watch, "log_path", lambda _root: str(log))
+    assets = os.path.join(os.path.realpath(root), "assets") + os.sep
+    log.write_text(
+        "watch: watching\n"
+        "error: old problem\n"
+        "watch: build FAILED with 1 error(s)\n"
+        f"error: error: {assets}meshes/a.mesh: {assets}meshes/a.mesh: has an unknown key 'asset'\n"
+        "  some build chatter\n"
+        f"warning: {assets}levels/b.prefab: names nothing\n"
+        f"error: {assets}meshes/c.mesh: is missing\n"
+        "watch: build FAILED with 2 error(s)\n")
+
+    rebuild = watch.last_rebuild(str(root))
+
+    assert rebuild.failed and rebuild.summary == "build FAILED with 2 error(s)"
+    assert rebuild.diagnostics == (
+        ("error", "meshes/a.mesh: has an unknown key 'asset'"),
+        ("warning", "levels/b.prefab: names nothing"),
+        ("error", "meshes/c.mesh: is missing"),
+    )
+
+
+def test_a_successful_rebuild_clears_the_list(tmp_path, monkeypatch):
+    log = tmp_path / "watch.log"
+    monkeypatch.setattr(watch, "log_path", lambda _root: str(log))
+    log.write_text("error: x\nwatch: build FAILED with 1 error(s)\nwatch: rebuilt 12 asset(s) into build\n")
+
+    rebuild = watch.last_rebuild(str(tmp_path))
+
+    assert not rebuild.failed and rebuild.diagnostics == ()
+
+
+def test_no_rebuild_yet_reads_as_none(tmp_path, monkeypatch):
+    log = tmp_path / "watch.log"
+    monkeypatch.setattr(watch, "log_path", lambda _root: str(log))
+    log.write_text("watch: watching /x/assets\n")
+
+    assert watch.last_rebuild(str(tmp_path)) is None

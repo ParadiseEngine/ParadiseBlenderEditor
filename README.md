@@ -19,7 +19,7 @@ assets/levels/*.prefab  ──Blender──▶  assets/levels/*.prefab
 | | |
 |---|---|
 | **Blender 5.2+** | the manifest's floor; Blender refuses to enable the extension below it |
-| **the `paradise` CLI** | Fetched automatically at the version the project pins (`ParadiseVersion` in its `Directory.Packages.props`), cached per version under `~/.paradise/cli/`. Set *Paradise CLI* in preferences to override — a ParadiseEngine checkout, say. Falls back to the installed dotnet tool when a project pins nothing, or the pinned version cannot be fetched |
+| **the `paradise` CLI** | Fetched automatically at the version the project pins (`ParadiseVersion` in its `Directory.Packages.props`), cached per version under `~/.paradise/cli/`. In a workspace whose `Directory.Build.targets` builds the game against a `ParadiseEngine` source checkout beside it, that checkout's CLI (`src/Tools/Paradise.Cli`) is used instead, built on first use: the documents there follow the engine source, which the pinned package may not read. Set *Paradise CLI* in preferences to override either. Falls back to the installed dotnet tool when a project pins nothing, or the pinned version cannot be fetched |
 | KTX-Software (`ktx`) | *optional* — but the engine's glTF reader rejects PNG/JPEG, so textured meshes need it. The CLI does the transcode; the addon only passes the path along |
 | Blender, for the CLI | only for models that are not `.glb` or `.gltf`: the CLI converts them to GLB with a headless Blender. Set `PARADISE_BLENDER_PATH` when it cannot find one |
 

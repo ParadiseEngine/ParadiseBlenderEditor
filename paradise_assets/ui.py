@@ -225,6 +225,56 @@ def _draw_watch(layout, root: str) -> None:
             box.label(text=line)
 
 
+class PARADISE_ASSETS_PT_watch_log(_AssetsPanel, Panel):
+    """What the watcher's latest rebuild printed: every error and warning, not just the last."""
+
+    bl_label = "Watcher Log"
+    bl_idname = "PARADISE_ASSETS_PT_watch_log"
+    bl_parent_id = "PARADISE_ASSETS_PT_project"
+
+    #: Lines drawn before "… and N more"; the whole list is a click away in the Text Editor.
+    SHOWN = 30
+
+    @classmethod
+    def poll(cls, context):
+        return store.project_of(context.scene) is not None
+
+    def draw_header(self, context):
+        located = store.project_of(context.scene)
+        rebuild = watch.last_rebuild(located.root) if located is not None else None
+        if rebuild is not None:
+            self.layout.label(icon="ERROR" if rebuild.failed else "CHECKMARK")
+
+    def draw(self, context):
+        layout = self.layout
+        located = store.project_of(context.scene)
+        if located is None:
+            return
+        # Cached on the log's stamp: a redraw costs a stat.
+        rebuild = watch.last_rebuild(located.root)
+        if rebuild is None:
+            layout.label(text="No rebuild yet.")
+        else:
+            summary = layout.row()
+            summary.alert = rebuild.failed
+            summary.label(text=rebuild.summary)
+            column = layout.column(align=True)
+            for severity, message in rebuild.diagnostics[: self.SHOWN]:
+                lines = _wrap(message, 60)
+                row = column.row()
+                row.alert = severity == "error"
+                row.label(text=lines[0], icon="ERROR" if severity == "error" else "INFO")
+                for line in lines[1:3]:
+                    column.label(text=line, icon="BLANK1")
+            if len(rebuild.diagnostics) > self.SHOWN:
+                column.label(text=f"… and {len(rebuild.diagnostics) - self.SHOWN} more")
+        row = layout.row(align=True)
+        row.operator("paradise_assets.open_watch_log", icon="TEXT")
+        copy = row.row(align=True)
+        copy.enabled = rebuild is not None and bool(rebuild.diagnostics)
+        copy.operator("paradise_assets.copy_watch_errors", icon="COPYDOWN")
+
+
 class PARADISE_ASSETS_PT_play(_AssetsPanel, Panel):
     """Build the project and run the game on whatever document is open."""
 
@@ -769,6 +819,7 @@ def _payload_lines(data, prefix: str = "", depth: int = 0) -> list[str]:
 classes = (
     PARADISE_ASSETS_PT_document,
     PARADISE_ASSETS_PT_project,
+    PARADISE_ASSETS_PT_watch_log,
     PARADISE_ASSETS_PT_play,
     PARADISE_ASSETS_PT_tree,
     PARADISE_ASSETS_PT_object,

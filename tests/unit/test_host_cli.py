@@ -145,3 +145,48 @@ def test_a_project_that_pins_nothing_uses_whatever_is_installed(tmp_path, monkey
 
     assert host.project_engine_version(str(root)) is None
     assert host.resolve_cli_command(str(root)) == ["/usr/local/bin/paradise"]
+
+
+def _workspace(tmp_path, override: bool):
+    """A workspace holding an engine checkout and a game pinned to an older engine."""
+    cli = tmp_path / "ParadiseEngine" / "src" / "Tools" / "Paradise.Cli"
+    output = cli / "bin" / "Debug" / "net10.0"
+    output.mkdir(parents=True)
+    (cli / "Paradise.Cli.csproj").write_text("<Project />\n")
+    (output / "paradise.dll").write_text("")
+    targets = "<_ParadiseEngineSrc>ParadiseEngine/src/</_ParadiseEngineSrc>" if override else ""
+    (tmp_path / "Directory.Build.targets").write_text(f"<Project>{targets}</Project>\n")
+    game = tmp_path / "Game"
+    game.mkdir()
+    (game / "Directory.Packages.props").write_text("<ParadiseVersion>0.1.0</ParadiseVersion>\n")
+    return game, output / "paradise.dll"
+
+
+def test_a_workspace_that_builds_against_engine_source_runs_that_sources_cli(tmp_path, monkeypatch):
+    # The game there is compiled against the engine beside it, so its documents follow that
+    # source; the package it pins is older and cannot read them.
+    game, dll = _workspace(tmp_path, override=True)
+    monkeypatch.setattr(host, "_preference", lambda name, default="": default)
+    monkeypatch.setattr(host, "_dotnet", lambda: "/opt/homebrew/bin/dotnet")
+    monkeypatch.setattr(host, "_versioned_cli", lambda version: ["/pinned/paradise"])
+
+    assert host.resolve_cli_command(str(game)) == ["/opt/homebrew/bin/dotnet", os.path.realpath(dll)]
+
+
+def test_an_engine_checkout_without_the_source_override_leaves_the_pin(tmp_path, monkeypatch):
+    game, _dll = _workspace(tmp_path, override=False)
+    monkeypatch.setattr(host, "_preference", lambda name, default="": default)
+    monkeypatch.setattr(host, "_dotnet", lambda: "/opt/homebrew/bin/dotnet")
+    monkeypatch.setattr(host, "_versioned_cli", lambda version: ["/pinned/paradise"])
+
+    assert host.resolve_cli_command(str(game)) == ["/pinned/paradise"]
+
+
+def test_the_cli_preference_still_wins_over_the_workspace_source(tmp_path, monkeypatch):
+    game, _dll = _workspace(tmp_path, override=True)
+    chosen = tmp_path / "chosen-paradise"
+    chosen.write_text("")
+    monkeypatch.setattr(
+        host, "_preference", lambda name, default="": str(chosen) if name == "cli" else default)
+
+    assert host.resolve_cli_command(str(game)) == [os.path.realpath(chosen)]

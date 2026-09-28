@@ -34,6 +34,7 @@ Sibling panels in the **Paradise** tab, one per scope:
 |---|---|---|
 | Prefab Document | always | the open document; a landing state when there is none |
 | Project | a project is locatable | the watcher, Build / Verify / Clean, the catalogue |
+| ↳ Watcher Log | a project is locatable | every error and warning of the watcher's latest rebuild; Open Log (whole log in the Text Editor), Copy Errors |
 | Project Settings | a project is locatable | game configuration, catalogs, renderer and tool settings |
 | Play | a document is open | running the game on it |
 | Document Tree | a document is open | document hierarchy and pending overrides |

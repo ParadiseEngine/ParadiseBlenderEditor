@@ -4,7 +4,7 @@ An asset-marked collection is one model (``model_source``), and its identity is 
 ``paradise_guid`` custom property -- a canonical, lowercase hyphenated GUID -- never its name, so
 renaming the collection keeps every document, clip setting and placement that names it. The
 engine never writes a ``.blend``: the GUIDs are minted by this addon when a ``.blend`` holding
-asset collections is saved (``materialize/asset_guids.py``) and by ``paradise assets to-blend``.
+asset collections is saved (``materialize/asset_guids.py``).
 The converter refuses a file where an asset collection has none, or two share one.
 
 Blender copies custom properties when a collection is duplicated, so a copy arrives holding its

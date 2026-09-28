@@ -160,7 +160,7 @@ when it has no valid one and rewrites a valid one canonical. Blender copies cust
 a collection is duplicated, so two collections can arrive sharing one: the one the project records
 under that GUID keeps it -- a name the sidecar's `[extract]` parts list for it, or the name hint
 of a mesh document extracted from it (`asset_guids.recorded_names`) -- else the first by name, and
-every other gets a fresh one. `paradise assets to-blend` mints them for the collections it builds.
+every other gets a fresh one.
 The converter refuses a file with an asset collection lacking a GUID, or two sharing one.
 
 Each asset converts to `.editor/converted/<assets-relative source>/<asset guid>.glb`, stamped like

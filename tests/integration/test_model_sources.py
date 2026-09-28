@@ -311,7 +311,8 @@ def conversions():
 
 
 def file_of(library) -> str:
-    return os.path.normcase(os.path.abspath(bpy.path.abspath(library.filepath)))
+    # Physical: libraries are linked through the real path, and /tmp is itself a symlink on macOS.
+    return os.path.normcase(os.path.realpath(bpy.path.abspath(library.filepath)))
 
 
 def has_polygons_beyond_triangles(obj) -> bool:
@@ -397,7 +398,7 @@ def run(source, root):
     with conversions() as runs:
         open_fresh(level, layout)
     scene = bpy.context.scene
-    blend_file = os.path.normcase(os.path.abspath(blend))
+    blend_file = os.path.normcase(os.path.realpath(blend))
 
     # -- a .blend placement links the source: quads, live modifier, its own materials ------------
     with conversions() as more:
@@ -538,7 +539,7 @@ def run(source, root):
     tall_guid = place(layout, seed_prefab(layout, "Post_Tall"))
     reload(level, layout)
     short, tall = placed(scene, short_guid), placed(scene, tall_guid)
-    posts_file = os.path.normcase(os.path.abspath(posts))
+    posts_file = os.path.normcase(os.path.realpath(posts))
     for shown, asset, name in ((short, short_asset, "Post_Short"), (tall, tall_asset, "Post_Tall")):
         assert shown.instance_collection[SOURCE_KEY] == os.path.abspath(posts)
         assert shown.instance_collection[ASSET_KEY] == asset

@@ -132,7 +132,10 @@ class MeshLibrary:
               existing: bpy.types.Collection | None) -> bpy.types.Collection | None:
         """Link ``model`` from its ``.blend``; the library collection holds the linked objects
         themselves, so an edit saved in the source shows once it is reloaded."""
-        path, asset, label = model.path, model.asset, model.label
+        # The physical path, absolute: a workfile opened through a symlinked view resolves a
+        # relative library path from the view, so `//..` computed from the physical path leaves
+        # the checkout. The workfile is a per-machine cache, so an absolute path costs nothing.
+        path, asset, label = os.path.realpath(model.path), model.asset, model.label
         library = _library_of(path)
         if library is not None and library.get(STAMP_KEY) != _stamp(path, _stored_dependencies(library)):
             # Every placement of every model of the file follows: one reload re-reads them all.
@@ -144,7 +147,7 @@ class MeshLibrary:
 
         try:
             # Only asset-marked collections are models of their own, as the converter reads it.
-            with bpy.data.libraries.load(path, link=True, relative=True, assets_only=True) as (listed, _):
+            with bpy.data.libraries.load(path, link=True, relative=False, assets_only=True) as (listed, _):
                 assets = list(listed.collections)
             if asset is not None:
                 container = _asset_collection(path, asset, model.name, assets)
@@ -158,7 +161,7 @@ class MeshLibrary:
                            "their prefabs")
                 return None
             else:
-                with bpy.data.libraries.load(path, link=True, relative=True) as (source, target):
+                with bpy.data.libraries.load(path, link=True, relative=False) as (source, target):
                     if not source.scenes:
                         self._warn(f"{label} holds no scene to show")
                         return None
@@ -188,7 +191,9 @@ class MeshLibrary:
 
         collection = existing if existing is not None else bpy.data.collections.new(name)
         _empty(collection)
-        _tag(collection, path, asset, library.get(STAMP_KEY), _stored_dependencies(library))
+        # Tagged with the document's spelling of the source: what reads the tag resolves it
+        # against the project, which was located through that same spelling.
+        _tag(collection, model.path, asset, library.get(STAMP_KEY), _stored_dependencies(library))
         if asset is not None:
             collection[ASSET_NAME_KEY] = container.name
         if existing is None:
@@ -358,7 +363,7 @@ def _asset_collection(path: str, guid: str, hint: str | None,
     for batch in (first, sorted(name for name in names if name != hint)):
         wanted = [name for name in batch if name not in linked]
         if wanted:
-            with bpy.data.libraries.load(path, link=True, relative=True) as (_source, target):
+            with bpy.data.libraries.load(path, link=True, relative=False) as (_source, target):
                 target.collections = wanted
             linked.update((found.name, found) for found in target.collections if found is not None)
         for name in batch:
@@ -369,14 +374,29 @@ def _asset_collection(path: str, guid: str, hint: str | None,
 
 
 def _library_of(path: str) -> bpy.types.Library | None:
-    """The ``Library`` this file already links ``path`` through, if any."""
-    wanted = os.path.normcase(os.path.abspath(path))
+    """The ``Library`` this file already links ``path`` (a physical path) through, if any. One
+    whose file is missing but names the same file under ``assets/`` -- linked through another
+    spelling of the checkout, a symlinked view or a moved clone -- is pointed back at ``path``."""
+    wanted = os.path.normcase(path)
+    stranded = None
     for library in bpy.data.libraries:
         if library.parent is not None:
             continue
-        if os.path.normcase(os.path.abspath(bpy.path.abspath(library.filepath))) == wanted:
+        linked = os.path.normcase(os.path.realpath(bpy.path.abspath(library.filepath)))
+        if linked == wanted:
             return library
-    return None
+        if stranded is None and not os.path.isfile(linked) and _under_assets(linked) == _under_assets(wanted):
+            stranded = library
+    if stranded is not None and _under_assets(wanted) is not None:
+        stranded.filepath = path
+        stranded.reload()
+    return stranded
+
+
+def _under_assets(path: str) -> str | None:
+    """``path`` from its last ``assets`` directory on, or ``None`` outside one."""
+    parts = path.replace("\\", "/").split("/")
+    return "/".join(parts[len(parts) - 1 - parts[::-1].index("assets"):]) if "assets" in parts else None
 
 
 def _stamp(path: str, dependencies) -> str:
@@ -423,7 +443,8 @@ def _same_source(collection: bpy.types.Collection, path: str, asset: str | None)
     stored = collection.get(SOURCE_KEY)
     if not isinstance(stored, str) or not stored:
         return False
-    return os.path.normcase(os.path.abspath(stored)) == os.path.normcase(os.path.abspath(path))
+    # Physical paths: a view and the checkout it links name one file.
+    return os.path.normcase(os.path.realpath(stored)) == os.path.normcase(os.path.realpath(path))
 
 
 def _empty(collection: bpy.types.Collection) -> None:

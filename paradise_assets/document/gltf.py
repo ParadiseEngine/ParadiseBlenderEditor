@@ -173,6 +173,8 @@ def rewrite_refusal(path: str) -> str | None:
     if not is_gltf(path):
         return None
     buffers = _text_json(path).get("buffers") or []
+    if not isinstance(buffers, list):
+        return "its buffers are not a list, so it is not a glTF this can write"
     if len(buffers) > 1:
         return (f"it keeps its data in {len(buffers)} buffers, and a rewrite puts it back into one; "
                 "export it again with a single buffer")

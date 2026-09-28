@@ -413,8 +413,9 @@ def _bind_range(slot, field) -> None:
 
 
 #: Extensions that name the same KIND of thing, so a picker offered one offers the others. Only
-#: models have such a set; every other document kind is one suffix.
-_INTERCHANGEABLE = (model_source.SUFFIXES,)
+#: models have such sets: the formats that hold geometry, and the animation-only ones, which a
+#: mesh slot must not be offered.
+_INTERCHANGEABLE = (model_source.MESH_SUFFIXES, model_source.ANIMATION_ONLY)
 
 
 def _kinds_of(field, value) -> list:

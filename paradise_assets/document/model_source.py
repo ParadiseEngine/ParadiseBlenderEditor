@@ -28,8 +28,10 @@ from collections.abc import Callable
 from . import gltf, project
 
 __all__ = [
+    "ANIMATION_ONLY",
     "CONVERTED",
     "DIRECT",
+    "MESH_SUFFIXES",
     "SUFFIXES",
     "ConversionError",
     "convert_arguments",
@@ -56,6 +58,12 @@ CONVERTED = (
 
 #: Every extension a model source may have.
 SUFFIXES = (*DIRECT, *CONVERTED)
+
+#: Formats that carry a skeleton and its animation, never a mesh.
+ANIMATION_ONLY = (".bvh",)
+
+#: Formats that can hold geometry: what a mesh slot's picker offers.
+MESH_SUFFIXES = tuple(suffix for suffix in SUFFIXES if suffix not in ANIMATION_ONLY)
 
 #: Under the project's ``.editor/``: derived data, rebuilt on demand.
 CONVERTED_DIR = "converted"
@@ -101,7 +109,10 @@ def is_current(source: str, glb: str) -> bool:
 
 def is_skeleton_only(source: str) -> bool:
     """Whether ``source``'s current GLB holds no mesh -- a ``.bvh``, or any file of skeleton and
-    clips alone. ``False`` while there is no current GLB to ask: nothing is known yet."""
+    clips alone. A ``.bvh`` is one by its format, converted or not; any other source is
+    ``False`` while there is no current GLB to ask: nothing is known yet."""
+    if source.lower().endswith(ANIMATION_ONLY):
+        return True
     glb = current_glb(source)
     return glb is not None and _stamped(glb, _has_no_mesh) is True
 
@@ -125,8 +136,9 @@ def convert_arguments(layout: project.ProjectLayout, source: str) -> list[str]:
 
 
 def printed_path(stdout: str) -> str | None:
-    """The GLB path ``paradise assets convert`` printed: its last non-empty stdout line."""
-    lines = [line.strip() for line in stdout.splitlines() if line.strip()]
+    """The GLB path ``paradise assets convert`` printed: its last stdout line naming a
+    ``.glb``, so a line of chatter after it does not stand in for the path."""
+    lines = [line.strip() for line in stdout.splitlines() if line.strip().lower().endswith(".glb")]
     return lines[-1] if lines else None
 
 

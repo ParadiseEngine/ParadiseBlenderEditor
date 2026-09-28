@@ -226,6 +226,12 @@ class TestContainerFiles:
         write(tmp_path, "round.gltf", data)
         assert gltf.read_glb(str(tmp_path / "round.gltf"))[1] == b"\x0a\x0b"
 
+    def test_a_gltf_whose_buffers_are_not_a_list_is_refused_by_name(self, tmp_path):
+        path = gltf_text(tmp_path, {"buffers": {"uri": "a.bin", "byteLength": 1}})
+
+        with pytest.raises(gltf.GltfError, match="buffers are not a list"):
+            gltf.container_files(path, glb({"buffers": [{"byteLength": 1}]}, binary=b"\x00"))
+
     def test_a_gltf_split_across_buffers_is_refused(self, tmp_path):
         path = gltf_text(tmp_path, {"buffers": [{"uri": "a.bin", "byteLength": 1},
                                                 {"uri": "b.bin", "byteLength": 1}]})

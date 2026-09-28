@@ -166,7 +166,9 @@ def test_a_conversion_with_no_mesh_is_skeleton_only(tmp_path):
     layout = project(tmp_path)
     walk = write(tmp_path / "assets" / "models" / "walk.bvh", b"HIERARCHY")
     crate = write(tmp_path / "assets" / "models" / "crate.obj", b"v 0 0 0")
-    assert not model_source.is_skeleton_only(walk), "nothing converted yet: nothing is known"
+    # A .bvh is animation only by its format; any other source is unknown until converted.
+    assert model_source.is_skeleton_only(walk)
+    assert not model_source.is_skeleton_only(crate), "nothing converted yet: nothing is known"
 
     converted(layout, walk, b"HIERARCHY", nodes=[{"name": "Hips"}], skins=[{"joints": [0]}],
               animations=[{"name": "Walk"}])
@@ -181,6 +183,9 @@ def test_the_converted_path_is_the_last_line_the_cli_printed():
 
     assert model_source.printed_path(stdout) == "/root/.editor/converted/models/car.blend.glb"
     assert model_source.printed_path("") is None
+    # A line of chatter after the path does not stand in for it.
+    chatty = stdout + "warning: something else\n"
+    assert model_source.printed_path(chatty) == "/root/.editor/converted/models/car.blend.glb"
 
 
 def test_clip_settings_of_a_blend_read_its_conversion_and_land_in_its_own_sidecar(tmp_path):

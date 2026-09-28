@@ -20,9 +20,8 @@ from ..document import (
     schema,
     well_known,
 )
-from ..document import editable_mesh as ownership
 from ..document.prefab import PrefabDocument, PrefabObject
-from . import editable_mesh, light_preview, shapes, store, tagging, transform_helpers
+from . import light_preview, shapes, store, tagging, transform_helpers
 from .meshes import LIBRARY_COLLECTION, MeshLibrary
 
 __all__ = ["LoadResult", "load_document"]
@@ -72,9 +71,6 @@ def load_document(
     # the clear owns the document objects, and doing it in this order means no captured
     # reference can have been freed under us and no name is taken when the document wants it.
     startup = _startup_content(scene) if clear_startup else None
-    # Owned meshes leave the scene BEFORE the clear, which would delete them: the load hands
-    # each back when its GLB is unchanged, keeping what a GLB cannot hold, and drops the rest.
-    kept = editable_mesh.stash(scene)
     _clear_previous(scene, preserve_actions=preserve_actions)
     _drop_startup_content(startup)
 
@@ -99,13 +95,12 @@ def load_document(
     created: dict[str, bpy.types.Object] = {}
 
     for entry in resolution.document.objects:
-        obj = _create_object(entry, scene, layout, library, mesh_fields, result, kept)
+        obj = _create_object(entry, scene, layout, library, mesh_fields, result)
         tagging.tag(obj, entry, resolution)
         if store.is_derived(obj):
             result.derived += 1
         created[entry.guid] = obj
         result.objects += 1
-    editable_mesh.drop(kept)
 
     # Shapes only for what this DOCUMENT authors. An instance's own entry is read from the
     # file, not the expansion: the expansion folds the prefab's components in, and a shape the
@@ -141,7 +136,6 @@ def load_document(
     result.sources |= library.sources
     store.write_state(scene, scene_path)
     scene.view_layers[0].update()
-    editable_mesh.settle(created.values(), scene)
     # Nested transform fields store WORLD placement, so all parents must be evaluated first.
     for entry in document.objects:
         if entry.guid in created:
@@ -161,29 +155,19 @@ def _create_object(
     library: MeshLibrary,
     mesh_fields: schema.MeshFields,
     result: LoadResult,
-    kept: dict,
 ) -> bpy.types.Object:
     reference = _mesh_reference(entry, mesh_fields)
-    # The field names a mesh DOCUMENT; the model it was extracted from is what Blender shows.
-    source = mesh_document.displayable(layout, reference) if reference is not None else None
-
-    obj = None
-    if source is not None and ownership.owns(source, entry.guid):
-        # This object's own geometry: a real mesh to edit, not an instance of a shared one.
-        obj = editable_mesh.materialize(entry, result.read(source), layout, kept, result.warn)
-    elif source is not None:
-        # A shared model this scene was editing in place, while its GLB is still what it read.
-        obj = editable_mesh.materialize_shared(entry, result.read(source), layout, kept)
-    if obj is None:
-        obj = bpy.data.objects.new(entry.name or "object", None)
-        obj.empty_display_size = 0.25
-        if reference is not None:
-            collection = library.collection_for(source) if source is not None else None
-            if collection is not None:
-                obj.instance_type = "COLLECTION"
-                obj.instance_collection = collection
-            else:
-                result.warn(f"{entry.name}: mesh '{reference}' could not be displayed")
+    obj = bpy.data.objects.new(entry.name or "object", None)
+    obj.empty_display_size = 0.25
+    if reference is not None:
+        # The field names a mesh DOCUMENT; the model it was extracted from is what Blender shows.
+        model = mesh_document.displayable(layout, reference)
+        collection = library.collection_for(model) if model is not None else None
+        if collection is not None:
+            obj.instance_type = "COLLECTION"
+            obj.instance_collection = collection
+        else:
+            result.warn(f"{entry.name}: mesh '{reference}' could not be displayed")
 
     scene.collection.objects.link(obj)
     _apply_transform(obj, entry)
@@ -245,7 +229,7 @@ def _apply_transform(obj: bpy.types.Object, entry: PrefabObject) -> None:
 
 def _mesh_reference(entry: PrefabObject, mesh_fields: schema.MeshFields) -> str | None:
     """The first mesh path the components name (a bare path or an ``AssetReference``), if any."""
-    found = ownership.mesh_field(entry.components, mesh_fields)
+    found = schema.mesh_field(entry.components, mesh_fields)
     if found is None:
         return None
     component, field = found

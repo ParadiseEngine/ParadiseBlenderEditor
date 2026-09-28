@@ -8,12 +8,11 @@ Paths in this reference are relative to the repository root.
 paradise_assets/
   document/     ★ pure Python, imports no bpy — the *.prefab format, the canonical TOML writer,
                   the axis rebase, sidecar reading, the game's component schema
-  materialize/    document <-> Blender objects: load, save, mesh instancing, editable meshes,
-                  ID-property store, the working .blend, save-on-save
+  materialize/    document <-> Blender objects: load, save, mesh instancing, ID-property store,
+                  the working .blend, save-on-save, asset collection GUIDs
   play/           the CLI: resolution, Build / Verify / Clean / Play, the running session
   ops.py          open_prefab / save_prefab / reload_prefab, add_prefab_instance,
-                  extract_prefab, make_mesh_editable, edit/finish_shared_mesh, toggle_watch,
-                  refresh_catalogue
+                  extract_prefab, toggle_watch, refresh_catalogue
   ui.py           the Paradise sidebar tab
   project_settings.py  game-declared project TOML documents, edited without an active prefab
   edits.py      ★ the component-edit overlay — no bpy, unit-tested against a plain dict
@@ -35,6 +34,7 @@ Sibling panels in the **Paradise** tab, one per scope:
 |---|---|---|
 | Prefab Document | always | the open document; a landing state when there is none |
 | Project | a project is locatable | the watcher, Build / Verify / Clean, the catalogue |
+| ↳ Watcher Log | a project is locatable | every error and warning of the watcher's latest rebuild; Open Log (whole log in the Text Editor), Copy Errors |
 | Project Settings | a project is locatable | game configuration, catalogs, renderer and tool settings |
 | Play | a document is open | running the game on it |
 | Document Tree | a document is open | document hierarchy and pending overrides |
@@ -71,28 +71,27 @@ edit its source prefab to clear it, or use **Revert to Prefab** to restore the i
 The Components panel gains an **Animation clips** section when the selected object's mesh
 resolves to a model that carries animations (`document/glb_clips.py` reads the JSON chunk of the
 GLB -- the model itself for a `.glb` or `.gltf`, or the current converted GLB of any other source,
-a `.bvh` included).
+a `.bvh` included, or of the one asset of a `.blend` the mesh document names).
 Each clip row is a
 root-motion toggle and a root-bone picker; both write the model's `.meta` sidecar immediately —
-the `[glb].clips` domain, keyed by glTF animation index — because the setting belongs to the
+the `[glb].clips` domain, keyed by glTF animation index (and by the asset's GUID, for an asset
+of a `.blend`, whose one sidecar holds every asset's clips) — because the setting belongs to the
 model, not to the open document, and the `.blend` is disposable. A static mesh draws nothing at
 all, and neither does a converted model whose GLB is older than its source or a file it read:
-the draw never starts a conversion, and the next load (or the watcher) brings it current.
+the draw never starts a conversion, and loading a level does not either (placements show the
+source itself); the watcher or `paradise assets extract` brings it current.
 
 Entries also hang off the object context menus (`context_menu.py`) — the Outliner's and the
 viewport's, one `_draw` for both — gated on the active object being a DOCUMENT object, since a
 menu that grows greyed rows on every cube is worse than one that says nothing. "Open Prefab
 in New Blender" starts a second Blender rather than replacing the session: a level and the prop
 it instances are two documents, and making people close one to edit the other is what stops them
-editing it. "Make Mesh Editable" and "Edit Shared Mesh" are drawn only on an object that shows a
-model; on one of a prefab's children Make Mesh Editable stays greyed, and its tooltip says to
-unpack the instance first. Edit Shared Mesh works there, since it writes no document. On a
-converted model its row is "Edit Source in New Blender" instead: splicing a converted GLB would
-be overwritten by the next conversion, so a `.blend` opens in a second Blender
-(`bpy.app.binary_path <source>`); any other format's row (FBX, OBJ, USD, ...) is greyed with a
-tooltip, naming that format, that says to edit it where it was exported from. A model whose GLB
-holds no mesh -- a `.bvh` -- greys all three, Make Mesh Editable included, with a tooltip saying
-there is no geometry and pointing at the Animation clips section.
+editing it. "Edit Source in New Blender" is drawn only on an object that shows a model, the only
+way a model's geometry is edited: a `.blend` opens in a second Blender (`bpy.app.binary_path
+<source>`, the whole file for an asset of it); any other format's row (GLB, FBX, OBJ, USD, ...)
+is greyed with a tooltip, naming that format, that says to edit it where it was exported from. A
+model whose GLB holds no mesh -- a `.bvh` -- greys it with a tooltip saying there is no geometry
+and pointing at the Animation clips section.
 
 Two rules for anything drawn here:
 

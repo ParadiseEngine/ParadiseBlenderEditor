@@ -104,11 +104,19 @@ document subtree and leaves an instance. In either workflow, save the level cont
 instance and build assets before playing. Keep `.meta` files with their assets; a linked `.blend`
 library and name-derived GUIDs are not part of this workflow.
 
+The one identity this addon does mint lives inside a model `.blend`, not in a sidecar: each asset
+collection of a `.blend` holding several models carries its GUID in its `paradise_guid` custom
+property (canonical, lowercase hyphenated), given by the save handler whenever such a `.blend` is
+saved with the addon enabled, a duplicated collection's copy getting a fresh one
+(`document/asset_guids.py`). Model documents and sidecar records name the asset by that GUID,
+with the collection's name only as a hint, so renaming the collection is free as well.
+
 ## 4. Names — Blender's namespace is not the document's
 
 Blender guarantees object names are unique within a file and silently uniquifies to get there
-(`Wall` → `Wall.001`), truncating at 63 bytes, in one namespace shared with every node of every
-imported GLB. A document allows two objects one name and has no length limit.
+(`Wall` → `Wall.001`), truncating at 63 bytes, in one namespace shared with every object of every
+imported model (a linked `.blend`'s objects keep a namespace of their own). A document allows two
+objects one name and has no length limit.
 
 So `obj.name` alone cannot say whether the AUTHOR renamed anything. `store.tag_name` records both
 the document's `meta.Name` and the name Blender showed at load; `store.document_name` returns the

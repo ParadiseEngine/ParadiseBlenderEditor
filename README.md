@@ -19,7 +19,7 @@ assets/levels/*.prefab  ──Blender──▶  assets/levels/*.prefab
 | | |
 |---|---|
 | **Blender 5.2+** | the manifest's floor; Blender refuses to enable the extension below it |
-| **the `paradise` CLI** | Fetched automatically at the version the project pins (`ParadiseVersion` in its `Directory.Packages.props`), cached per version under `~/.paradise/cli/`. Set *Paradise CLI* in preferences to override — a ParadiseEngine checkout, say. Falls back to the installed dotnet tool when a project pins nothing, or the pinned version cannot be fetched |
+| **the `paradise` CLI** | Fetched automatically at the version the project pins (`ParadiseVersion` in its `Directory.Packages.props`), cached per version under `~/.paradise/cli/`. In a workspace whose `Directory.Build.targets` builds the game against a `ParadiseEngine` source checkout beside it, that checkout's CLI (`src/Tools/Paradise.Cli`) is used instead, built on first use: the documents there follow the engine source, which the pinned package may not read. Set *Paradise CLI* in preferences to override either. Falls back to the installed dotnet tool when a project pins nothing, or the pinned version cannot be fetched |
 | KTX-Software (`ktx`) | *optional* — but the engine's glTF reader rejects PNG/JPEG, so textured meshes need it. The CLI does the transcode; the addon only passes the path along |
 | Blender, for the CLI | only for models that are not `.glb` or `.gltf`: the CLI converts them to GLB with a headless Blender. Set `PARADISE_BLENDER_PATH` when it cannot find one |
 
@@ -124,29 +124,35 @@ Right-clicking a **document object** — in the Outliner or in the viewport — 
 - **Create Prefab from Object…** — the same extraction the sidebar offers, on the object you
   clicked.
 - **Group Selected** — put the selection under a new Empty, which is what a group is.
-- **Make Mesh Editable** — on anything that shows a model: copy its geometry into a GLB this
-  object owns, beside the document, so it can be reshaped in Edit Mode; every save writes it
-  back. The shared model and its other placements stay as they are, and an instance is unpacked
-  first. See [the quickstart](docs/quickstart.md#4-place-something) for what it trades away.
-- **Edit Shared Mesh** — on anything that shows a `.glb` or `.gltf` model: edit the model itself
-  in place; every save writes the geometry back into the shared file (a `.gltf` stays a `.gltf`,
-  its geometry in its `.bin`), keeping its materials, textures and nodes, so every placement
-  changes. **Finish Editing Shared Mesh** returns it to an ordinary
-  placement.
-- **Edit Source in New Blender** — instead of Edit Shared Mesh, on a model made from a `.blend`:
-  opens that `.blend` in a *second* Blender, where quads and modifiers stay. Saving it there
-  re-extracts the model, and placements show the change on their next reload. A model made from
-  any other format (an `.fbx`, an `.obj`, ...) is edited in the application that exported it.
+- **Edit Source in New Blender** — on anything that shows a model made from a `.blend` (or from
+  one of its asset collections): opens that `.blend` in a *second* Blender, where quads and
+  modifiers stay. Saving it there re-extracts the model, and placements -- which link the
+  `.blend` -- show the change on their next reload. A model is never edited inside a level: one
+  in any other format (a `.glb`, an `.fbx`, an `.obj`, ...) is edited in the application that
+  exported it, and the entry stays greyed with a tooltip saying so.
 
 Models are files under `assets/` in any format Blender imports. `.glb` and `.gltf` are read as
 they are -- a `.gltf` is the same asset as a GLB whose buffers (a `.bin`, or `data:` URIs) and
 images live beside it, and may only name files under `assets/`. `.blend`, `.fbx`, `.obj`, `.ply`,
 `.stl`, `.usd`/`.usda`/`.usdc`/`.usdz`, `.abc` or `.bvh` are converted to a GLB under
-`.editor/converted/` by a headless Blender, and the pipeline extracts from that. The viewport
-shows the same GLB, running `paradise assets convert` when it is missing or older than its source
-or any file the import read (an `.obj`'s `.mtl`, a texture). A `.bvh` holds a skeleton and animation
-only: it gives `.skeleton` and `.anim` documents and its clips are set up in the Components panel,
-but it has no mesh to make editable.
+`.editor/converted/` by a headless Blender, and the pipeline extracts from that. A placement in a
+level shows the original source instead, loaded natively, so its quads, live modifiers, materials
+and object hierarchy are what you see: a `.blend` is linked (read-only here; edit it at source),
+any other format is imported with the converter's own importer and options. Loading a level
+never converts anything; the converted GLB is only what the engine cooks and what reads the
+engine's structure -- the Animation clips section. A placement shows the source's own materials,
+not its `Materials.Slots` bindings (a `.glb` or `.gltf` placement still tints its untextured
+materials with `Slots[0]`'s colour).
+Saving the source, or a file it read (an `.obj`'s `.mtl`, a texture), refreshes placements on the
+next reload. A `.bvh` holds a skeleton and animation only: a placement shows its armature, posed
+by the clip; it gives `.skeleton` and `.anim` documents and its clips are set up in the Components
+panel, but it has no mesh to edit. A `.blend` whose collections are marked as assets is one model
+per asset collection, each at its collection's instance offset, with its own converted GLB and
+prefab seed. Each asset collection is identified by a GUID it carries in the `.blend` (its
+`paradise_guid` custom property), which this addon gives it whenever the `.blend` is saved with
+the addon enabled -- a duplicated collection gets a fresh one -- so renaming the collection keeps
+its documents, clip settings and placements. The converter refuses an asset collection without
+one: open and save the file once with the addon enabled.
 
 On something that belongs to a **prefab instance**, three more appear. Editing a field on an
 instance, or moving one of its children, records an *override*; these are how one ends:
@@ -194,8 +200,7 @@ after touching anything under `document/` or `materialize/`.
 Integration tests that need a real project take one via `PARADISE_ASSETS_PROJECT` (default
 `../shiningpie`) and skip cleanly when it names nothing.
 
-The tests that copy that project and build it (`test_editable_mesh`, `test_shared_mesh`,
-`test_model_sources`, `test_geometry_prefab`) keep the build outputs of their last passing run
+The tests that copy that project and build it (`test_model_sources`, `test_geometry_prefab`) keep the build outputs of their last passing run
 under `~/.cache/paradise-assets-tests` (`PARADISE_TEST_WARM_DIR`; `off` disables it) and start
 from them, so only the first run rebuilds the whole project. Delete that directory after
 changing the CLI's pipeline version if a run should prove a build from nothing.

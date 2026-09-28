@@ -106,7 +106,7 @@ def start(
             "the addon preferences at it."
         )
 
-    problem = host.ensure_cli_built()
+    problem = host.ensure_cli_built(project_root)
     if problem:
         return None, problem
 

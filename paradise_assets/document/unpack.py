@@ -67,7 +67,7 @@ def unpack(document: PrefabDocument, instance_guid: str, prefabs) -> UnpackResul
     # In the instance's own slot, in resolver order: an author's outliner ordering survives, and
     # so does the entity walk order a bake assigns handles in.
     # Deep-copied: `resolve._merge` appends the PREFAB's own component objects by reference where
-    # an instance overrides nothing, and the spliced objects are about to be written to and
+    # an instance overrides nothing, and the inserted objects are about to be written to and
     # edited. Without this, a save would mutate the prefab document sitting in the resolver's
     # cache -- a different asset, in memory only, and nothing would say so.
     consumed = {id(entry) for entry in carriers.values()}

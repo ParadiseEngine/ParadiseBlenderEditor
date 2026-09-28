@@ -1,4 +1,4 @@
-"""``paradise assets watch``, supervised by Blender while a document is open.
+"""Supervises one ``paradise assets watch`` per project and reads back what it reported.
 
 ONE watcher per project root, as a correctness rule: the engine's ``AssetWatcher.Drain`` drives
 the sidecar maintainer outside its lock with an unsynchronized quarantine, and two drainers lose
@@ -13,13 +13,17 @@ from __future__ import annotations
 import atexit
 import hashlib
 import os
+import re
 import subprocess
 import tempfile
+from dataclasses import dataclass
 
 __all__ = [
+    "Rebuild",
     "adopt_loaded_file",
     "is_running",
     "last_error",
+    "last_rebuild",
     "log_path",
     "start",
     "stop",
@@ -87,7 +91,7 @@ def start(project_root: str) -> str | None:
             "the addon preferences at it."
         )
 
-    problem = host.ensure_cli_built()
+    problem = host.ensure_cli_built(project_root)
     if problem:
         return problem
 
@@ -233,6 +237,81 @@ def _last_line(project_root: str) -> str | None:
         return None
     lines = [line.strip() for line in tail if line.strip()]
     return lines[-1][:200] if lines else None
+
+
+@dataclass(frozen=True)
+class Rebuild:
+    """What the watcher's latest rebuild said: whether it failed, its tally line, and every
+    diagnostic it printed, as (``"error"`` | ``"warning"``, message) in log order."""
+
+    failed: bool
+    summary: str
+    diagnostics: tuple[tuple[str, str], ...]
+
+
+#: log path -> ((mtime_ns, size), answer), as for :data:`_LAST_ERRORS`.
+_REBUILDS: dict[str, tuple[tuple[int, int], Rebuild | None]] = {}
+
+#: A failed rebuild of a whole project can print hundreds of diagnostics; the panel lists them all.
+_REBUILD_TAIL_BYTES = 1024 * 1024
+
+_RESULT = re.compile(r"^watch: (build FAILED|rebuilt) ")
+_DIAGNOSTIC = re.compile(r"^(error|warning): ?(.*)$")
+
+
+def last_rebuild(project_root: str) -> Rebuild | None:
+    """The watcher's latest finished rebuild, or ``None`` before the first one."""
+    path = log_path(project_root)
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    stamp = (stat.st_mtime_ns, stat.st_size)
+    cached = _REBUILDS.get(path)
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
+    answer = _scan_rebuild(path, _assets_prefix(project_root))
+    _REBUILDS[path] = (stamp, answer)
+    return answer
+
+
+def _scan_rebuild(path: str, assets: str) -> Rebuild | None:
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, handle.tell() - _REBUILD_TAIL_BYTES))
+            lines = handle.read().decode("utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    ends = [index for index, line in enumerate(lines) if _RESULT.match(line.strip())]
+    if not ends:
+        return None
+    # A rebuild's diagnostics are printed before its tally, after the previous rebuild's.
+    last = ends[-1]
+    first = ends[-2] + 1 if len(ends) > 1 else 0
+    diagnostics = []
+    for line in lines[first:last]:
+        found = _DIAGNOSTIC.match(line.strip())
+        if found:
+            diagnostics.append((found.group(1), _tidy(found.group(2), assets)))
+    summary = lines[last].strip().removeprefix("watch: ")
+    return Rebuild(summary.startswith("build FAILED"), summary, tuple(diagnostics))
+
+
+def _assets_prefix(project_root: str) -> str:
+    return os.path.join(os.path.realpath(project_root), "assets") + os.sep
+
+
+def _tidy(message: str, assets: str) -> str:
+    """A diagnostic as an author reads it: the CLI repeats its ``error:`` prefix and the file it
+    names (``error: a.mesh: a.mesh: what``), and names files by their absolute path."""
+    while message.startswith(("error: ", "warning: ")):
+        message = message.split(": ", 1)[1]
+    message = message.replace(assets, "")
+    head, _, rest = message.partition(": ")
+    while rest.startswith(head + ": "):
+        rest = rest[len(head) + 2:]
+    return f"{head}: {rest}" if rest else message
 
 
 def exit_reason(project_root: str) -> str | None:

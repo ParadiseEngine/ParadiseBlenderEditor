@@ -225,6 +225,56 @@ def _draw_watch(layout, root: str) -> None:
             box.label(text=line)
 
 
+class PARADISE_ASSETS_PT_watch_log(_AssetsPanel, Panel):
+    """What the watcher's latest rebuild printed: every error and warning, not just the last."""
+
+    bl_label = "Watcher Log"
+    bl_idname = "PARADISE_ASSETS_PT_watch_log"
+    bl_parent_id = "PARADISE_ASSETS_PT_project"
+
+    #: Lines drawn before "… and N more"; the whole list is a click away in the Text Editor.
+    SHOWN = 30
+
+    @classmethod
+    def poll(cls, context):
+        return store.project_of(context.scene) is not None
+
+    def draw_header(self, context):
+        located = store.project_of(context.scene)
+        rebuild = watch.last_rebuild(located.root) if located is not None else None
+        if rebuild is not None:
+            self.layout.label(icon="ERROR" if rebuild.failed else "CHECKMARK")
+
+    def draw(self, context):
+        layout = self.layout
+        located = store.project_of(context.scene)
+        if located is None:
+            return
+        # Cached on the log's stamp: a redraw costs a stat.
+        rebuild = watch.last_rebuild(located.root)
+        if rebuild is None:
+            layout.label(text="No rebuild yet.")
+        else:
+            summary = layout.row()
+            summary.alert = rebuild.failed
+            summary.label(text=rebuild.summary)
+            column = layout.column(align=True)
+            for severity, message in rebuild.diagnostics[: self.SHOWN]:
+                lines = _wrap(message, 60)
+                row = column.row()
+                row.alert = severity == "error"
+                row.label(text=lines[0], icon="ERROR" if severity == "error" else "INFO")
+                for line in lines[1:3]:
+                    column.label(text=line, icon="BLANK1")
+            if len(rebuild.diagnostics) > self.SHOWN:
+                column.label(text=f"… and {len(rebuild.diagnostics) - self.SHOWN} more")
+        row = layout.row(align=True)
+        row.operator("paradise_assets.open_watch_log", icon="TEXT")
+        copy = row.row(align=True)
+        copy.enabled = rebuild is not None and bool(rebuild.diagnostics)
+        copy.operator("paradise_assets.copy_watch_errors", icon="COPYDOWN")
+
+
 class PARADISE_ASSETS_PT_play(_AssetsPanel, Panel):
     """Build the project and run the game on whatever document is open."""
 
@@ -365,14 +415,12 @@ def _tree_rows(scene) -> list:
 
 
 def _tree_icon(obj) -> str:
-    """What this object IS, in one glyph: an instance, one of a prefab's children, a group, a
-    mesh of its own, or an ordinary object."""
+    """What this object IS, in one glyph: an instance, one of a prefab's children, a model
+    placement, or an ordinary object."""
     if store.prefab_of(obj) is not None:
         return "PACKAGE"
     if store.is_derived(obj):
         return "DECORATE_LINKED"
-    if store.editable_of(obj) is not None:
-        return "EDITMODE_HLT"
     if obj.instance_collection is not None:
         return "OUTLINER_OB_MESH"
     return "OUTLINER_OB_EMPTY"
@@ -511,12 +559,12 @@ def _draw_clip_settings(layout, context, obj) -> None:
     model = clip_ops.model_for_object(obj, located)
     if model is None:
         return
-    view = glb_clips.view(model)
+    view = glb_clips.view(model.path, model.asset)
     if view is None:
         return
 
     box = layout.box()
-    box.label(text=f"Animation clips — {os.path.basename(model)}", icon="ACTION")
+    box.label(text=f"Animation clips — {model.label}", icon="ACTION")
     if not view.identified:
         warning = box.row()
         warning.alert = True
@@ -534,7 +582,9 @@ def _draw_clip_settings(layout, context, obj) -> None:
             text="",
             icon="CHECKBOX_HLT" if clip.setting.root_motion else "CHECKBOX_DEHLT",
         )
-        toggle.model = model
+        toggle.model = model.path
+        toggle.asset = model.asset or ""
+        toggle.asset_name = model.name or ""
         toggle.index = clip.index
         toggle.enabled = not clip.setting.root_motion
         row.label(text=clip.name or f"clip {clip.index}")
@@ -544,12 +594,16 @@ def _draw_clip_settings(layout, context, obj) -> None:
                 text=clip.setting.root_bone or f"auto ({view.root_joint or '?'})",
                 icon="BONE_DATA",
             )
-            pick.model = model
+            pick.model = model.path
+            pick.asset = model.asset or ""
+            pick.asset_name = model.name or ""
             pick.index = clip.index
             if clip.setting.root_bone:
                 clear = row.operator(
                     "paradise_assets.clip_root_bone", text="", icon="X")
-                clear.model = model
+                clear.model = model.path
+                clear.asset = model.asset or ""
+                clear.asset_name = model.name or ""
                 clear.index = clip.index
                 clear.auto = True
 
@@ -765,6 +819,7 @@ def _payload_lines(data, prefix: str = "", depth: int = 0) -> list[str]:
 classes = (
     PARADISE_ASSETS_PT_document,
     PARADISE_ASSETS_PT_project,
+    PARADISE_ASSETS_PT_watch_log,
     PARADISE_ASSETS_PT_play,
     PARADISE_ASSETS_PT_tree,
     PARADISE_ASSETS_PT_object,

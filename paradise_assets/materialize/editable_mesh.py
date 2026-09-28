@@ -107,7 +107,8 @@ def build_mesh(path: str, name: str) -> bpy.types.Mesh:
         raise contract.EditableMeshError(f"{os.path.basename(path)} cannot be edited here: {problem}.")
     try:
         return _build_mesh(document, binary, path, name)
-    except (TypeError, ValueError, KeyError, IndexError, AttributeError) as error:
+    # RuntimeError: a bmesh operator refusing pathological geometry during the weld.
+    except (TypeError, ValueError, KeyError, IndexError, AttributeError, RuntimeError) as error:
         raise contract.EditableMeshError(
             f"{os.path.basename(path)} cannot be edited here: its geometry is malformed ({error})."
         ) from error

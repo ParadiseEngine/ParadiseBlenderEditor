@@ -11,7 +11,7 @@ import uuid
 import bpy
 from mathutils import Vector
 
-from ..document import assets, editable_mesh, mesh_document, project, resolve, schema
+from ..document import assets, mesh_document, project, resolve, schema
 from ..document.prefab import PrefabDocumentError
 from ..document.prefab import loads as parse_document
 from . import store
@@ -197,14 +197,14 @@ def _show_prefab_mesh(obj, document, layout, prefab_path) -> None:
         return
 
     root = resolved.document.single_root() or document.root()
-    found = editable_mesh.mesh_field(root.components, mesh_fields)
+    found = schema.mesh_field(root.components, mesh_fields)
     if found is None:
         return
     component, field = found
     value = component.data[field]
     model = mesh_document.displayable(layout, value.get("path") if isinstance(value, dict) else value)
     library = MeshLibrary(bpy.context.scene)
-    collection = library.collection_for(model.path, model.asset) if model is not None else None
+    collection = library.collection_for(model) if model is not None else None
     if collection is not None:
         obj.instance_type = "COLLECTION"
         obj.instance_collection = collection

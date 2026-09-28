@@ -12,10 +12,12 @@ inline table::
     clips = [ { index = 2, name = "Walk_Loop", root_motion = true, root_bone = "root" } ]
 
 A ``.blend`` holding several models, one per asset collection, has one sidecar for all of them:
-an entry for an asset's clip names that asset, and is keyed by the asset AND the clip's index
-in the asset's own GLB. An entry without ``asset`` belongs to a whole-file model::
+an entry for an asset's clip names that asset by its GUID (the asset collection's
+``paradise_guid``, so renaming the collection keeps its settings), and is keyed by the asset AND
+the clip's index in the asset's own GLB. An entry without ``asset`` belongs to a whole-file
+model::
 
-    clips = [ { asset = "Lamp_A", index = 0, name = "Sway", root_motion = true } ]
+    clips = [ { asset = "0b5e8a52-…", index = 0, name = "Sway", root_motion = true } ]
 
 ``root_motion`` opts the clip in -- absent or ``false`` keeps the runtime's default, so an
 unflagged clip and a never-touched GLB are the same thing. ``root_bone`` names the joint whose
@@ -376,7 +378,7 @@ def _write_domain(
 
     Everything the edit did not touch passes through: structural keys, other domains, the
     other ``[glb]`` members, and the other models' entries (``others``, as stored). The
-    whole-file model's entries come first, then each asset's in ordinal order; within one model
+    whole-file model's entries come first, then each asset's by GUID in ordinal order; within one model
     they are sorted by index so the file's order is the GLB's own -- a diff between two writes
     then means a setting changed, not a reorder.
     """
@@ -439,19 +441,22 @@ def _stored_entries(root: dict | None):
 
 
 def _of_asset(entries, asset: str | None) -> tuple[list, list]:
-    """``entries`` split into those of ``asset`` (``None``: without an ``asset`` key) and the
-    other models', which a write passes through as they are. Anything that is not an entry is
-    in neither, as a write has always dropped it."""
+    """``entries`` split into those of ``asset`` (a canonical GUID; ``None``: without an
+    ``asset`` key) and the other models', which a write passes through as they are. Anything
+    that is not an entry is in neither, as a write has always dropped it."""
     own: list = []
     others: list = []
     for entry in entries:
         if isinstance(entry, dict):
-            (own if entry.get(ASSET_KEY) == asset else others).append(entry)
+            stored = entry.get(ASSET_KEY)
+            if document_guid.is_text(stored):
+                stored = document_guid.canonical(stored)
+            (own if stored == asset else others).append(entry)
     return own, others
 
 
 def _entry_order(entry: dict) -> tuple:
-    """Whole-file entries first, then by asset name (ordinal), then by clip index."""
+    """Whole-file entries first, then by asset GUID (ordinal), then by clip index."""
     asset = entry.get(ASSET_KEY)
     index = entry.get(INDEX_KEY)
     return (0 if asset is None else 1, asset if isinstance(asset, str) else "",

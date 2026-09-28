@@ -1,29 +1,23 @@
-"""Just enough of a glTF model -- a ``.glb``, or a ``.gltf`` with its buffers beside it: its JSON,
-and on request its binary data.
+"""Just enough of a glTF model -- a ``.glb``, or a ``.gltf`` with its buffers beside it: its JSON.
 
 A generated prefab has to name a component, and a skinned mesh is a different component from a
 static one in every game that has both (ShiningPie: ``SkinnedMesh`` and ``StaticMesh``). The
 distinction is in the model, not in the schema, so it is read from the file: a glTF asset with a
 non-empty ``skins`` array has a rig.
 
-Questions like that read only the JSON -- the binary data holding the geometry is never touched,
-so they cost a few kilobytes on a multi-megabyte model. :func:`read_glb` is the one exception,
-for an editable mesh, which rebuilds geometry primitive by primitive and cannot use Blender's
-importer to do it (see ``materialize/editable_mesh.py``).
+Every question here reads only the JSON -- the binary data holding the geometry is never
+touched, so it costs a few kilobytes on a multi-megabyte model.
 
 A ``.gltf`` is the same asset as the GLB whose binary chunk is its buffers, and every reader here
 hands it out as that GLB, the way the engine's pipeline reads it: buffers concatenated (each
 4-byte aligned) into one buffer without a ``uri``, buffer views re-pointed into it. A buffer is a
 ``data:`` URI or a file named relative to the ``.gltf``, percent-decoded; a file that is absolute,
 remote or outside ``assets/`` is refused (:class:`GltfError`), as the engine refuses it.
-:func:`container_files` is the way back: what a rewritten model is as files on disk -- the GLB
-itself, or the ``.gltf`` JSON and its one buffer file. Imports no ``bpy``.
+Imports no ``bpy``.
 """
 
 from __future__ import annotations
 
-import base64
-import binascii
 import json
 import os
 import re
@@ -35,18 +29,14 @@ from . import project
 __all__ = [
     "GltfError",
     "buffer_files",
-    "container_files",
     "has_skin",
     "is_gltf",
-    "read_glb",
     "read_json",
     "reference_refusal",
-    "rewrite_refusal",
 ]
 
 _MAGIC = b"glTF"
 _JSON_CHUNK = b"JSON"
-_BIN_CHUNK = b"BIN\x00"
 _HEADER = struct.Struct("<4sII")
 _CHUNK = struct.Struct("<I4s")
 
@@ -59,8 +49,7 @@ _CACHE: dict[str, tuple[int, int, bool]] = {}
 
 
 class GltfError(ValueError):
-    """A ``.gltf`` names data that may not or cannot be read or written. The message is for the
-    author."""
+    """A ``.gltf`` names data that may not be read. The message is for the author."""
 
 
 def is_gltf(path: str) -> bool:
@@ -117,22 +106,6 @@ def read_json(path: str) -> dict:
         return {}
 
 
-def read_glb(path: str) -> tuple[dict, bytes]:
-    """The model's JSON and binary chunk as its GLB holds them, or ``({}, b"")`` when the file
-    is not a readable model. For the one caller that rebuilds geometry itself (an editable mesh):
-    everything else asks the JSON a question and must not pay for the geometry.
-
-    Raises :class:`GltfError` when a ``.gltf``'s buffers cannot be read: a buffer the contract
-    forbids, a file that is missing or shorter than its declared length."""
-    if is_gltf(path):
-        return _read_gltf(path)
-    try:
-        with open(path, "rb") as handle:
-            return _parse_glb(handle.read())
-    except OSError:
-        return {}, b""
-
-
 def buffer_files(path: str) -> list[str]:
     """The files holding the model's binary data besides ``path`` itself: a ``.gltf``'s buffer
     files that it may name, in buffer order; none for a GLB or a ``data:`` buffer."""
@@ -164,80 +137,6 @@ def reference_refusal(path: str) -> str | None:
                 except GltfError as error:
                     return str(error)
     return None
-
-
-def rewrite_refusal(path: str) -> str | None:
-    """Why the model at ``path`` cannot be rewritten as it is (:func:`container_files`), or
-    ``None``. A GLB always can; a ``.gltf`` whose data is split across buffers cannot, since a
-    rewrite puts it back into one."""
-    if not is_gltf(path):
-        return None
-    buffers = _text_json(path).get("buffers") or []
-    if len(buffers) > 1:
-        return (f"it keeps its data in {len(buffers)} buffers, and a rewrite puts it back into one; "
-                "export it again with a single buffer")
-    return None
-
-
-def container_files(path: str, glb: bytes) -> list[tuple[str, bytes]]:
-    """The model ``glb`` (a GLB's bytes) as the files to write for the model at ``path``, the
-    model itself last: ``[(path, glb)]`` for a GLB. A ``.gltf`` stays one: its JSON, with the
-    binary chunk in the buffer the file on disk names -- the same ``data:`` URI kind or the same
-    file (``<stem>.bin`` when it names none) -- and that file listed only when its bytes change.
-
-    Raises :class:`GltfError` for a ``.gltf`` :func:`rewrite_refusal` refuses."""
-    if not is_gltf(path):
-        return [(path, glb)]
-    refusal = rewrite_refusal(path)
-    if refusal is not None:
-        raise GltfError(refusal)
-    document, binary = _parse_glb(glb)
-    if not document:
-        raise GltfError("the rewritten model is not a readable GLB")
-    existing = _text_json(path).get("buffers") or [{}]
-    uri = existing[0].get("uri") if isinstance(existing[0], dict) else None
-    buffers = document.get("buffers") or [{}]
-    data = binary[:buffers[0].get("byteLength", len(binary))]
-    files: list[tuple[str, bytes]] = []
-    if isinstance(uri, str) and _is_data(uri):
-        uri = "data:application/octet-stream;base64," + base64.b64encode(data).decode("ascii")
-    else:
-        if not isinstance(uri, str):
-            uri = urllib.parse.quote(os.path.splitext(os.path.basename(path))[0] + ".bin")
-        target = _resolve(path, uri)
-        if _bytes_of(target) != data:
-            files.append((target, data))
-    document["buffers"] = [{**buffers[0], "uri": uri, "byteLength": len(data)}]
-    files.append((path, (json.dumps(document, indent=2, ensure_ascii=False) + "\n").encode("utf-8")))
-    return files
-
-
-# -- the GLB container -------------------------------------------------------------------------------
-
-def _parse_glb(data: bytes) -> tuple[dict, bytes]:
-    if len(data) < _HEADER.size:
-        return {}, b""
-    magic, _version, length = _HEADER.unpack_from(data)
-    if magic != _MAGIC or length > len(data):
-        return {}, b""
-
-    document: dict = {}
-    binary = b""
-    at = _HEADER.size
-    while at + _CHUNK.size <= length:
-        size, kind = _CHUNK.unpack_from(data, at)
-        start = at + _CHUNK.size
-        if start + size > length:
-            return {}, b""
-        if kind == _JSON_CHUNK and not document:
-            try:
-                document = json.loads(data[start:start + size].decode("utf-8"))
-            except (ValueError, UnicodeDecodeError):
-                return {}, b""
-        elif kind == _BIN_CHUNK and not binary:
-            binary = data[start:start + size]
-        at = start + size
-    return (document, binary) if isinstance(document, dict) else ({}, b"")
 
 
 # -- a .gltf as the GLB it stands for -----------------------------------------------------------------
@@ -289,52 +188,6 @@ def _merged(document: dict, offsets: list[int]) -> dict:
     return merged
 
 
-def _read_gltf(path: str) -> tuple[dict, bytes]:
-    document = _text_json(path)
-    if not document:
-        return {}, b""
-    buffers = document.get("buffers")
-    if not buffers:
-        return document, b""
-    offsets = _offsets(document)
-    name = os.path.basename(path)
-    if offsets is None:
-        raise GltfError(f"{name}'s buffers do not each declare a byteLength")
-    binary = bytearray()
-    for index, buffer in enumerate(buffers):
-        length = buffer["byteLength"]
-        data = _buffer_bytes(path, index, buffer)
-        if len(data) < length:
-            raise GltfError(f"{name}'s buffer {index} holds {len(data)} bytes of the {length} it declares")
-        binary += b"\x00" * (offsets[index] - len(binary))
-        binary += data[:length]
-    return _merged(document, offsets), bytes(binary)
-
-
-def _buffer_bytes(path: str, index: int, buffer: dict) -> bytes:
-    name = os.path.basename(path)
-    uri = buffer.get("uri")
-    if not isinstance(uri, str):
-        raise GltfError(f"{name}'s buffer {index} names no uri; only a GLB has a buffer without one")
-    if _is_data(uri):
-        header, comma, payload = uri[len(_DATA):].partition(",")
-        if not comma:
-            raise GltfError(f"{name}'s buffer {index} is a malformed data URI")
-        if not header.endswith(";base64"):
-            return urllib.parse.unquote_to_bytes(payload)
-        try:
-            return base64.b64decode(payload, validate=True)
-        except (binascii.Error, ValueError) as error:
-            raise GltfError(f"{name}'s buffer {index} is a malformed base64 data URI") from error
-    target = _resolve(path, uri)
-    try:
-        with open(target, "rb") as handle:
-            return handle.read()
-    except OSError as error:
-        raise GltfError(
-            f"{name}'s buffer {index} names {uri}, which could not be read: {error.strerror}") from error
-
-
 def _is_data(uri: str) -> bool:
     return uri[:len(_DATA)].lower() == _DATA
 
@@ -361,10 +214,3 @@ def _resolve(path: str, uri: str) -> str:
                         "under assets/")
     return target
 
-
-def _bytes_of(path: str) -> bytes | None:
-    try:
-        with open(path, "rb") as handle:
-            return handle.read()
-    except OSError:
-        return None

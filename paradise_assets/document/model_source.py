@@ -10,19 +10,24 @@ A placement in a level shows the SOURCE, loaded natively, so a level designer se
 authored -- quads, live modifiers, its own materials and object hierarchy -- rather than the
 triangulated export: a ``.blend`` is linked (``materialize/meshes.py``), any other source goes
 through :func:`importer_for`, the very importer call the converter makes. The converted GLB is only
-what the engine cooks and what reads the engine's structure: Make Mesh Editable (slot ``i`` is its
-primitive ``i``), clip authoring and :func:`is_skeleton_only`.
+what the engine cooks and what reads the engine's structure: clip authoring and
+:func:`is_skeleton_only`. A model's geometry is edited in its source, never here: a ``.blend`` in
+a Blender of its own (Edit Source in New Blender), any other format in the application that
+exported it (:func:`edit_source_refusal`).
 
 The converted GLB records the SHA-256 of the source bytes it was made from
 (``asset.extras.paradiseSourceSha256``) and of every external file Blender loaded while
 importing it -- textures, an ``.obj``'s ``.mtl``, linked libraries (``paradiseDependencies``,
 paths relative to the source's directory). The pipeline refreshes it whenever it reads the
-source; this module only answers whether the file on disk is current. Running the conversion is
-the CLI's (``paradise assets convert``) -- see ``materialize/editable_mesh.glb_of``.
+source (the asset watcher, ``paradise assets convert``); this module only answers whether the
+file on disk is current.
 
-A ``.blend`` whose collections are marked as assets holds one model per asset collection, named
-by the collection (:class:`Model`'s ``asset``). Each is converted to a GLB of its own,
-``<root>/.editor/converted/<assets-relative source>/<asset>.glb``, carrying the same stamp; a
+A ``.blend`` whose collections are marked as assets holds one model per asset collection,
+identified by the GUID the collection carries in its ``paradise_guid`` custom property
+(``document/asset_guids.py``) -- never by its name, so renaming the collection keeps every
+identity. :class:`Model`'s ``asset`` is that GUID and its ``name`` the collection's name, a hint
+for messages. Each asset is converted to a GLB of its own,
+``<root>/.editor/converted/<assets-relative source>/<asset guid>.glb``, carrying the same stamp; a
 ``.blend`` with no asset collection is one model, converted as a whole.
 
 Imports no ``bpy``.
@@ -33,9 +38,10 @@ from __future__ import annotations
 import hashlib
 import os
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from . import gltf, project
+from . import guid as document_guid
 
 __all__ = [
     "CONVERTED",
@@ -43,15 +49,12 @@ __all__ = [
     "GLTF_IMPORTER",
     "IMPORTERS",
     "SUFFIXES",
-    "ConversionError",
     "Importer",
     "Model",
-    "convert_arguments",
     "converted_path",
     "current_glb",
-    "edit_in_place_refusal",
+    "edit_source_refusal",
     "importer_for",
-    "is_asset_name",
     "is_converted",
     "is_current",
     "is_linked",
@@ -59,7 +62,6 @@ __all__ = [
     "is_skeleton_only",
     "native_dependencies",
     "no_mesh_refusal",
-    "printed_path",
 ]
 
 #: The sources read as they are: glTF, binary or JSON with its buffers beside it.
@@ -115,35 +117,26 @@ SOURCE_SHA256_EXTRA = "paradiseSourceSha256"
 #: the source. Always written, possibly empty; a GLB without it predates dependency tracking.
 DEPENDENCIES_EXTRA = "paradiseDependencies"
 
-#: The ``asset.extras`` key naming the asset collection a per-asset GLB was converted from;
-#: absent on a whole-file conversion.
+#: The ``asset.extras`` key holding the GUID of the asset collection a per-asset GLB was
+#: converted from; absent on a whole-file conversion.
 ASSET_EXTRA = "paradiseAsset"
-
-
-class ConversionError(Exception):
-    """A converted source has no current GLB and could not be given one."""
 
 
 @dataclass(frozen=True)
 class Model:
     """One model: the source file (absolute), and the asset in it when the source is a
-    ``.blend`` holding several. ``asset = None`` is the whole file."""
+    ``.blend`` holding several -- its canonical GUID, with ``name``, the asset collection's name
+    as last recorded, for messages only. ``asset = None`` is the whole file."""
 
     path: str
     asset: str | None = None
+    name: str | None = field(default=None, compare=False)
 
     @property
     def label(self) -> str:
         """How a message names the model: ``Crate.blend``, or ``Lamp_A in Lamps.blend``."""
-        name = os.path.basename(self.path)
-        return name if self.asset is None else f"{self.asset} in {name}"
-
-
-def is_asset_name(name: object) -> bool:
-    """Whether ``name`` can name an asset: a file stem, since it names the asset's converted GLB
-    and the documents extracted from it -- never a path that would land elsewhere."""
-    return (isinstance(name, str) and bool(name) and name not in (".", "..")
-            and not any(separator in name for separator in ("/", "\\", "\0")))
+        file = os.path.basename(self.path)
+        return file if self.asset is None else f"{self.name or self.asset} in {file}"
 
 
 def is_model(path: str) -> bool:
@@ -190,9 +183,9 @@ def native_dependencies(path: str) -> list[str]:
 
 
 def converted_path(layout: project.ProjectLayout, source: str, asset: str | None = None) -> str:
-    """Where the pipeline keeps the GLB converted from ``source`` (absolute, under ``assets/``):
+    """Where the pipeline keeps the GLB converted from ``source`` (absolute, under ``.editor/``):
     ``assets/models/car.blend`` -> ``.editor/converted/models/car.blend.glb``, and its asset
-    ``Van`` -> ``.editor/converted/models/car.blend/Van.glb``."""
+    ``<guid>`` -> ``.editor/converted/models/car.blend/<guid>.glb``."""
     relative = os.path.relpath(os.path.abspath(source), layout.assets)
     if asset is None:
         return os.path.join(layout.editor, CONVERTED_DIR, relative + ".glb")
@@ -230,42 +223,25 @@ def current_glb(source: str, asset: str | None = None) -> str | None:
     if not is_converted(source):
         return source if asset is None and os.path.isfile(source) else None
     layout = project.locate(source)
-    if layout is None or (asset is not None and not is_asset_name(asset)):
+    if layout is None or (asset is not None and not document_guid.is_text(asset)):
         return None
     glb = converted_path(layout, source, asset)
     return glb if is_current(source, glb, asset) else None
 
 
-def convert_arguments(layout: project.ProjectLayout, source: str, asset: str | None = None) -> list[str]:
-    """The CLI verb that brings the converted GLB of ``source`` (or of its ``asset``) up to date
-    and prints its path last. One run converts every asset of the file either way."""
-    arguments = ["assets", "convert", os.path.abspath(source), "--project", layout.root]
-    return arguments if asset is None else [*arguments, "--asset", asset]
-
-
-def printed_path(stdout: str) -> str | None:
-    """The GLB path ``paradise assets convert`` printed: its last non-empty stdout line."""
-    lines = [line.strip() for line in stdout.splitlines() if line.strip()]
-    return lines[-1] if lines else None
-
-
-def edit_in_place_refusal(source: str) -> str:
-    """Why the converted model ``source`` is not edited by splicing its GLB, and what to do
-    instead. The GLB is derived: the next conversion would overwrite an edit made there."""
+def edit_source_refusal(source: str) -> str:
+    """Why the model ``source``, which is no ``.blend``, is not edited from a level, and where it
+    is edited instead."""
     name = os.path.basename(source)
-    if source.lower().endswith(".blend"):
-        return (f"{name} is a .blend, and its GLB is converted from it: edit the .blend itself "
-                "(Edit Source in New Blender) -- it keeps the quads and modifiers a GLB cannot -- "
-                "and every placement follows once it is saved.")
     label = _format_label(source)
     return (f"{name} is {_article(label)} {label} file, an interchange format: edit the model in "
             f"the application it came from and export the {label} again; every placement follows.")
 
 
-def no_mesh_refusal(source: str, asset: str | None = None) -> str:
+def no_mesh_refusal(model: Model) -> str:
     """Why a model whose GLB holds no mesh -- a ``.bvh``, or any file of skeleton and clips
     alone -- has no geometry to edit, and where its clips are authored instead."""
-    return (f"{Model(source, asset).label} holds no mesh, only a skeleton and its animation: there "
+    return (f"{model.label} holds no mesh, only a skeleton and its animation: there "
             "is no geometry to edit. Its clips are set up in the Animation Clips section of the "
             "Components panel.")
 
@@ -335,4 +311,5 @@ def _recorded_stamp(glb: str) -> tuple[str, tuple[tuple[str, str], ...], str | N
             return None
         dependencies.append((path, sha256.lower()))
     asset = extras.get(ASSET_EXTRA)
-    return source.lower(), tuple(dependencies), asset if isinstance(asset, str) else None
+    return (source.lower(), tuple(dependencies),
+            document_guid.canonical(asset) if document_guid.is_text(asset) else None)

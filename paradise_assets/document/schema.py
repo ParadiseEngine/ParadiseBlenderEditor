@@ -13,9 +13,10 @@ from dataclasses import dataclass
 
 from .mesh_document import SUFFIXES as DOCUMENT_SUFFIXES
 from .model_source import SUFFIXES as MODEL_SUFFIXES
+from .prefab import PrefabComponent
 from .project import SCHEMA_CANDIDATES
 
-__all__ = ["MeshComponent", "MeshFields", "load", "mesh_components"]
+__all__ = ["MeshComponent", "MeshFields", "load", "mesh_components", "mesh_field"]
 
 
 
@@ -39,6 +40,17 @@ class MeshFields:
         if self._pairs is not None and component_type is not None:
             return (component_type, field) in self._pairs
         return value.lower().endswith(DOCUMENT_SUFFIXES + MODEL_SUFFIXES)
+
+
+def mesh_field(components: list[PrefabComponent], fields: MeshFields) -> tuple[PrefabComponent, str] | None:
+    """The component and field holding the object's mesh reference, if any: the FIRST field the
+    schema calls a mesh, the same one the viewport displays."""
+    for component in components:
+        for field, value in component.data.items():
+            path = value.get("path") if isinstance(value, dict) else value
+            if isinstance(path, str) and fields.is_mesh_field(component.type, field, path):
+                return component, field
+    return None
 
 
 @dataclass(frozen=True)

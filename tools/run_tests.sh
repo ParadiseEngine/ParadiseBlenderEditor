@@ -124,22 +124,11 @@ if command -v "$BLENDER" >/dev/null 2>&1; then
     tests/integration/test_geometry_prefab.py "$DEFAULT_NOISE" \
     "${PARADISE_ASSETS_PROJECT:-../shiningpie}"
 
-  # A placement's own mesh: made editable, edited, written back to its GLB, reloaded, built. It
-  # copies the project too, and runs the real watcher -- the only thing that mints `.mesh` files.
-  integration "an editable mesh from a placed model, round trip and build" \
-    tests/integration/test_editable_mesh.py "$DEFAULT_NOISE" \
-    "${PARADISE_ASSETS_PROJECT:-../shiningpie}"
-
-  # A shared model edited in place: spliced back into its own GLB with materials and nodes kept,
-  # shown on every placement, verified and built.
-  integration "a shared model edited in place, round trip and build" \
-    tests/integration/test_shared_mesh.py "$DEFAULT_NOISE" \
-    "${PARADISE_ASSETS_PROJECT:-../shiningpie}"
-
-  # Converted models (.blend, .fbx, .obj with its .mtl and texture, an animation-only .bvh):
-  # converted by the CLI, shown as that GLB, made editable, reconverted on reload after the
-  # .blend or the .mtl is saved, opened at source in a second Blender, clips authored.
-  integration "converted model sources, display, editing, clips and build" \
+  # Model sources (.blend, .fbx, .obj with its .mtl and texture, a .gltf, an animation-only .bvh,
+  # a .blend of asset collections): converted and extracted by the CLI, shown from the source,
+  # reloaded after the .blend or the .mtl is saved, opened at source in a second Blender, clips
+  # authored; asset collections given GUIDs on save and still placed after a rename.
+  integration "model sources, display, asset GUIDs, Edit Source, clips and build" \
     tests/integration/test_model_sources.py "$DEFAULT_NOISE" \
     "${PARADISE_ASSETS_PROJECT:-../shiningpie}"
 

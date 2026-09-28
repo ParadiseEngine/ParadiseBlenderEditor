@@ -29,6 +29,10 @@ it through that verification and report any concrete blocker.
   Unknown components and untouched values survive a save.
 - The CLI watcher alone mints asset sidecars. Generated model prefabs become ordinary authored
   documents after creation; do not recreate a mirror that overwrites or deletes them.
+- An asset collection of a model `.blend` is identified by its `paradise_guid`, which the save
+  handler mints; key anything about such an asset by that GUID, never by the collection's name.
+- A model's geometry is edited in its source (Edit Source in New Blender for a `.blend`), never
+  inside a level: placements are read-only instances.
 - Keep `document/`, `edits.py`, and module-level `paradise_assets/__init__.py` free of `bpy` imports.
 - A panel draw must not log, walk the asset tree or write ID properties; use the existing caches
   and explicit synchronization paths.

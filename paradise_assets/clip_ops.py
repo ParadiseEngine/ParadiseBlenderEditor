@@ -45,8 +45,10 @@ class PARADISE_ASSETS_OT_clip_root_motion(Operator):
     bl_options = {"INTERNAL"}
 
     model: StringProperty(name="Model")
-    #: The asset of a multi-asset ``.blend``; empty for a whole-file model.
+    #: The GUID of the asset of a multi-asset ``.blend``; empty for a whole-file model.
     asset: StringProperty(name="Asset")
+    #: The asset collection's name, for the report only.
+    asset_name: StringProperty(name="Asset Name", options={"HIDDEN"})
     index: IntProperty(name="Clip", min=0)
     enabled: BoolProperty(name="Root Motion")
 
@@ -96,6 +98,7 @@ class PARADISE_ASSETS_OT_clip_root_bone(Operator):
 
     model: StringProperty(name="Model")
     asset: StringProperty(name="Asset")
+    asset_name: StringProperty(name="Asset Name", options={"HIDDEN"})
     index: IntProperty(name="Clip", min=0)
     bone: EnumProperty(name="Root Bone", items=_bone_items)
     #: The row's clear button runs the same operator with this set -- an EnumProperty cannot
@@ -128,7 +131,7 @@ class PARADISE_ASSETS_OT_clip_root_bone(Operator):
 
 
 def _label(operator) -> str:
-    return model_source.Model(operator.model, operator.asset or None).label
+    return model_source.Model(operator.model, operator.asset or None, operator.asset_name or None).label
 
 
 def _redraw(context) -> None:

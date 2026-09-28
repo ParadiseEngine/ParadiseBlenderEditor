@@ -1,7 +1,7 @@
 """A model that is not a ``.glb`` or ``.gltf`` is cooked from the GLB the pipeline converted it to,
 and shown in a level from its source, loaded the way the converter loads it.
 
-Make Mesh Editable and the clip settings read that GLB, so the one question that matters there is
+The clip settings read that GLB, so the one question that matters there is
 whether the file under ``.editor/converted/`` is the conversion of the source as it is NOW: the
 stamp inside it names the source bytes and those of every file the import read, and a saved
 ``.blend`` -- or an edited ``.mtl`` -- must stop matching.
@@ -20,6 +20,14 @@ from paradise_assets.document import glb_clips, model_source
 from paradise_assets.document.project import ProjectLayout
 
 GUID = "97291278-960a-59b4-993d-39bf82c47b29"
+#: Asset collection GUIDs, the identity of each model of a multi-asset .blend.
+LAMP_A = "1a000000-0000-4000-8000-00000000000a"
+LAMP_B = "1b000000-0000-4000-8000-00000000000b"
+LAMP_C = "1c000000-0000-4000-8000-00000000000c"
+RIG = "2a000000-0000-4000-8000-00000000000a"
+PROP = "2b000000-0000-4000-8000-00000000000b"
+GUARD = "3a000000-0000-4000-8000-00000000000a"
+HERO = "3b000000-0000-4000-8000-00000000000b"
 
 _MTIME = [1_700_000_000]
 
@@ -77,48 +85,47 @@ def test_each_asset_of_a_blend_is_converted_into_a_folder_named_after_the_source
     layout = project(tmp_path)
     source = layout.resolve("models/props/lamps.blend")
 
-    assert model_source.converted_path(layout, source, "Lamp_A") == str(
-        tmp_path / ".editor" / "converted" / "models" / "props" / "lamps.blend" / "Lamp_A.glb")
+    assert model_source.converted_path(layout, source, LAMP_A) == str(
+        tmp_path / ".editor" / "converted" / "models" / "props" / "lamps.blend" / f"{LAMP_A}.glb")
 
 
 def test_an_asset_reads_its_own_conversion_and_nothing_else(tmp_path):
     layout = project(tmp_path)
     source = write(tmp_path / "assets" / "models" / "lamps.blend", b"BLENDER-v1")
-    lamp_a = converted(layout, source, b"BLENDER-v1", asset="Lamp_A")
-    lamp_b = converted(layout, source, b"BLENDER-v1", asset="Lamp_B")
+    lamp_a = converted(layout, source, b"BLENDER-v1", asset=LAMP_A)
+    lamp_b = converted(layout, source, b"BLENDER-v1", asset=LAMP_B)
 
-    assert model_source.current_glb(source, "Lamp_A") == lamp_a
-    assert model_source.current_glb(source, "Lamp_B") == lamp_b
+    assert model_source.current_glb(source, LAMP_A) == lamp_a
+    assert model_source.current_glb(source, LAMP_B) == lamp_b
     assert model_source.current_glb(source) is None, "a file of assets has no whole-file model"
-    assert model_source.current_glb(source, "Lamp_C") is None
+    assert model_source.current_glb(source, LAMP_C) is None
     # A GLB at an asset's path stamped for another asset is not that asset's conversion.
     Path(lamp_b).write_bytes(Path(lamp_a).read_bytes())
-    assert model_source.current_glb(source, "Lamp_B") is None
+    assert model_source.current_glb(source, LAMP_B) is None
 
 
 def test_saving_a_blend_makes_every_asset_conversion_stale(tmp_path):
     layout = project(tmp_path)
     source = write(tmp_path / "assets" / "models" / "lamps.blend", b"BLENDER-v1")
-    for asset in ("Lamp_A", "Lamp_B"):
+    for asset in (LAMP_A, LAMP_B):
         converted(layout, source, b"BLENDER-v1", asset=asset)
 
     write(Path(source), b"BLENDER-v2")
 
-    assert model_source.current_glb(source, "Lamp_A") is None
-    assert model_source.current_glb(source, "Lamp_B") is None
+    assert model_source.current_glb(source, LAMP_A) is None
+    assert model_source.current_glb(source, LAMP_B) is None
 
 
-def test_an_asset_name_that_is_a_path_or_an_asset_of_a_glb_reads_nothing(tmp_path):
+def test_an_asset_that_is_no_guid_or_an_asset_of_a_glb_reads_nothing(tmp_path):
     layout = project(tmp_path)
     source = write(tmp_path / "assets" / "models" / "lamps.blend", b"BLENDER-v1")
     model = write(tmp_path / "assets" / "models" / "crate.glb", glb({"asset": {"version": "2.0"}}))
     # Stamped for that asset, where the unchecked name would have led the reader.
     converted(layout, source, b"BLENDER-v1", asset="../lamps")
 
-    for name in ("../lamps", "a/b", "a\\b", "", ".", ".."):
-        assert not model_source.is_asset_name(name), name
-        assert model_source.current_glb(source, name) is None, name
-    assert model_source.current_glb(model, "Crate") is None
+    for asset in ("../lamps", "Lamp_A", "", "00000000-0000-0000-0000-000000000000"):
+        assert model_source.current_glb(source, asset) is None, asset
+    assert model_source.current_glb(model, LAMP_A) is None
 
 
 def test_a_glb_or_gltf_is_read_as_itself_and_a_blend_through_its_current_conversion(tmp_path):
@@ -238,11 +245,11 @@ def test_a_conversion_that_records_no_dependency_list_is_never_current(tmp_path)
     assert model_source.current_glb(source) is None
 
 
-def test_the_interchange_refusal_names_the_format_and_a_blend_is_edited_at_source():
-    assert "Edit Source in New Blender" in model_source.edit_in_place_refusal("/a/crate.blend")
-    obj = model_source.edit_in_place_refusal("/a/crate.obj")
+def test_the_edit_source_refusal_names_the_format():
+    obj = model_source.edit_source_refusal("/a/crate.obj")
     assert "crate.obj is an OBJ file" in obj and "export the OBJ again" in obj
-    assert "a USDZ file" in model_source.edit_in_place_refusal("/a/set.usdz")
+    assert "a USDZ file" in model_source.edit_source_refusal("/a/set.usdz")
+    assert "a GLB file" in model_source.edit_source_refusal("/a/crate.glb")
 
 
 def test_a_conversion_with_no_mesh_is_skeleton_only(tmp_path):
@@ -262,28 +269,14 @@ def test_a_conversion_with_no_mesh_is_skeleton_only(tmp_path):
 def test_an_asset_of_skeleton_and_clips_alone_is_skeleton_only(tmp_path):
     layout = project(tmp_path)
     source = write(tmp_path / "assets" / "models" / "cast.blend", b"BLENDER-cast")
-    converted(layout, source, b"BLENDER-cast", asset="Rig", nodes=[{"name": "Hips"}],
+    converted(layout, source, b"BLENDER-cast", asset=RIG, nodes=[{"name": "Hips"}],
               skins=[{"joints": [0]}], animations=[{"name": "Walk"}])
-    converted(layout, source, b"BLENDER-cast", asset="Prop", meshes=[{"primitives": []}])
+    converted(layout, source, b"BLENDER-cast", asset=PROP, meshes=[{"primitives": []}])
 
-    assert model_source.is_skeleton_only(source, "Rig")
-    assert not model_source.is_skeleton_only(source, "Prop")
-    assert "Rig in cast.blend holds no mesh" in model_source.no_mesh_refusal(source, "Rig")
-
-
-def test_converting_one_asset_asks_the_cli_for_that_asset(tmp_path):
-    layout = project(tmp_path)
-    source = layout.resolve("models/lamps.blend")
-
-    assert model_source.convert_arguments(layout, source)[-2:] == ["--project", layout.root]
-    assert model_source.convert_arguments(layout, source, "Lamp_A")[-2:] == ["--asset", "Lamp_A"]
-
-
-def test_the_converted_path_is_the_last_line_the_cli_printed():
-    stdout = "converting models/car.blend\n/root/.editor/converted/models/car.blend.glb\n\n"
-
-    assert model_source.printed_path(stdout) == "/root/.editor/converted/models/car.blend.glb"
-    assert model_source.printed_path("") is None
+    assert model_source.is_skeleton_only(source, RIG)
+    assert not model_source.is_skeleton_only(source, PROP)
+    refusal = model_source.no_mesh_refusal(model_source.Model(source, RIG, "Rig"))
+    assert "Rig in cast.blend holds no mesh" in refusal
 
 
 def test_clip_settings_of_a_blend_read_its_conversion_and_land_in_its_own_sidecar(tmp_path):
@@ -315,24 +308,25 @@ def test_clip_settings_of_each_asset_are_keyed_by_the_asset_in_the_one_sidecar(t
         f'schema_version = 1\nguid = "{GUID}"\n\n[glb]\n'
         'clips = [ { index = 0, name = "Stale", root_motion = true } ]\n', encoding="utf-8")
     rig = {"nodes": [{"name": "root"}], "skins": [{"joints": [0]}]}
-    converted(layout, source, b"BLENDER-cast", asset="Hero", animations=[{"name": "Idle"}, {"name": "Run"}],
+    converted(layout, source, b"BLENDER-cast", asset=HERO, animations=[{"name": "Idle"}, {"name": "Run"}],
               **rig)
-    converted(layout, source, b"BLENDER-cast", asset="Guard", animations=[{"name": "Patrol"}], **rig)
+    converted(layout, source, b"BLENDER-cast", asset=GUARD, animations=[{"name": "Patrol"}], **rig)
 
-    glb_clips.set_root_motion(source, 1, True, "Hero")
-    glb_clips.set_root_bone(source, 0, "root", "Guard")
+    glb_clips.set_root_motion(source, 1, True, HERO)
+    glb_clips.set_root_bone(source, 0, "root", GUARD)
 
-    assert glb_clips.read_settings(str(meta), "Hero")[1].root_motion is True
-    assert glb_clips.read_settings(str(meta), "Guard")[0].root_bone == "root"
+    assert glb_clips.read_settings(str(meta), HERO)[1].root_motion is True
+    assert glb_clips.read_settings(str(meta), GUARD)[0].root_bone == "root"
     assert glb_clips.read_settings(str(meta))[0].name == "Stale", "another model's entry was dropped"
-    assert set(glb_clips.read_settings(str(meta), "Hero")) == {1}
-    assert [row.setting.root_motion for row in glb_clips.view(source, "Hero").clips] == [False, True]
-    assert [row.setting.root_bone for row in glb_clips.view(source, "Guard").clips] == ["root"]
+    assert set(glb_clips.read_settings(str(meta), HERO)) == {1}
+    assert [row.setting.root_motion for row in glb_clips.view(source, HERO).clips] == [False, True]
+    assert [row.setting.root_bone for row in glb_clips.view(source, GUARD).clips] == ["root"]
     text = meta.read_text(encoding="utf-8")
-    # The whole-file entry first, then each asset's in ordinal order, each by index.
-    assert text.index('name = "Stale"') < text.index('asset = "Guard"') < text.index('asset = "Hero"'), text
-    assert 'asset = "Hero", index = 1, name = "Run", root_motion = true' in text, text
+    # The whole-file entry first, then each asset's by GUID in ordinal order, each by index.
+    positions = [text.index(entry) for entry in ('name = "Stale"', f'asset = "{GUARD}"', f'asset = "{HERO}"')]
+    assert positions == sorted(positions), text
+    assert f'asset = "{HERO}", index = 1, name = "Run", root_motion = true' in text, text
 
-    glb_clips.set_root_motion(source, 1, False, "Hero")
-    assert glb_clips.read_settings(str(meta), "Hero") == {}
-    assert 'asset = "Hero"' not in meta.read_text(encoding="utf-8")
+    glb_clips.set_root_motion(source, 1, False, HERO)
+    assert glb_clips.read_settings(str(meta), HERO) == {}
+    assert f'asset = "{HERO}"' not in meta.read_text(encoding="utf-8")

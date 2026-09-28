@@ -26,21 +26,17 @@ from bpy.types import Operator
 from . import catalogue, watch
 from .document import apply as apply_overrides
 from .document import (
-    asset_reference,
     atomic,
     extract,
     geometry_prefab,
-    model_source,
     new_prefab,
     overrides,
     project,
-    schema,
     unpack,
 )
-from .document import editable_mesh as ownership
 from .document import prefab as prefab_document
 from .document.prefab import PrefabDocumentError, loads
-from .materialize import editable_mesh, geometry, grouping, instancing, load, meshes, save, store, workfile
+from .materialize import geometry, grouping, instancing, load, save, store, workfile
 from .play import host
 
 __all__ = ["classes"]
@@ -280,8 +276,6 @@ class PARADISE_ASSETS_OT_save_prefab(Operator):
             changes.append(f"{result.removed} removed")
         if result.edited:
             changes.append(f"{result.edited} field(s) edited")
-        if result.meshes:
-            changes.append(f"{result.meshes} mesh(es) written")
         self.report(
             {"INFO"},
             f"Saved {result.written} object(s)"
@@ -1006,236 +1000,6 @@ class PARADISE_ASSETS_OT_revert_instance(_InstanceOperator):
         return {"FINISHED"}
 
 
-class PARADISE_ASSETS_OT_make_mesh_editable(Operator):
-    """Give this object a mesh of its own: edited here, written back to its GLB on every save"""
-
-    bl_idname = "paradise_assets.make_mesh_editable"
-    bl_label = "Make Mesh Editable"
-    # No UNDO: it writes a GLB and a document and reloads the scene; an undo step over that is a lie.
-    bl_options = {"REGISTER"}
-
-    @classmethod
-    def poll(cls, context):
-        obj = context.active_object
-        if context.mode != "OBJECT" or store.read_state(context.scene) is None:
-            return False
-        if obj is None or store.guid_of(obj) is None or obj.instance_collection is None:
-            return False
-        if store.is_derived(obj):
-            cls.poll_message_set(
-                "This is part of a prefab instance. Unpack the instance first, or open the prefab "
-                "and make the mesh editable there.")
-            return False
-        model = meshes.model_of(obj.instance_collection)
-        if model is not None and model_source.is_skeleton_only(model.path, model.asset):
-            cls.poll_message_set(model_source.no_mesh_refusal(model.path, model.asset))
-            return False
-        return True
-
-    def invoke(self, context, event):
-        return context.window_manager.invoke_confirm(
-            self, event,
-            message="Its geometry is copied into a GLB of its own beside this document. The "
-                    "shared model and every other placement of it stay as they are.",
-        )
-
-    def execute(self, context):
-        guid = store.guid_of(context.active_object)
-        was_instance = store.prefab_of(context.active_object) is not None
-        prepared = _write_scene_first(self, context)
-        if prepared is None:
-            return {"CANCELLED"}
-        state, layout = prepared
-        obj = store.object_with_guid(context.scene, guid)
-        if obj is None:
-            self.report({"ERROR"}, "The object is no longer in the scene.")
-            return {"CANCELLED"}
-
-        blocked = watch.ensure(layout.root)
-        if blocked:
-            self.report({"ERROR"}, f"Could not make the mesh editable: {blocked}")
-            return {"CANCELLED"}
-
-        name = store.document_name(obj) or obj.name
-        try:
-            target = ownership.plan_target(layout, state.path, name, guid)
-            slots = editable_mesh.write_initial(obj, target)
-        except ownership.EditableMeshError as error:
-            self.report({"ERROR"}, str(error))
-            return {"CANCELLED"}
-
-        reference = ownership.wait_for_mesh_reference(target, layout)
-        if reference is None:
-            self.report(
-                {"ERROR"},
-                f"{layout.relative(target)} was written, but no mesh document was minted for it "
-                f"within {ownership.MESH_WAIT_SECONDS:.0f}s -- the asset watcher is not running, or "
-                "is still busy rebuilding the project. Run Make Mesh Editable again once it is "
-                "idle; it reuses the file.",
-            )
-            return {"CANCELLED"}
-
-        try:
-            unpacked = self._point_at(state, layout, guid, reference, was_instance)
-        except (ownership.EditableMeshError, unpack.UnpackError, PrefabDocumentError) as error:
-            self.report({"ERROR"}, str(error))
-            return {"CANCELLED"}
-        except OSError as error:
-            self.report({"ERROR"}, f"Could not rewrite the document: {error}")
-            return {"CANCELLED"}
-
-        _rematerialize(context, state, layout)
-        restored = store.object_with_guid(context.scene, guid)
-        if restored is not None:
-            restored.select_set(True)
-            context.view_layer.objects.active = restored
-        for warning in (unpacked.warnings if unpacked is not None else [])[:5]:
-            self.report({"WARNING"}, warning)
-        self.report(
-            {"INFO"},
-            f"'{name}' now owns {layout.relative(target)} ({slots} material slot(s)); edit it in "
-            "Edit Mode, and saving writes it back."
-            + (f" Its prefab instance was unpacked into {unpacked.objects} object(s)."
-               if unpacked is not None else ""),
-        )
-        return {"FINISHED"}
-
-    @staticmethod
-    def _point_at(state, layout, guid: str, reference, was_instance: bool):
-        """Rewrite the document so ``guid``'s mesh field names ``reference``, unpacking the
-        instance first -- an instance's mesh is its prefab's, and only an object of this
-        document can point at a mesh of its own. Returns the unpack result, if it unpacked."""
-        with open(state.path, encoding="utf-8") as handle:
-            document = loads(handle.read(), state.path)
-        unpacked = None
-        if was_instance:
-            unpacked = unpack.unpack(document, guid, _prefab_reader(layout))
-            document = unpacked.document
-
-        entry = document.by_guid().get(guid)
-        found = ownership.mesh_field(entry.components, schema.load(layout.root)) if entry else None
-        if found is None:
-            raise ownership.EditableMeshError("The document has no mesh field for this object to point at.")
-        component, field = found
-        component.data[field] = asset_reference.write(reference)
-        document.validate(state.path)
-        atomic.write_text(state.path, prefab_document.dumps(document))
-        return unpacked
-
-
-class PARADISE_ASSETS_OT_edit_shared_mesh(Operator):
-    """Edit the model this object shows in place: every save writes the geometry back into the
-    shared GLB, so every placement of it, in every document, changes"""
-
-    bl_idname = "paradise_assets.edit_shared_mesh"
-    bl_label = "Edit Shared Mesh"
-    # No UNDO: it reloads the scene; an undo step over that is a lie.
-    bl_options = {"REGISTER"}
-
-    @classmethod
-    def poll(cls, context):
-        obj = context.active_object
-        if context.mode != "OBJECT" or store.read_state(context.scene) is None:
-            return False
-        if obj is None or store.guid_of(obj) is None or obj.instance_collection is None:
-            return False
-        model = meshes.model_of(obj.instance_collection)
-        if model is not None and model_source.is_skeleton_only(model.path, model.asset):
-            cls.poll_message_set(model_source.no_mesh_refusal(model.path, model.asset))
-            return False
-        if model is not None and model_source.is_converted(model.path):
-            cls.poll_message_set(model_source.edit_in_place_refusal(model.path))
-            return False
-        return True
-
-    def invoke(self, context, event):
-        source = context.active_object.instance_collection.get(meshes.SOURCE_KEY)
-        name = os.path.basename(source) if isinstance(source, str) else "the model"
-        return context.window_manager.invoke_confirm(
-            self, event,
-            message=f"Saving writes your edits into {name} itself: every placement of it, in "
-                    "every document, changes. Its materials and textures stay as they are.",
-        )
-
-    def execute(self, context):
-        guid = store.guid_of(context.active_object)
-        prepared = _write_scene_first(self, context)
-        if prepared is None:
-            return {"CANCELLED"}
-        state, layout = prepared
-        obj = store.object_with_guid(context.scene, guid)
-        if obj is None or obj.instance_collection is None:
-            self.report({"ERROR"}, "The object no longer shows a model.")
-            return {"CANCELLED"}
-
-        try:
-            source = editable_mesh.shared_source(obj, layout)
-            editing = editable_mesh.shared_editor(context.scene, layout.relative(source))
-            if editing is not None:
-                raise ownership.EditableMeshError(
-                    f"'{editing.name}' is already editing {layout.relative(source)}; edit it there, "
-                    "or finish that edit first.")
-            editable_mesh.begin_shared(obj, source, layout)
-        except ownership.EditableMeshError as error:
-            self.report({"ERROR"}, str(error))
-            return {"CANCELLED"}
-
-        _rematerialize(context, state, layout)
-        restored = store.object_with_guid(context.scene, guid)
-        if restored is None or store.editable_of(restored) is None:
-            self.report({"ERROR"}, "The scene reloaded without the edit; try again.")
-            return {"CANCELLED"}
-        restored.select_set(True)
-        context.view_layer.objects.active = restored
-        self.report(
-            {"INFO"},
-            f"Editing {layout.relative(source)} in place; saving writes it back for every "
-            "placement. Finish Editing Shared Mesh when done.",
-        )
-        return {"FINISHED"}
-
-
-class PARADISE_ASSETS_OT_finish_shared_mesh(Operator):
-    """Save this shared model's edits and show it as an ordinary placement again"""
-
-    bl_idname = "paradise_assets.finish_shared_mesh"
-    bl_label = "Finish Editing Shared Mesh"
-    bl_options = {"REGISTER"}
-
-    @classmethod
-    def poll(cls, context):
-        # Edit Mode too: that is where the author is when the edit is done.
-        obj = context.active_object
-        if context.mode not in ("OBJECT", "EDIT_MESH") or store.read_state(context.scene) is None:
-            return False
-        state = store.editable_of(obj) if obj is not None else None
-        return state is not None and state.shared
-
-    def execute(self, context):
-        guid = store.guid_of(context.active_object)
-        if context.mode != "OBJECT":
-            # Leaving Edit Mode flushes the edit into the mesh the save exports; the reload
-            # below would otherwise remove an object Blender is still editing.
-            bpy.ops.object.mode_set(mode="OBJECT")
-        prepared = _write_scene_first(self, context)   # publishes the edit, or refuses
-        if prepared is None:
-            return {"CANCELLED"}
-        state, layout = prepared
-        editor = store.object_with_guid(context.scene, guid)
-        if editor is not None:
-            mesh = editor.data
-            bpy.data.objects.remove(editor, do_unlink=True)
-            if mesh is not None and mesh.users == 0:
-                bpy.data.meshes.remove(mesh)
-        _rematerialize(context, state, layout)
-        restored = store.object_with_guid(context.scene, guid)
-        if restored is not None:
-            restored.select_set(True)
-            context.view_layer.objects.active = restored
-        self.report({"INFO"}, "The shared model is saved and shown as an ordinary placement again.")
-        return {"FINISHED"}
-
-
 def _has_overrides(instance) -> bool:
     """Whether this instance's own entry, or one of its children, says anything of its own.
 
@@ -1267,9 +1031,6 @@ classes = (
     PARADISE_ASSETS_OT_unpack_instance,
     PARADISE_ASSETS_OT_apply_overrides,
     PARADISE_ASSETS_OT_revert_instance,
-    PARADISE_ASSETS_OT_make_mesh_editable,
-    PARADISE_ASSETS_OT_edit_shared_mesh,
-    PARADISE_ASSETS_OT_finish_shared_mesh,
     PARADISE_ASSETS_OT_group_objects,
     PARADISE_ASSETS_OT_refresh_catalogue,
     PARADISE_ASSETS_FH_prefab,

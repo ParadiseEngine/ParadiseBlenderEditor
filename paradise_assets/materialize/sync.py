@@ -1,4 +1,6 @@
 """Ctrl+S writes the document too: a save that only wrote the disposable cache could lose work.
+It also gives every local asset collection of the saved ``.blend`` its Paradise GUID
+(``asset_guids.stamp``), whether or not a document is open.
 
 ``save_pre``, NOT ``save_post``: the save refreshes the scene's stamp, and running before Blender
 writes is what lands the fresh stamp IN the .blend. On ``save_post`` the workfile would carry a
@@ -12,7 +14,7 @@ import contextlib
 
 import bpy
 
-from . import save, store
+from . import asset_guids, save, store
 
 __all__ = ["clear_refusal", "refusal", "register_handler", "suppressed", "unregister_handler"]
 
@@ -49,9 +51,11 @@ def clear_refusal(scene: bpy.types.Scene) -> None:
 
 
 @bpy.app.handlers.persistent
-def _on_save_pre(_file_path) -> None:
+def _on_save_pre(file_path) -> None:
     """Write every document-backed scene before Blender writes the .blend. ``@persistent`` or
     Blender drops the handler on file load and a day's edits silently never reach the tree."""
+    # Before the suppression: the addon's own writes need the GUIDs as much as the author's.
+    _stamp_asset_guids(file_path)
     if _suppression:
         return
 
@@ -60,6 +64,19 @@ def _on_save_pre(_file_path) -> None:
         if store.read_state(scene) is None:
             continue
         _sync(scene)
+
+
+def _stamp_asset_guids(file_path) -> None:
+    try:
+        minted = asset_guids.stamp(file_path if isinstance(file_path, str) else "")
+    except Exception as error:
+        # Missing GUIDs are reported by the converter, with what to do; the save must go on.
+        print(f"[paradise_assets] could not give the asset collections their GUIDs: "
+              f"{type(error).__name__}: {error}")
+        return
+    if minted:
+        print(f"[paradise_assets] gave {len(minted)} asset collection(s) a Paradise GUID: "
+              + ", ".join(sorted(minted)))
 
 
 def _sync(scene: bpy.types.Scene) -> None:

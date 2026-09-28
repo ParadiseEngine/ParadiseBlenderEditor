@@ -1,14 +1,15 @@
 """Model sources other than a ``.glb`` -- converted ones (a ``.blend``, an ``.fbx``, an ``.obj``
 with its ``.mtl`` and texture, an animation-only ``.bvh``, a ``.blend`` holding two asset
 collections) and a ``.gltf`` with its ``.bin`` and texture, which is read as it is -- placed,
-shown, made editable, edited at source or in place.
+shown, and edited at source.
 
 Runs against a COPY of a real asset project (ShiningPie by default) with the real CLI, because the
 conversion is the engine's: ``paradise assets extract`` converts each source with a headless
 Blender and extracts from that GLB. A placement shows the SOURCE instead -- a ``.blend`` linked,
 modifiers live; any other format through the converter's own importer -- and loading a level
-converts nothing; Make Mesh Editable and the clips still read the converted GLB. The sources are
-made here, by a second headless Blender, so nothing about them is checked in.
+converts nothing; the clips still read the converted GLB. The sources are made here, by a second
+headless Blender, so nothing about them is checked in. The asset collections of a ``.blend`` get
+their GUIDs from the addon's save handler in THAT Blender, which is how an author's do.
 """
 
 from __future__ import annotations
@@ -28,14 +29,21 @@ import bpy
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from test_editable_mesh import enable, make_editable, open_fresh, owned_glb, place, reload, world_points
+from project_session import enable, open_fresh, place, reload, world_points
 from warm_project import copy_project, keep_warm
 
 from paradise_assets import clip_ops, context_menu, watch
-from paradise_assets.document import editable_mesh as ownership
-from paradise_assets.document import glb_clips, gltf, model_source, project, sidecar
-from paradise_assets.materialize import editable_mesh, save, store
-from paradise_assets.materialize.meshes import ASSET_KEY, SOURCE_KEY
+from paradise_assets.document import (
+    asset_guids,
+    glb_clips,
+    gltf,
+    mesh_document,
+    model_source,
+    project,
+    sidecar,
+)
+from paradise_assets.materialize import store
+from paradise_assets.materialize.meshes import ASSET_KEY, ASSET_NAME_KEY, SOURCE_KEY
 from paradise_assets.play import host
 
 LEVEL = "levels/test.prefab"
@@ -132,14 +140,24 @@ cube.data.materials.append(material)
 bpy.ops.export_scene.gltf(filepath=lamp, export_format="GLTF_SEPARATE", export_texture_dir="textures")
 """
 
-#: Run by a separate headless Blender: one .blend holding two models, each an asset collection
-#: laid out beside the other with its origin (``instance_offset``) at its own centre -- a unit
-#: cube at x = 10 and one three units tall at x = 20 -- and a monkey in no asset collection,
-#: which is no model at all.
+#: Prepended to a script run by a separate headless Blender that saves a .blend of asset
+#: collections as an author does: with the addon enabled, whose save handler gives each its GUID.
+_WITH_ADDON = """
+import addon_utils, bpy, json, sys
+sys.path.insert(0, {repository!r})
+addon_utils.enable("paradise_assets", default_set=True, persistent=False)
+def guids():
+    return {{c.name: c.get("paradise_guid") for c in bpy.data.collections if c.asset_data is not None}}
+"""
+
+#: One .blend holding two models, each an asset collection laid out beside the other with its
+#: origin (``instance_offset``) at its own centre -- a unit cube at x = 10 and one three units
+#: tall at x = 20 -- and a monkey in no asset collection, which is no model at all. No Paradise
+#: document is open: the save handler gives the collections their GUIDs all the same.
 _MAKE_POSTS = """
-import bpy, sys
 path = sys.argv[sys.argv.index("--") + 1]
 bpy.ops.wm.read_factory_settings(use_empty=True)
+addon_utils.enable("paradise_assets", default_set=True, persistent=False)
 for name, x, height in (("Post_Short", 10.0, 1.0), ("Post_Tall", 20.0, 3.0)):
     collection = bpy.data.collections.new(name)
     bpy.context.scene.collection.children.link(collection)
@@ -153,8 +171,42 @@ for name, x, height in (("Post_Short", 10.0, 1.0), ("Post_Tall", 20.0, 3.0)):
     collection.instance_offset = (x, 0.0, 0.0)
     collection.asset_mark()
 bpy.ops.mesh.primitive_monkey_add(location=(0.0, 0.0, 5.0))
+assert set(guids().values()) == {None}
 bpy.ops.wm.save_as_mainfile(filepath=path)
 """
+
+#: The author duplicates an asset collection -- Blender copies its custom properties, the GUID
+#: with them -- and saves; then deletes the copy and saves again. The copy's name sorts FIRST, so
+#: only the project's record can tell which of the two the GUID belongs to.
+_DUPLICATE = """
+original = bpy.data.collections["Post_Short"]
+copy = original.copy()
+copy.name = "A_Post_Copy"
+bpy.context.scene.collection.children.link(copy)
+if copy.asset_data is None:
+    copy.asset_mark()
+assert copy.get("paradise_guid") == original.get("paradise_guid"), "the copy did not carry the GUID"
+bpy.ops.wm.save_mainfile()
+saved = guids()
+bpy.data.collections.remove(copy)
+bpy.ops.wm.save_mainfile()
+print("RESULT", json.dumps(saved))
+"""
+
+#: The author renames an asset collection and saves.
+_RENAME = """
+bpy.data.collections["Post_Tall"].name = "Post_Grand"
+bpy.ops.wm.save_mainfile()
+"""
+
+#: Reads what a .blend's asset collections carry, in a Blender WITHOUT the addon: what was saved.
+_READ_GUIDS = """
+import bpy, json
+print("RESULT", json.dumps({c.name: c.get("paradise_guid") for c in bpy.data.collections
+                            if c.asset_data is not None}))
+"""
+
+REPOSITORY = str(Path(__file__).resolve().parents[2])
 
 #: A .bvh placement: nothing seeds a prefab for an animation-only source, so an author names it
 #: from a skinned mesh component by hand -- the component the game's schema calls a mesh.
@@ -193,13 +245,35 @@ bpy.ops.wm.save_mainfile()
 """
 
 
-def blender(script: str, *args: str, blend: str | None = None) -> None:
+def blender(script: str, *args: str, blend: str | None = None, addon: bool = False) -> str:
+    """Run ``script`` in a separate headless Blender, with the addon enabled when ``addon``; what
+    it printed after ``RESULT``, if anything."""
+    if addon:
+        script = _WITH_ADDON.format(repository=REPOSITORY) + script
     argv = [bpy.app.binary_path, "--background", "--factory-startup"]
     if blend is not None:
         argv.append(blend)
     argv += ["--python-exit-code", "1", "--python-expr", script, "--", *args]
     completed = subprocess.run(argv, capture_output=True, text=True, timeout=300)
     assert completed.returncode == 0, completed.stdout[-2000:] + completed.stderr[-2000:]
+    results = [line[len("RESULT "):] for line in completed.stdout.splitlines() if line.startswith("RESULT ")]
+    return results[-1] if results else ""
+
+
+def saved_guids(blend: str) -> dict:
+    """``{asset collection name: paradise_guid}`` as the .blend at ``blend`` holds them."""
+    return json.loads(blender(_READ_GUIDS, blend=blend))
+
+
+def asset_documents(layout, blend: str) -> dict:
+    """Every mesh document of an asset of ``blend``: assets-relative path -> its Model."""
+    found = {}
+    for path in Path(layout.assets).rglob("*.mesh"):
+        relative = layout.relative(str(path))
+        model = mesh_document.source_for(layout, relative)
+        if model is not None and model.asset is not None and os.path.samefile(model.path, blend):
+            found[relative] = model
+    return found
 
 
 def cli(arguments, root):
@@ -262,7 +336,14 @@ def run(source, root):
     os.makedirs(os.path.dirname(blend))
     blender(_MAKE_SOURCES, blend, fbx, obj, png, bvh, lamp)
     posts = layout.resolve(POSTS)
-    blender(_MAKE_POSTS, posts)
+    blender(_MAKE_POSTS, posts, addon=True)
+    minted = saved_guids(posts)
+    assert set(minted) == {"Post_Short", "Post_Tall"}, minted
+    assert all(asset_guids.canonical_of(guid) == guid for guid in minted.values()), minted
+    assert len(set(minted.values())) == 2, f"the two asset collections share a GUID: {minted}"
+    short_asset, tall_asset = minted["Post_Short"], minted["Post_Tall"]
+    print("PASS saving a .blend with two asset collections gives each a GUID of its own, with no"
+          " document open")
     assert Path(mtl).is_file() and "textures/Plank_wood.png" in Path(mtl).read_text(), \
         "no .mtl naming the PNG"
     assert Path(lamp_bin).is_file() and Path(lamp_png).is_file(), "no .bin or texture beside the .gltf"
@@ -291,14 +372,18 @@ def run(source, root):
     print("PASS a .gltf is extracted as it is, with no converted GLB")
 
     # -- a .blend of two asset collections is two models, each converted to a GLB of its own ------
-    for asset in ("Post_Short", "Post_Tall"):
+    for name, asset in (("Post_Short", short_asset), ("Post_Tall", tall_asset)):
         converted = model_source.converted_path(layout, posts, asset)
+        assert Path(converted).name == f"{asset}.glb", converted
         assert model_source.is_current(posts, converted, asset), f"extract left no current {converted}"
-        assert Path(layout.resolve(f"prefabs/models/{asset}.prefab")).is_file(), f"no prefab seed for {asset}"
+        assert Path(layout.resolve(f"prefabs/models/{name}.prefab")).is_file(), f"no prefab seed for {name}"
     assert not Path(model_source.converted_path(layout, posts)).exists(), "the assets were converted whole"
     assert not Path(layout.resolve("prefabs/models/Posts.prefab")).exists(), "the assets got a whole seed"
-    print("PASS a .blend of two asset collections extracts two models,"
-          " one converted GLB and prefab seed each")
+    documents = asset_documents(layout, posts)
+    assert {(Path(path).stem, model.asset, model.name) for path, model in documents.items()} == {
+        ("Post_Short", short_asset, "Post_Short"), ("Post_Tall", tall_asset, "Post_Tall")}, documents
+    print("PASS a .blend of two asset collections extracts two models, one converted GLB (named by"
+          " its GUID) and prefab seed each, their documents naming the asset by GUID")
 
     # -- the .bvh gives a skeleton and its clip, and nothing to place as a mesh -----------------
     assert not Path(layout.resolve("prefabs/models/Sway.prefab")).exists(), \
@@ -383,7 +468,6 @@ def run(source, root):
 
     # -- a .gltf placement shows the .gltf itself, read with its .bin and texture ---------------
     lamp_guid = place(layout, seed_prefab(layout, lamp))
-    other_lamp_guid = place(layout, seed_prefab(layout, lamp))
     with conversions() as more:
         reload(level, layout)
     runs += more
@@ -393,39 +477,6 @@ def run(source, root):
     assert any(image.name.startswith("Lamp_paint") for image in bpy.data.images), "the texture was not loaded"
     assert not Path(model_source.converted_path(layout, lamp)).exists(), "showing the .gltf converted it"
     print("PASS a .gltf placement shows the .gltf itself, with its .bin and texture")
-
-    # -- Edit Shared Mesh splices an edit back into the .gltf and its .bin ----------------------
-    before = json.loads(Path(lamp).read_text(encoding="utf-8"))
-    bin_bytes = Path(lamp_bin).read_bytes()
-    bpy.context.view_layer.objects.active = shown
-    assert bpy.ops.paradise_assets.edit_shared_mesh("EXEC_DEFAULT") == {"FINISHED"}
-    editing = store.object_with_guid(scene, lamp_guid)
-    assert editing.type == "MESH" and store.editable_of(editing).shared
-    for vertex in editing.data.vertices:
-        if vertex.co.z > 0.25:
-            vertex.co.z += 0.5
-    assert save.save_prefab(scene).meshes == 1
-    after = json.loads(Path(lamp).read_text(encoding="utf-8"))   # still JSON: still a .gltf
-    assert [buffer.get("uri") for buffer in after["buffers"]] == ["Lamp.bin"], after["buffers"]
-    assert Path(lamp_bin).read_bytes() != bin_bytes, "the edit did not reach the .bin"
-    for key in ("materials", "textures", "images", "samplers", "scenes"):
-        assert after.get(key) == before.get(key), key
-    assert not list(Path(lamp).parent.glob("Lamp*.glb")), "the edit left a GLB beside the .gltf"
-    other = placed(scene, other_lamp_guid)
-    assert bounds(world_points(other))[2] == (-0.5, 1.0), "the other placement does not show the edit"
-    bpy.context.view_layer.objects.active = editing
-    assert bpy.ops.paradise_assets.finish_shared_mesh("EXEC_DEFAULT") == {"FINISHED"}
-    assert bounds(world_points(placed(scene, lamp_guid)))[2] == (-0.5, 1.0)
-    print("PASS Edit Shared Mesh on a .gltf writes the edit back into the .gltf and its .bin, "
-          "materials and texture kept")
-
-    # -- Make Mesh Editable copies a .gltf into a GLB of the placement's own ---------------------
-    assert make_editable(placed(scene, other_lamp_guid)) == {"FINISHED"}
-    owned = store.object_with_guid(scene, other_lamp_guid)
-    assert owned.type == "MESH" and len(owned.material_slots) == 1
-    assert bounds(world_points(owned))[2] == (-0.5, 1.0)
-    assert ownership.owner_of(owned_glb(layout, level, other_lamp_guid)) == other_lamp_guid
-    print("PASS Make Mesh Editable works on a .gltf placement")
 
     # -- saving the .blend refreshes the placement on reload: its library is reloaded ------------
     watch.stop_all()   # nothing else may convert it: the load must not, either
@@ -447,23 +498,13 @@ def run(source, root):
     print("PASS a saved .blend is reloaded in place and every placement shows the edit;"
           " no load ran `paradise assets convert`")
 
-    # -- what the engine's structure is read from converts on demand, the load no longer does ----
-    # With no watcher running, as Make Mesh Editable would: the fresh watcher that operator starts
-    # then only re-extracts them, rather than converting both first and outwaiting its 30 s.
-    with conversions() as more:
-        assert os.path.samefile(editable_mesh.glb_of(blend), stale)
-        assert os.path.samefile(editable_mesh.glb_of(obj), model_source.converted_path(layout, obj))
-    assert [os.path.basename(arguments[2]) for arguments in more] == ["Crate.blend", "Plank.obj"], more
-    print("PASS a stale conversion is converted by the feature that reads it (editable_mesh.glb_of)")
-
-    # -- Edit Shared Mesh is refused for converted models; a .blend opens in a new Blender ------
+    # -- a model is edited at its source: a .blend opens in a new Blender, the rest are refused ---
+    # Mesh editing in a level is gone: no registered operator of the addon edits a mesh.
+    registered = [name for name in dir(bpy.types) if name.startswith("PARADISE_ASSETS_OT_")]
+    assert registered, "the addon registered no operators"
+    assert not [name for name in registered if "mesh" in name.lower()], registered
+    assert not [name for name in dir(bpy.ops.paradise_assets) if "mesh" in name], dir(bpy.ops.paradise_assets)
     bpy.context.view_layer.objects.active = crate
-    try:
-        bpy.ops.paradise_assets.edit_shared_mesh("EXEC_DEFAULT")
-    except RuntimeError as error:
-        assert "Edit Source in New Blender" in str(error), str(error)
-    else:
-        raise AssertionError("Edit Shared Mesh ran on a model converted from a .blend")
     with patch.object(context_menu.subprocess, "Popen") as popen:
         assert bpy.ops.paradise_assets.edit_model_source("EXEC_DEFAULT") == {"FINISHED"}
     assert popen.call_args.args[0] == [bpy.app.binary_path, os.path.abspath(blend)], popen.call_args
@@ -482,30 +523,15 @@ def run(source, root):
         assert "OBJ" in str(error) and "export" in str(error), str(error)
     else:
         raise AssertionError("Edit Source opened an OBJ")
-    print("PASS a .blend's Edit Source opens it in a new Blender;"
-          " an FBX or OBJ is refused, naming its format")
-
-    # -- Make Mesh Editable copies the converted GLB: slot i is its primitive i -----------------
-    converted = model_source.converted_path(layout, blend)
-    primitives = sum(len(mesh["primitives"]) for mesh in gltf.read_json(converted)["meshes"])
-    assert primitives == 2, primitives
-    shown = world_points(crate)
-    assert make_editable(crate) == {"FINISHED"}
-    crate = store.object_with_guid(scene, crate_guid)
-    assert crate.type == "MESH" and len(crate.material_slots) == primitives
-    assert bounds(world_points(crate)) == bounds(shown), "the editable mesh moved off the placement"
-    assert ownership.owner_of(owned_glb(layout, level, crate_guid)) == crate_guid
-    print("PASS Make Mesh Editable on a .blend placement copies its converted GLB, one slot per primitive")
-
-    assert make_editable(store.object_with_guid(scene, barrel_guid)) == {"FINISHED"}
-    barrel = store.object_with_guid(scene, barrel_guid)
-    assert barrel.type == "MESH" and len(barrel.data.polygons) > 0
-    print("PASS Make Mesh Editable works on an .fbx placement")
-
-    assert make_editable(store.object_with_guid(scene, plank_guid)) == {"FINISHED"}
-    plank = store.object_with_guid(scene, plank_guid)
-    assert plank.type == "MESH" and len(plank.material_slots) == 1
-    print("PASS Make Mesh Editable works on an .obj placement")
+    bpy.context.view_layer.objects.active = placed(scene, lamp_guid)
+    try:
+        bpy.ops.paradise_assets.edit_model_source("EXEC_DEFAULT")
+    except RuntimeError as error:
+        assert "GLTF" in str(error) and "export" in str(error), str(error)
+    else:
+        raise AssertionError("Edit Source opened a .gltf")
+    print("PASS no mesh-editing operator is registered; a .blend's Edit Source opens it in a new"
+          " Blender; an FBX, OBJ or .gltf is refused, naming its format")
 
     # -- each asset of a .blend places at its own origin, not where it sits in the file ---------
     short_guid = place(layout, seed_prefab(layout, "Post_Short"))
@@ -513,12 +539,12 @@ def run(source, root):
     reload(level, layout)
     short, tall = placed(scene, short_guid), placed(scene, tall_guid)
     posts_file = os.path.normcase(os.path.abspath(posts))
-    for shown, asset in ((short, "Post_Short"), (tall, "Post_Tall")):
+    for shown, asset, name in ((short, short_asset, "Post_Short"), (tall, tall_asset, "Post_Tall")):
         assert shown.instance_collection[SOURCE_KEY] == os.path.abspath(posts)
         assert shown.instance_collection[ASSET_KEY] == asset
         assert [(part.name, part.library and file_of(part.library))
-                for part in shown.instance_collection.all_objects] == [(asset, posts_file)], \
-            f"{asset} does not show its collection's objects linked from the .blend"
+                for part in shown.instance_collection.all_objects] == [(name, posts_file)], \
+            f"{name} does not show its collection's objects linked from the .blend"
     assert [file_of(library) for library in bpy.data.libraries].count(posts_file) == 1, \
         "the two assets linked their .blend twice"
     assert short.instance_collection != tall.instance_collection
@@ -528,24 +554,50 @@ def run(source, root):
                    for part in shown.instance_collection.all_objects), "an object outside every asset showed"
     print("PASS the two assets of one .blend are linked as two models, each at its own origin")
 
-    # -- Edit Source on an asset opens its .blend; Make Mesh Editable copies that asset's GLB ----
+    # -- Edit Source on an asset opens its .blend ------------------------------------------------
     bpy.context.view_layer.objects.active = short
     with patch.object(context_menu.subprocess, "Popen") as popen:
         assert bpy.ops.paradise_assets.edit_model_source("EXEC_DEFAULT") == {"FINISHED"}
     assert popen.call_args.args[0] == [bpy.app.binary_path, os.path.abspath(posts)], popen.call_args
     print("PASS Edit Source on an asset of a .blend opens that .blend in a new Blender")
 
-    converted = model_source.converted_path(layout, posts, "Post_Tall")
-    primitives = sum(len(mesh["primitives"]) for mesh in gltf.read_json(converted)["meshes"])
-    shown = world_points(tall)
-    assert make_editable(tall) == {"FINISHED"}
-    tall = store.object_with_guid(scene, tall_guid)
-    assert tall.type == "MESH" and len(tall.material_slots) == primitives
-    assert bounds(world_points(tall)) == bounds(shown), "the editable mesh is not the asset it showed"
-    assert ownership.owner_of(owned_glb(layout, level, tall_guid)) == tall_guid
-    short = placed(scene, short_guid)
-    assert bounds(world_points(short))[2] == (-0.5, 0.5), "the other asset changed with it"
-    print("PASS Make Mesh Editable on an asset of a .blend copies that asset's own GLB")
+    # -- a duplicated asset collection gets a GUID of its own; the original keeps its own ---------
+    saved = json.loads(blender(_DUPLICATE, blend=posts, addon=True))
+    assert saved["Post_Short"] == short_asset, f"the original lost its GUID to its copy: {saved}"
+    assert saved["Post_Tall"] == tall_asset, saved
+    copied = saved["A_Post_Copy"]
+    assert asset_guids.canonical_of(copied) == copied and copied not in (short_asset, tall_asset), saved
+    assert saved_guids(posts) == minted, "removing the copy changed the other GUIDs"
+    print("PASS a duplicated asset collection gets a fresh GUID on save; the one the project records"
+          " keeps its own")
+
+    # -- a renamed asset collection keeps its identity: placements, documents, conversion ------------
+    blender(_RENAME, blend=posts, addon=True)
+    assert saved_guids(posts) == {"Post_Short": short_asset, "Post_Grand": tall_asset}
+    reload(level, layout)
+    tall = placed(scene, tall_guid)
+    assert tall.instance_collection[ASSET_KEY] == tall_asset
+    assert tall.instance_collection[ASSET_NAME_KEY] == "Post_Grand", "not the renamed collection"
+    assert bounds(world_points(tall))[2] == (-1.5, 1.5), bounds(world_points(tall))
+    print("PASS a renamed asset collection still shows at its placements before any re-extract,"
+          " linked by its GUID")
+
+    before = set(asset_documents(layout, posts))
+    cli(["assets", "extract", posts], root)
+    documents = asset_documents(layout, posts)
+    assert set(documents) == before, f"the rename renamed or added documents: {sorted(documents)}"
+    assert {(Path(path).stem, model.asset, model.name) for path, model in documents.items()} == {
+        ("Post_Short", short_asset, "Post_Short"), ("Post_Tall", tall_asset, "Post_Grand")}, documents
+    assert model_source.is_current(posts, model_source.converted_path(layout, posts, tall_asset), tall_asset)
+    reload(level, layout)
+    tall, short = placed(scene, tall_guid), placed(scene, short_guid)
+    assert tall.instance_collection[ASSET_KEY] == tall_asset
+    assert [part.name for part in tall.instance_collection.all_objects] == ["Post_Tall"]
+    assert bounds(world_points(tall))[2] == (-1.5, 1.5) and bounds(world_points(short))[2] == (-0.5, 0.5)
+    assert clip_ops.model_for_object(tall, layout) == model_source.Model(posts, tall_asset)
+    assert clip_ops.model_for_object(tall, layout).label == "Post_Grand in Posts.blend"
+    print("PASS re-extracting a renamed asset keeps its documents and GUIDs, updating only the name"
+          " hint; its placements still resolve")
 
     # -- an animation-only placement loads cleanly: clips authorable, no mesh to edit ------------
     clips_level = layout.resolve(CLIPS_LEVEL)
@@ -562,20 +614,18 @@ def run(source, root):
     assert bpy.ops.paradise_assets.clip_root_motion(model=bvh, index=0, enabled=True) == {"FINISHED"}
     assert glb_clips.read_settings(sidecar.path_for(bvh))[0].root_motion is True
     bpy.context.view_layer.objects.active = sway
-    for operator in (bpy.ops.paradise_assets.make_mesh_editable, bpy.ops.paradise_assets.edit_shared_mesh,
-                     bpy.ops.paradise_assets.edit_model_source):
-        try:
-            operator("EXEC_DEFAULT")
-        except RuntimeError as error:
-            assert "no mesh" in str(error), str(error)
-        else:
-            raise AssertionError(f"{operator.idname()} ran on an animation-only model")
+    try:
+        bpy.ops.paradise_assets.edit_model_source("EXEC_DEFAULT")
+    except RuntimeError as error:
+        assert "no mesh" in str(error), str(error)
+    else:
+        raise AssertionError("Edit Source ran on an animation-only model")
     watch.stop_all()
     for leftover in (clips_level, sidecar.path_for(clips_level)):
         with contextlib.suppress(FileNotFoundError):
             os.unlink(leftover)
     print("PASS a .bvh placement shows its armature and clip, loads without a warning, its clip is"
-          " authorable, and mesh editing is refused")
+          " authorable, and Edit Source is refused")
 
     # -- the engine side: the project verifies and the level builds -----------------------------
     watch.stop_all()

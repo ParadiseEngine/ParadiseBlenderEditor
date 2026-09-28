@@ -365,14 +365,12 @@ def _tree_rows(scene) -> list:
 
 
 def _tree_icon(obj) -> str:
-    """What this object IS, in one glyph: an instance, one of a prefab's children, a group, a
-    mesh of its own, or an ordinary object."""
+    """What this object IS, in one glyph: an instance, one of a prefab's children, a model
+    placement, or an ordinary object."""
     if store.prefab_of(obj) is not None:
         return "PACKAGE"
     if store.is_derived(obj):
         return "DECORATE_LINKED"
-    if store.editable_of(obj) is not None:
-        return "EDITMODE_HLT"
     if obj.instance_collection is not None:
         return "OUTLINER_OB_MESH"
     return "OUTLINER_OB_EMPTY"
@@ -536,6 +534,7 @@ def _draw_clip_settings(layout, context, obj) -> None:
         )
         toggle.model = model.path
         toggle.asset = model.asset or ""
+        toggle.asset_name = model.name or ""
         toggle.index = clip.index
         toggle.enabled = not clip.setting.root_motion
         row.label(text=clip.name or f"clip {clip.index}")
@@ -547,12 +546,14 @@ def _draw_clip_settings(layout, context, obj) -> None:
             )
             pick.model = model.path
             pick.asset = model.asset or ""
+            pick.asset_name = model.name or ""
             pick.index = clip.index
             if clip.setting.root_bone:
                 clear = row.operator(
                     "paradise_assets.clip_root_bone", text="", icon="X")
                 clear.model = model.path
                 clear.asset = model.asset or ""
+                clear.asset_name = model.name or ""
                 clear.index = clip.index
                 clear.auto = True
 

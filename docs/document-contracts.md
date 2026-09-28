@@ -20,8 +20,8 @@ only defence keeping the canonical TOML writer byte-identical to the C# one. Ble
 imports live inside `register()`.
 
 **Blender handlers need `@bpy.app.handlers.persistent`.** Without it Blender drops them on file
-load, and the failure is invisible: save-on-save and the watcher adoption simply stop working
-after the author opens another `.blend`.
+load, and the failure is invisible: save-on-save, the asset-collection GUIDs a save gives a model
+`.blend` and the watcher adoption simply stop working after the author opens another `.blend`.
 
 **A `register()` that raises must unwind itself.** Blender keeps whatever had already been
 registered, and every enable after that dies on "already registered as a subclass" — the addon
@@ -129,10 +129,10 @@ SOURCE (and asset) and stamped with the `(mtime, size)` of the source and every 
 (`paradise_glb_dependencies`: a `.gltf`'s buffers, an `.obj`'s `.mtl`, image files), so saving any
 of them re-imports it on the next load; a `.blend`'s `Library` carries the same stamp, and a moved
 one reloads it (`Library.reload()`) -- every model of that file at once -- and re-reads the
-collection's membership in place. The converted GLB stays what reads the ENGINE's structure: Make
-Mesh Editable (`editable_mesh.glb_of`, which converts when it is stale), clip authoring and
-`model_source.is_skeleton_only`. Readers that must not start a process -- the clip panel's draw --
-use `model_source.current_glb`, which answers only from a conversion that is already current. A
+collection's membership in place. The converted GLB stays what reads the ENGINE's structure: clip
+authoring and `model_source.is_skeleton_only`, through `model_source.current_glb`, which answers
+only from a conversion that is already current -- the addon never starts one; the watcher and
+`paradise assets extract` do. A
 source's identity and `[glb]` settings live in its own sidecar (`car.blend.meta`), exactly as a
 `.glb`'s do.
 
@@ -143,32 +143,50 @@ one is shown as its source has it. No library instance ever drew the bindings: t
 materials' Base Color to that object colour (`meshes.tint_by_object_colour`) -- a textured
 material, and every slot after the first, always showed the model's own. That tint now reaches
 only a `.glb` or `.gltf` placement; a converted model got it while it was shown through its GLB.
-The game binds `Slots[i]` to primitive `i` of the converted GLB; an owned mesh (Make Mesh
-Editable) shows those bindings.
+The game binds `Slots[i]` to primitive `i` of the converted GLB.
 
-**A `.blend` of asset collections is one model per asset.** A collection marked as an asset
-(Mark as Asset) is a model of its own, named by the collection and exported about the
+**A `.blend` of asset collections is one model per asset, identified by a GUID in the `.blend`.**
+A collection marked as an asset (Mark as Asset) is a model of its own, exported about the
 collection's `instance_offset`, so variants laid side by side in one file each place at their own
 origin; objects in no asset collection are not part of any model. A `.blend` without an asset
-collection stays one whole-file model. Each asset converts to
-`.editor/converted/<assets-relative source>/<asset>.glb`, stamped like a whole-file conversion
-plus `paradiseAsset`, and its documents (`.mesh`, `.skinnedmesh`, `.skeleton`, `.anim`) carry a
-top-level `asset = "<name>"` beside `source`. `mesh_document.source_for` returns a
-`model_source.Model(path, asset)`; the library keeps one collection per (source, asset), named
-`GLB/<file>.blend/<asset>` (a name that predates native loading) and tagged `paradise_glb_asset`,
-linking that asset collection; `editable_mesh.glb_of(source, asset)` converts through
-`paradise assets convert <source> --asset <asset>`. An asset the file no longer marks, or a
-whole-file reference to a `.blend` that now holds assets, is reported rather than showing another
-model. The file keeps one sidecar; its clip
-settings name the asset on each `[glb].clips` entry (`{ asset, index, ... }`, keyed by asset and
-the index in that asset's GLB), and a write leaves the other models' entries as they are.
+collection stays one whole-file model, identified by the file's own sidecar GUID. An asset's
+identity is its collection's `paradise_guid` custom property, a canonical lowercase hyphenated
+GUID (`document/asset_guids.py`), never the collection's name: renaming the collection keeps every
+document, clip setting and placement. Only tooling mints it, and the engine never writes a
+`.blend`: the addon's `save_pre` handler (`materialize/asset_guids.stamp`, called from
+`sync.py` before anything else and whether or not a document is open -- the model file Edit
+Source opens has none) gives every local asset collection of the file being saved a fresh GUID
+when it has no valid one and rewrites a valid one canonical. Blender copies custom properties when
+a collection is duplicated, so two collections can arrive sharing one: the one the project records
+under that GUID keeps it -- a name the sidecar's `[extract]` parts list for it, or the name hint
+of a mesh document extracted from it (`asset_guids.recorded_names`) -- else the first by name, and
+every other gets a fresh one. `paradise assets to-blend` mints them for the collections it builds.
+The converter refuses a file with an asset collection lacking a GUID, or two sharing one.
+
+Each asset converts to `.editor/converted/<assets-relative source>/<asset guid>.glb`, stamped like
+a whole-file conversion plus `paradiseAsset` (its GUID), `paradiseAssetName` and `paradiseAssets`
+(every `{guid, name}` of the file). Its documents (`.mesh`, `.skinnedmesh`, `.skeleton`, `.anim`)
+carry a top-level `asset = { guid = "<guid>", name = "<collection name>" }` beside `source`; the
+name is a hint for people, repaired by the next extraction as a reference's `path` is, and a new
+asset's documents are named after its collection when first extracted -- a later rename keeps the
+files. `mesh_document.source_for` returns a `model_source.Model(path, asset guid, name)`, equal by
+path and GUID alone; the library keeps one collection per (source, asset GUID), found by its tags
+(`paradise_glb_source`, `paradise_glb_asset`) and named `GLB/<file>.blend/<name>` (a name that
+predates native loading), linking the asset collection whose `paradise_guid` is that GUID. Linking
+goes by name and the GUID is inside the collection, so the recorded name is linked first and, when
+that is not it (renamed since the extraction), every asset collection of the file is linked to
+find it (`meshes._asset_collection`). An asset GUID the file no longer holds, or a whole-file
+reference to a `.blend` that now holds assets, is reported rather than showing another model. The
+file keeps one sidecar; its clip settings name the asset by GUID on each `[glb].clips` entry
+(`{ asset, index, ... }`, keyed by asset and the index in that asset's GLB), as do its `[extract]`
+parts, and a write leaves the other models' entries as they are.
 
 **A `.gltf` is the GLB its buffers make.** Every reader in `document/gltf.py` hands a `.gltf` out
 as the GLB the engine's pipeline reads it as: its JSON, with the buffers (a file named relative to
 the `.gltf`, percent-decoded, or a `data:` URI) concatenated 4-byte aligned into one BIN chunk and
 the buffer views re-pointed into it. A buffer or image uri that is absolute, remote or outside
 `assets/` is refused (`gltf.GltfError`, `gltf.reference_refusal`), as the engine refuses it: the
-library does not import such a file, and building an editable mesh from it fails with the reason.
+library does not import such a file.
 Blender's importer opens the `.gltf` itself; the library stamps it with its buffer and image files,
 so a re-exported `.bin` re-imports on the next load, and it keeps the extension in its collection
 name (`GLB/Lamp.gltf`) so a `Lamp.glb` beside it keeps its own.
@@ -296,104 +314,20 @@ their editor, and a second way to type an identity is a second thing that can di
 on the save path, and being importable outside Blender is what lets it be unit-tested against a
 plain dict. Keep it that way.
 
-## Editable meshes
+## Editing a model
 
-**An object that owns its geometry is recorded in the GLB, not in the document.** Make Mesh
-Editable (`ops.py`) copies the geometry an object shows into `<document folder>/<document
-stem>/<Name>_<guid8>.glb`, waits for the watcher to mint its `.mesh` document (found through the
-GLB sidecar's `[extract]` record), unpacks the instance if it was one, and points the object's
-mesh field at that document. The GLB's `scenes[scene].extras.paradise_mesh_owner` holds the
-owner's guid: the load builds a real, editable Blender mesh for that object alone
-(`document/editable_mesh.owns`), and anything else referencing the same `.mesh` sees an ordinary
-instance. No document field exists for it, so the engine reads the level exactly as before and
-`paradise assets mv` cannot break the link.
-
-**Materials bind by position, so slot order IS the contract.** Engine `MeshBlob` binds `Slots[i]`
-to glTF primitive `i`, counted in `GltfSceneReader.BakeInstances` order: depth-first from the
-default scene's roots, children as each node lists them. `document/editable_mesh.mesh_instances`
-is that walk, and `materialize/editable_mesh.build_mesh` rebuilds a GLB as one mesh with a slot
-per primitive in that order. Blender's importer cannot do it: it merges primitives that share a
-material, and names objects after nodes that ShiningPie's multi-part models reuse by the dozen,
-so neither slots nor parts could be matched afterwards. Slot materials in Blender are display
-only (`Paradise/<material document>`, cut to Blender's 63-byte name limit by UTF-8 bytes with a
-digest), assigned from `Slots` on load and after every save.
-
-**A GLB is untrusted input.** A merge, a teammate or a hand edit can put anything in it, so
-`unsupported`, `shared_mesh.unsupported` and `build_mesh` answer a malformed field -- a transform
-that is not finite numbers, a string or negative offset, a missing `meshes`, a primitive of the
-wrong shape -- with a refusal (`EditableMeshError`), never a raw exception: the operators report
-it, and a load shows that object as the read-only instance instead of aborting.
-
-**The GLB is written with placeholder materials.** `export_materials='PLACEHOLDER'` keeps one
-primitive per used slot and writes no `materials` array, and `AssetExtractor.HasAuthoredParts`
-is exactly "materials or embedded images" -- so `verify` does not ask for an `extract` that would
-mint a seed prefab and a copy of every material per placement. The exporter forces a `.glb`
-extension onto its path, so it writes into a private temp directory; the result is copied to a
-`.tmp` beside the target (in the default `[assets] ignore`) and renamed into place.
-
-**The save exports what changed, refuses what would misbind, and never overwrites someone else.**
-`store.EDITABLE_KEY` records per owned object the GLB (assets-relative), the SHA-256 of the bytes
-last read or written, a fingerprint of the evaluated geometry (topology, every non-internal
-attribute, corner normals, slot count) and the slot count. `editable_mesh.publish` runs after
-every document check and before the document is written. An unchanged fingerprint exports
-nothing, so an untouched scene writes zero bytes. A changed one is refused when the GLB's bytes
-moved on disk, when the slots no longer show `Slots` in order, or when a slot lost all its faces
-(the exporter drops that slot's primitive, shifting every binding after it). Every export is
-staged before any GLB is renamed into place, so a refusal writes nothing. Slots rearranged with
-no geometry change write nothing either; the display refresh puts them back and the save warns.
-
-**A reload keeps the author's object while its GLB is unchanged.** `load_document` takes owned
-objects out of the scene before clearing it (`editable_mesh.stash`) and hands each back when the
-GLB's bytes are still the recorded ones, so quads, modifiers and anything else a GLB cannot hold
-survive. Otherwise -- a fresh clone, Recreate, someone else's change -- the object is rebuilt from
-the GLB, triangulated with modifiers applied. That asymmetry is the price of the GLB being the
-only truth.
-
-**The watcher mints; the operator waits for it.** The `.mesh` document follows the GLB's own
-sidecar out of `paradise assets watch`. The operator waits `MESH_WAIT_SECONDS`, and on a timeout
-leaves the GLB in place: a watcher in play mode rebuilds after every change and queues new files
-behind that build (minutes on a cold cache), and running the operator again reuses the object's
-own GLB (`plan_target` accepts a file this object owns).
-
-**A shared model can be edited in place instead (`document/shared_mesh.py`).** Edit Shared Mesh
-builds the same one-mesh, slot-per-primitive object from the placement's shared GLB, tagged
-`shared` in `store.EDITABLE_KEY`, and writes nothing -- no GLB, no document. The save exports the
-edit to a scratch GLB outside `assets/` and `shared_mesh.splice` writes a new model from the
-ORIGINAL's JSON with only the geometry replaced: slot `i` goes back to primitive `i` of the same
-`mesh_instances` walk, moved into its node's space by the inverse of that node's world transform
-(normals by `L^T`, tangents by `L^-1`, a mirror's winding and handedness flipped back), keeping
-its `material`. Materials, textures, images (embedded bytes copied), samplers, nodes, names,
-extras and extensions are untouched, so the extracted materials' source fingerprints still match
-and `verify` stays quiet. A mesh several nodes shared becomes one per node. `shared_mesh.unsupported`
-refuses what the round trip would drop: morph targets, attributes other than
-POSITION/NORMAL/TEXCOORD_0/TANGENT, mesh nodes outside the default scene, accessors or buffer
-views nothing but geometry and images uses, a GLB's external buffers, and owned GLBs. A `.gltf`
-is spliced as the GLB it reads as and written back by `gltf.container_files`: its JSON, naming its
-one buffer as before (the same `.bin`, or a `data:` URI again), and the `.bin` only when its bytes
-changed, staged and renamed into place before the JSON. A `.gltf` split across several buffers is
-refused (`gltf.rewrite_refusal`), since the rewrite has one. The same fingerprint, slot and
-changed-on-disk refusals apply -- for a `.gltf`, to it and its `.bin` together. After the replace, other placements in the scene are
-pointed at a fresh import -- from Object Mode only, since Blender's importer leaves Edit Mode;
-otherwise the library's stamp check re-imports on the next load. A reload hands the editing object
-back while the GLB's bytes are unchanged (`materialize_shared`); nothing records the edit outside
-this scene, and Finish Editing Shared Mesh saves, drops the object and reloads. One object edits
-a given model at a time (`shared_editor`), or two would each overwrite the other.
-
-**A converted model is edited where it comes from.** Make Mesh Editable on a converted
-placement builds from the converted GLB (`editable_mesh.glb_of`, converting it first when it is
-stale): its primitives are what the engine extracted, so slot `i` is still the `Slots[i]` the
-placement had. Edit Shared Mesh refuses one (its poll names the reason): the converted GLB is
-derived, and the next conversion would drop a splice. "Edit Source in New Blender" opens a
-`.blend` source as the main file of a second Blender instead, where quads and modifiers are
-intact -- the whole file for an asset of a `.blend`, whose Make Mesh Editable builds from that
-asset's own GLB; its save is picked up by the watcher, which converts and re-extracts, and the
-library's stamp reloads the linked `.blend` on the next load.
-Every other format is interchange, so it is refused with the advice to re-export it from its
-DCC, the message naming the format (`model_source.edit_in_place_refusal`). A model whose GLB holds
-no mesh -- a `.bvh`, or any skeleton-and-clips file -- refuses Make Mesh Editable, Edit Shared
-Mesh and Edit Source alike (`model_source.no_mesh_refusal`); it still places without a warning --
-the placement shows its armature, imported by the converter's importer and posed by its clip --
-and its clips are authored in the Animation clips section.
+**A model's geometry is edited in its source, never in a level.** A placement is a read-only
+instance of the model: a `.blend` linked, any other format imported (`materialize/meshes.py`).
+"Edit Source in New Blender" (`context_menu.py`) opens a `.blend` source as the main file of a
+second Blender, where quads and modifiers are intact -- the whole file for an asset of a `.blend`;
+its save gives the asset collections their GUIDs (see the asset collections above) and is picked
+up by the watcher, which converts and re-extracts, and the library's stamp reloads the linked
+`.blend` on the next load. Every other format -- a `.glb` and `.gltf` included -- is interchange,
+so its row is greyed with the advice to re-export it from the application it came from, the
+message naming the format (`model_source.edit_source_refusal`). A model whose GLB holds no mesh
+-- a `.bvh`, or any skeleton-and-clips file -- is refused too (`model_source.no_mesh_refusal`); it
+still places without a warning -- the placement shows its armature, imported by the converter's
+importer and posed by its clip -- and its clips are authored in the Animation clips section.
 
 ## Schema, identity and extraction
 

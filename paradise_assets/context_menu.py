@@ -1,7 +1,7 @@
 """The right-click entries for a document object, in both editors an author selects one in:
-open the prefab it instantiates, turn it into one, group the selection under a new Empty, give a
-placement a mesh of its own, open the ``.blend`` its model comes from, and -- for anything that
-belongs to an instance -- apply, revert or break its overrides.
+open the prefab it instantiates, turn it into one, group the selection under a new Empty, open
+the ``.blend`` its model comes from -- the only place a model's geometry is edited -- and, for
+anything that belongs to an instance, apply, revert or break its overrides.
 
 Both are reachable from the sidebar already. The menus are where an author's hand already is
 when the question comes up -- the Outliner because it is the only place the document's tree is
@@ -31,7 +31,6 @@ __all__ = ["classes", "register_menu", "unregister_menu"]
 #: context menu. One ``_draw`` for both -- they are handed the same active object, and an entry
 #: that appeared in one place and not the other would read as a bug in whichever lacked it.
 MENUS = ("OUTLINER_MT_object", "VIEW3D_MT_object_context_menu")
-EDIT_MODE_MENU = "VIEW3D_MT_edit_mesh_context_menu"
 
 
 def prefab_of(obj) -> tuple[str, str] | None:
@@ -148,20 +147,20 @@ class PARADISE_ASSETS_OT_edit_model_source(Operator):
     @classmethod
     def poll(cls, context) -> bool:
         model = _model_of(context.active_object)
-        if model is None or not model_source.is_converted(model.path):
+        if model is None:
             return False
         if model_source.is_skeleton_only(model.path, model.asset):
-            cls.poll_message_set(model_source.no_mesh_refusal(model.path, model.asset))
+            cls.poll_message_set(model_source.no_mesh_refusal(model))
             return False
-        if not model.path.lower().endswith(".blend"):
-            cls.poll_message_set(model_source.edit_in_place_refusal(model.path))
+        if not model_source.is_linked(model.path):
+            cls.poll_message_set(model_source.edit_source_refusal(model.path))
             return False
         return True
 
     def execute(self, context):
         model = _model_of(context.active_object)
         source = model.path if model is not None else None
-        if source is None or not source.lower().endswith(".blend") or not os.path.isfile(source):
+        if source is None or not model_source.is_linked(source) or not os.path.isfile(source):
             self.report({"ERROR"}, "This object does not show a model made from a .blend on disk.")
             return {"CANCELLED"}
         # Opened as the main file with no script: the author edits the model itself, and the
@@ -209,31 +208,12 @@ def _draw(self, context) -> None:
         text="Group Selected",
         icon="OUTLINER_COLLECTION")
     # Only on something that shows a model: on a group or a light it could only ever be greyed.
-    # A prefab's child keeps the row, greyed, so its tooltip can say to unpack the instance.
-    if obj.instance_collection is not None:
+    # A model that is no .blend keeps the row, greyed, so its tooltip can say where it is edited.
+    if _model_of(obj) is not None:
         column.operator(
-            "paradise_assets.make_mesh_editable",
-            text="Make Mesh Editable",
-            icon="EDITMODE_HLT")
-        # A converted model's GLB is derived, so it is edited where it comes from instead; any
-        # other format's row stays, greyed, so its tooltip can say where that is.
-        shown = _model_of(obj)
-        if shown is not None and model_source.is_converted(shown.path):
-            column.operator(
-                PARADISE_ASSETS_OT_edit_model_source.bl_idname,
-                text="Edit Source in New Blender",
-                icon="FILE_BLEND")
-        else:
-            column.operator(
-                "paradise_assets.edit_shared_mesh",
-                text="Edit Shared Mesh…",
-                icon="LINKED")
-    editing = store.editable_of(obj)
-    if editing is not None and editing.shared:
-        column.operator(
-            "paradise_assets.finish_shared_mesh",
-            text="Finish Editing Shared Mesh",
-            icon="CHECKMARK")
+            PARADISE_ASSETS_OT_edit_model_source.bl_idname,
+            text="Edit Source in New Blender",
+            icon="FILE_BLEND")
 
     # Only for something that IS part of an instance: on a plain object these three could only
     # ever be greyed, and the menu already earns its rows.
@@ -256,21 +236,8 @@ def _draw(self, context) -> None:
         icon="UNLINKED")
 
 
-def _draw_edit_mode(self, context) -> None:
-    """Edit Mode's right-click is a different menu, and it is where a shared-mesh edit ends."""
-    obj = getattr(context, "active_object", None)
-    editing = store.editable_of(obj) if obj is not None else None
-    if editing is None or not editing.shared:
-        return
-    self.layout.separator()
-    self.layout.operator(
-        "paradise_assets.finish_shared_mesh",
-        text="Finish Editing Shared Mesh",
-        icon="CHECKMARK")
-
-
-#: Menu -> what it appends, for the Object Mode menus and Edit Mode's.
-_ENTRIES = (*((name, _draw) for name in MENUS), (EDIT_MODE_MENU, _draw_edit_mode))
+#: Menu -> what it appends.
+_ENTRIES = tuple((name, _draw) for name in MENUS)
 
 
 def register_menu() -> None:

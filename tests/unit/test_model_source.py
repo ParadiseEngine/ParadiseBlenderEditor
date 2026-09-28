@@ -256,7 +256,9 @@ def test_a_conversion_with_no_mesh_is_skeleton_only(tmp_path):
     layout = project(tmp_path)
     walk = write(tmp_path / "assets" / "models" / "walk.bvh", b"HIERARCHY")
     crate = write(tmp_path / "assets" / "models" / "crate.obj", b"v 0 0 0")
-    assert not model_source.is_skeleton_only(walk), "nothing converted yet: nothing is known"
+    # A .bvh is animation only by its format; any other source is unknown until converted.
+    assert model_source.is_skeleton_only(walk)
+    assert not model_source.is_skeleton_only(crate), "nothing converted yet: nothing is known"
 
     converted(layout, walk, b"HIERARCHY", nodes=[{"name": "Hips"}], skins=[{"joints": [0]}],
               animations=[{"name": "Walk"}])

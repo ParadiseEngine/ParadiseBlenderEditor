@@ -44,10 +44,12 @@ from . import gltf, project
 from . import guid as document_guid
 
 __all__ = [
+    "ANIMATION_ONLY",
     "CONVERTED",
     "DIRECT",
     "GLTF_IMPORTER",
     "IMPORTERS",
+    "MESH_SUFFIXES",
     "SUFFIXES",
     "Importer",
     "Model",
@@ -106,6 +108,12 @@ IMPORTERS: dict[str, Importer] = {
 
 #: A ``.glb`` or ``.gltf`` is what the engine reads itself, so Blender's glTF importer shows it.
 GLTF_IMPORTER = Importer("import_scene.gltf")
+
+#: Formats that carry a skeleton and its animation, never a mesh.
+ANIMATION_ONLY = (".bvh",)
+
+#: Formats that can hold geometry: what a mesh slot's picker offers.
+MESH_SUFFIXES = tuple(suffix for suffix in SUFFIXES if suffix not in ANIMATION_ONLY)
 
 #: Under the project's ``.editor/``: derived data, rebuilt on demand.
 CONVERTED_DIR = "converted"
@@ -207,8 +215,10 @@ def is_current(source: str, glb: str, asset: str | None = None) -> bool:
 
 def is_skeleton_only(source: str, asset: str | None = None) -> bool:
     """Whether the current GLB of ``source`` (or of its ``asset``) holds no mesh -- a ``.bvh``,
-    or any file of skeleton and clips alone. ``False`` while there is no current GLB to ask:
-    nothing is known yet."""
+    or any file of skeleton and clips alone. A ``.bvh`` is one by its format, converted or not;
+    any other source is ``False`` while there is no current GLB to ask: nothing is known yet."""
+    if source.lower().endswith(ANIMATION_ONLY):
+        return True
     glb = current_glb(source, asset)
     return glb is not None and _stamped(glb, _has_no_mesh) is True
 

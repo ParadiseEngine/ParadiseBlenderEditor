@@ -157,6 +157,9 @@ if command -v "$BLENDER" >/dev/null 2>&1; then
   integration "opening a cached .blend refreshes from assets" \
     tests/integration/test_open_workfile.py \
     '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2}|Info: Saved|.*Read blend)'
+
+  integration "open levels refresh after prefab and model saves" \
+    tests/integration/test_auto_reload.py "$DEFAULT_NOISE"
 else
   echo "SKIPPED: Blender not found (set BLENDER=/path/to/blender) — integration tests not run."
 fi

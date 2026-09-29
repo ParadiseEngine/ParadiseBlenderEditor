@@ -179,16 +179,6 @@ def _updated(*_):
         bpy.app.timers.register(_prune_pending, first_interval=0.1)
 
 
-def _fingerprint(scene):
-    # Include live transforms, parenting, helper geometry and overlays. A pending action must
-    # never rematerialize over edits made while its child process was running.
-    return tuple(sorted((obj.as_pointer(), obj.name, obj.parent.as_pointer() if obj.parent else 0,
-                         tuple(value for row in obj.matrix_basis for value in row),
-                         tuple(value for row in obj.matrix_parent_inverse for value in row),
-                         repr(sorted((key, str(value)) for key, value in obj.items())))
-                        for obj in scene.collection.all_objects))
-
-
 @dataclass
 class _Request:
     scene: object
@@ -231,7 +221,7 @@ def _prepare(request):
     if state is None or state.path != request.document or state.is_stale:
         raise ValueError("The document changed before the authored action could start; reload it first")
     if request.preview and (state.stamp != request.stamp
-                            or _fingerprint(request.scene) != request.fingerprint):
+                            or store.scene_fingerprint(request.scene) != request.fingerprint):
         raise ValueError("Local edits changed before the preview could start; save to refresh it")
     cache = Path(request.root, ".editor", "actions")
     cache.mkdir(parents=True, exist_ok=True)
@@ -239,7 +229,7 @@ def _prepare(request):
     state_path, response_path = request.directory / "state.json", request.directory / "response.json"
     state_path.write_text(json.dumps(toggle_values(request.scene, request.entity, request.component)),
                           encoding="utf-8")
-    request.stamp, request.fingerprint = state.stamp, _fingerprint(request.scene)
+    request.stamp, request.fingerprint = state.stamp, store.scene_fingerprint(request.scene)
     return actions.arguments(request.document, request.component, request.action, request.entity,
                              state_path, response_path, value=request.value, on_save=request.on_save)
 
@@ -260,13 +250,14 @@ def _finish(request, result):
     if request.preview:
         if response.document_changed or response.toggles:
             raise ValueError("A preview provider may only return viewport overlays")
-        if state.is_stale or state.stamp != request.stamp or _fingerprint(scene) != request.fingerprint:
+        if (state.is_stale or state.stamp != request.stamp
+                or store.scene_fingerprint(scene) != request.fingerprint):
             raise ValueError("The document or local edits changed while the preview was running; "
                              "save or reload to refresh it")
         action_preview.replace(scene, request.preview_owner, response.overlays)
         return
     if response.document_changed:
-        if state.stamp != request.stamp or _fingerprint(scene) != request.fingerprint:
+        if state.stamp != request.stamp or store.scene_fingerprint(scene) != request.fingerprint:
             raise ValueError("The action updated the document; newer local edits are preserved. "
                              "Reconcile those edits before reloading the changed document")
         # Actions can change placement too: rematerialize only after the complete edit check.
@@ -297,8 +288,9 @@ def _finish(request, result):
     if response.document_changed:
         for queued in _QUEUED.get(scene.as_pointer(), []):
             if queued.preview:
-                queued.stamp, queued.fingerprint = store.read_state(scene).stamp, _fingerprint(scene)
-    elif _fingerprint(scene) != request.fingerprint:
+                queued.stamp = store.read_state(scene).stamp
+                queued.fingerprint = store.scene_fingerprint(scene)
+    elif store.scene_fingerprint(scene) != request.fingerprint:
         enabled = _saved(scene, _PREVIEW_STATE)
         previews = [key for key in _live_previews(scene) if enabled.get(key) is True]
         if previews:
@@ -360,7 +352,7 @@ def request(scene, entity, component, action, *, value=None, on_save=False, rest
                        preview=preview, refresh_previews=refresh_previews)
     if preview:
         pending.generation = _GENERATIONS.get((scene.as_pointer(), pending.preview_owner), 0)
-        pending.stamp, pending.fingerprint = state.stamp, _fingerprint(scene)
+        pending.stamp, pending.fingerprint = state.stamp, store.scene_fingerprint(scene)
     if busy(scene):
         queue = _QUEUED.setdefault(scene.as_pointer(), [])
         if preview:

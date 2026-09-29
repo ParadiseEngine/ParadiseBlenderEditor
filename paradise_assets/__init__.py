@@ -32,7 +32,7 @@ def register() -> None:
         ui,
         watch,
     )
-    from .materialize import action_preview, light_preview, sync
+    from .materialize import action_preview, light_preview, refresh, sync
     from .play import ops as play_ops
 
     # Blender keeps whatever a register() that raised had already registered, and every enable
@@ -65,6 +65,7 @@ def register() -> None:
         light_preview.register_handler()
         action_preview.register_handler()
         action_ops.register_handler()
+        refresh.register_handler()
         watch.register_handler()
     except Exception:
         unregister()
@@ -75,11 +76,12 @@ def unregister() -> None:
     import bpy
 
     from . import action_ops, browser, context_menu, dropped, field_widgets, watch
-    from .materialize import action_preview, light_preview, sync
+    from .materialize import action_preview, light_preview, refresh, sync
     from .play import session as play_session
     browser.unregister_menu()
     context_menu.unregister_menu()
     dropped.unregister_handler()
+    refresh.unregister_handler()
     sync.unregister_handler()
     light_preview.unregister_handler()
     action_ops.unregister_handler()

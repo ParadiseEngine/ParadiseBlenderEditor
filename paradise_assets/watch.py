@@ -345,7 +345,7 @@ def adopt_loaded_file(*_args) -> None:
         return
 
     from .document import project as project_layout
-    from .materialize import store, workfile
+    from .materialize import refresh, store, workfile
 
     _adopting = True
     try:
@@ -353,6 +353,7 @@ def adopt_loaded_file(*_args) -> None:
         for scene in bpy.data.scenes:
             problem = workfile.refresh_from_document(scene)
             if problem:
+                refresh.deferred(scene)
                 print(f"[paradise_assets] could not refresh from assets: {problem}")
 
             state = store.read_state(scene)

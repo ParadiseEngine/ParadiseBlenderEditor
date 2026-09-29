@@ -19,7 +19,7 @@ from bpy.types import Panel
 from . import action_ops, clip_ops, component_ops, edits, field_widgets, transform_ops, watch
 from .document import assets as asset_index
 from .document import component_schema, glb_clips, well_known
-from .materialize import save, shapes, store, sync, tagging, workfile
+from .materialize import refresh, save, shapes, store, sync, tagging, workfile
 
 __all__ = ["classes"]
 
@@ -64,6 +64,14 @@ class PARADISE_ASSETS_PT_document(_AssetsPanel, Panel):
             warning.alert = True
             warning.label(text="Changed on disk since it was opened.", icon="ERROR")
             warning.label(text="Reload, or your save will be refused.")
+
+        if (reason := refresh.pending_reason(context.scene)) is not None:
+            warning = layout.box()
+            warning.alert = True
+            warning.label(text="Automatic reload paused.", icon="FILE_REFRESH")
+            warning.label(text=reason[:90])
+            if not state.is_stale:
+                warning.label(text="Save local edits, or Reload to discard them.")
 
         # A save_pre handler can neither open a dialog nor cancel the save, so a refusal not
         # said here is a save the author believes happened. The working file keeps the work:

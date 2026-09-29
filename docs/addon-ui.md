@@ -9,7 +9,7 @@ paradise_assets/
   document/     ★ pure Python, imports no bpy — the *.prefab format, the canonical TOML writer,
                   the axis rebase, sidecar reading, the game's component schema
   materialize/    document <-> Blender objects: load, save, mesh instancing, ID-property store,
-                  the working .blend, save-on-save, asset collection GUIDs
+                  the working .blend, save-on-save, asset collection GUIDs, automatic refresh
   play/           the CLI: resolution, Build / Verify / Clean / Play, the running session
   ops.py          open_prefab / save_prefab / reload_prefab, add_prefab_instance,
                   extract_prefab, toggle_watch, refresh_catalogue

@@ -24,7 +24,7 @@ from ..document.prefab import PrefabDocument, PrefabObject
 from . import light_preview, shapes, store, tagging, transform_helpers
 from .meshes import LIBRARY_COLLECTION, MeshLibrary
 
-__all__ = ["LoadResult", "load_document"]
+__all__ = ["LoadError", "LoadResult", "load_document"]
 
 
 class LoadResult:
@@ -40,6 +40,7 @@ class LoadResult:
         #: reference-discovery would drift silently and serve a stale artifact. Failed parses
         #: are recorded too, so fixing one counts as a change.
         self.sources: set[str] = set()
+        self.stamps: dict[str, str] = {}
 
     def warn(self, message: str) -> None:
         self.warnings.append(message)
@@ -47,7 +48,16 @@ class LoadResult:
     def read(self, path: str) -> str:
         """Record ``path`` as read, and hand it back so call sites stay one line."""
         self.sources.add(os.path.normcase(os.path.abspath(path)))
+        self.stamps.setdefault(os.path.normcase(os.path.abspath(path)), store.stamp_of(path))
         return path
+
+
+class LoadError(ValueError):
+    """An incomplete reload, with its attempted inputs so a later repair can be noticed."""
+
+    def __init__(self, message: str, sources: set[str]) -> None:
+        super().__init__(message)
+        self.sources = sources
 
 
 def load_document(
@@ -58,6 +68,8 @@ def load_document(
     *,
     clear_startup: bool = False,
     preserve_actions: bool = False,
+    require_complete: bool = False,
+    document_stamp: str | None = None,
 ) -> LoadResult:
     """Materialize ``document`` into ``scene``, replacing anything already loaded there.
 
@@ -67,12 +79,9 @@ def load_document(
     an extraction re-materializes, and each of those has arranged the scene it hands over."""
     result = LoadResult()
     result.read(scene_path)
-    # Captured before anything changes, dropped after the clear and before anything is created:
-    # the clear owns the document objects, and doing it in this order means no captured
-    # reference can have been freed under us and no name is taken when the document wants it.
+    if document_stamp is not None:
+        result.stamps[os.path.normcase(os.path.abspath(scene_path))] = document_stamp
     startup = _startup_content(scene) if clear_startup else None
-    _clear_previous(scene, preserve_actions=preserve_actions)
-    _drop_startup_content(startup)
 
     mesh_fields = schema.load(layout.root)
     if not mesh_fields.from_schema:
@@ -90,12 +99,40 @@ def load_document(
     for error in resolution.errors:
         result.warn(error)
     result.sources |= resolution.sources
+    result.stamps.update(resolution.stamps)
+    if require_complete and resolution.errors:
+        raise LoadError(resolution.errors[0], result.sources)
 
     library = MeshLibrary(scene, result.warn)
+    collections: dict[str, bpy.types.Collection | None] = {}
+    try:
+        for entry in resolution.document.objects:
+            reference = _mesh_reference(entry, mesh_fields)
+            if reference is None or reference in collections:
+                continue
+            result.read(layout.resolve(reference))
+            model = mesh_document.displayable(layout, reference)
+            collection = library.collection_for(model) if model is not None else None
+            collections[reference] = collection
+            if collection is None:
+                message = f"{entry.name}: mesh '{reference}' could not be displayed"
+                result.warn(message)
+                if require_complete:
+                    raise ValueError(message)
+    except Exception as error:
+        if not require_complete:
+            raise
+        raise LoadError(str(error), result.sources | library.sources) from error
+
+    # Automatic reload must not clear the last good document for an incomplete source save.
+    # Resolve the current graph and load its models first; retired inputs no longer matter.
+    _clear_previous(scene, preserve_actions=preserve_actions)
+    _drop_startup_content(startup)
     created: dict[str, bpy.types.Object] = {}
 
     for entry in resolution.document.objects:
-        obj = _create_object(entry, scene, layout, library, mesh_fields, result)
+        collection = collections.get(_mesh_reference(entry, mesh_fields))
+        obj = _create_object(entry, scene, layout, collection, result)
         tagging.tag(obj, entry, resolution)
         if store.is_derived(obj):
             result.derived += 1
@@ -134,7 +171,8 @@ def load_document(
 
     result.meshes = library.imported
     result.sources |= library.sources
-    store.write_state(scene, scene_path)
+    result.stamps.update(library.stamps)
+    store.write_state(scene, scene_path, stamp=result.stamps[os.path.normcase(os.path.abspath(scene_path))])
     scene.view_layers[0].update()
     # Nested transform fields store WORLD placement, so all parents must be evaluated first.
     for entry in document.objects:
@@ -145,6 +183,8 @@ def load_document(
     if not preserve_actions:
         from .. import action_ops
         action_ops.after_load(scene)
+    from . import refresh
+    refresh.loaded(scene, result.stamps)
     return result
 
 
@@ -152,22 +192,14 @@ def _create_object(
     entry: PrefabObject,
     scene: bpy.types.Scene,
     layout: project.ProjectLayout,
-    library: MeshLibrary,
-    mesh_fields: schema.MeshFields,
+    collection: bpy.types.Collection | None,
     result: LoadResult,
 ) -> bpy.types.Object:
-    reference = _mesh_reference(entry, mesh_fields)
     obj = bpy.data.objects.new(entry.name or "object", None)
     obj.empty_display_size = 0.25
-    if reference is not None:
-        # The field names a mesh DOCUMENT; the model it was extracted from is what Blender shows.
-        model = mesh_document.displayable(layout, reference)
-        collection = library.collection_for(model) if model is not None else None
-        if collection is not None:
-            obj.instance_type = "COLLECTION"
-            obj.instance_collection = collection
-        else:
-            result.warn(f"{entry.name}: mesh '{reference}' could not be displayed")
+    if collection is not None:
+        obj.instance_type = "COLLECTION"
+        obj.instance_collection = collection
 
     scene.collection.objects.link(obj)
     _apply_transform(obj, entry)

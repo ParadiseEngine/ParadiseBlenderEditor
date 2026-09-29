@@ -126,8 +126,8 @@ Right-clicking a **document object** — in the Outliner or in the viewport — 
 - **Group Selected** — put the selection under a new Empty, which is what a group is.
 - **Edit Source in New Blender** — on anything that shows a model made from a `.blend` (or from
   one of its asset collections): opens that `.blend` in a *second* Blender, where quads and
-  modifiers stay. Saving it there re-extracts the model, and placements -- which link the
-  `.blend` -- show the change on their next reload. A model is never edited inside a level: one
+  modifiers stay. Saving it there re-extracts the model, and open levels placing it -- which
+  link the `.blend` -- refresh once the save settles. A model is never edited inside a level: one
   in any other format (a `.glb`, an `.fbx`, an `.obj`, ...) is edited in the application that
   exported it, and the entry stays greyed with a tooltip saying so.
 
@@ -143,8 +143,8 @@ never converts anything; the converted GLB is only what the engine cooks and wha
 engine's structure -- the Animation clips section. A placement shows the source's own materials,
 not its `Materials.Slots` bindings (a `.glb` or `.gltf` placement still tints its untextured
 materials with `Slots[0]`'s colour).
-Saving the source, or a file it read (an `.obj`'s `.mtl`, a texture), refreshes placements on the
-next reload. A `.bvh` holds a skeleton and animation only: a placement shows its armature, posed
+Saving the source, or a file it read (an `.obj`'s `.mtl`, a texture), refreshes the open levels
+placing it. A `.bvh` holds a skeleton and animation only: a placement shows its armature, posed
 by the clip; it gives `.skeleton` and `.anim` documents and its clips are set up in the Components
 panel, but it has no mesh to edit. A `.blend` whose collections are marked as assets is one model
 per asset collection, each at its collection's instance offset, with its own converted GLB and
@@ -172,7 +172,9 @@ A typical loop:
    button writes only the document. **Recreate Working File** deletes the cached `.blend` and
    rebuilds the scene from the document — the way out of a workfile that has accumulated
    something you do not want, a stuck viewport included. **Reload** keeps what the working file
-   holds; Recreate does not, which is why it asks first.
+   holds; Recreate does not, which is why it asks first. A level also refreshes itself when a
+   prefab, mesh document or model it shows is saved elsewhere; while it holds unsaved edits the
+   refresh waits, and the Prefab Document panel says why.
 4. **Build & Play.** The asset watcher keeps `build/` current; the CLI brings the launcher up to
    date without rebuilding assets and runs the game on the open document.
 

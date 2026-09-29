@@ -84,6 +84,7 @@ class MeshLibrary:
         self._warn = warn or (lambda message: None)
         self._by_path: dict[tuple[str, str | None], bpy.types.Collection | None] = {}
         self._root = _library_root(scene)
+        self.stamps: dict[str, str] = {}
 
     @property
     def imported(self) -> int:
@@ -92,9 +93,13 @@ class MeshLibrary:
 
     @property
     def sources(self) -> set[str]:
-        """The model sources actually read, so a cache can key on what a load TOUCHED rather
-        than a second reference-discovery that goes stale silently."""
-        return {path for (path, _asset), value in self._by_path.items() if value is not None}
+        """Sources and dependencies read, including missing models that can appear later."""
+        sources = set()
+        for (path, _asset), collection in self._by_path.items():
+            sources.add(path)
+            sources.update(_stored_dependencies(collection) if collection is not None
+                           else model_source.native_dependencies(path))
+        return sources
 
     def collection_for(self, model: model_source.Model) -> bpy.types.Collection | None:
         """The collection for ``model``, loading it on first use; ``None`` leaves the object an
@@ -102,6 +107,9 @@ class MeshLibrary:
         key = (os.path.normcase(os.path.abspath(model.path)), model.asset)
         if key in self._by_path:
             return self._by_path[key]
+        # An importer may raise before returning. Keep its source among the attempted inputs
+        # so a guarded reload can retry when the author finishes writing the file.
+        self._by_path[key] = None
 
         collection = self._load(model)
         self._by_path[key] = collection
@@ -109,6 +117,7 @@ class MeshLibrary:
 
     def _load(self, model: model_source.Model) -> bpy.types.Collection | None:
         path = model.path
+        _stamp(path, model_source.native_dependencies(path), self.stamps)
         if not os.path.isfile(path):
             self._warn(f"mesh not found: {path}")
             return None
@@ -121,6 +130,8 @@ class MeshLibrary:
         # By the tags, not the name: the name follows the asset collection's, which may change.
         existing = next((found for found in self._root.children
                          if found.library is None and _same_source(found, path, model.asset)), None)
+        if existing is not None:
+            _stamp(path, _stored_dependencies(existing), self.stamps)
         if model_source.is_linked(path):
             return self._link(model, name, existing)
         if model.asset is not None:
@@ -137,10 +148,11 @@ class MeshLibrary:
         # the checkout. The workfile is a per-machine cache, so an absolute path costs nothing.
         path, asset, label = os.path.realpath(model.path), model.asset, model.label
         library = _library_of(path)
+        _stamp(path, _stored_dependencies(library) if library is not None else (), self.stamps)
         if library is not None and library.get(STAMP_KEY) != _stamp(path, _stored_dependencies(library)):
             # Every placement of every model of the file follows: one reload re-reads them all.
             library.reload()
-            _stamp_library(library, path)
+            _stamp_library(library, path, self.stamps)
         if (existing is not None and library is not None
                 and existing.get(STAMP_KEY) == library.get(STAMP_KEY) and existing.all_objects):
             return existing
@@ -184,7 +196,7 @@ class MeshLibrary:
         library = container.library
         # Again after every link: each model brings the images it uses, and the stamp must cover
         # them all for a texture saved alone to reload the file.
-        _stamp_library(library, path)
+        _stamp_library(library, path, self.stamps)
         if asset is None:
             # Only its objects were wanted; a linked scene would sit in the scene switcher.
             bpy.data.scenes.remove(container)
@@ -227,8 +239,6 @@ class MeshLibrary:
             stamp = _stamp(path, _stored_dependencies(existing))
             if existing.get(STAMP_KEY) == stamp and existing.all_objects:
                 return existing
-            # Drop the stale collection, or the import lands on GLB/Foo.001 and leaks the old mesh.
-            _discard_library_collection(existing)
 
         # The importers cannot be redirected; diff the tables, since names get suffixed. The
         # COLLECTIONS are diffed too because an importer may make its own -- the glTF one makes
@@ -264,9 +274,13 @@ class MeshLibrary:
 
         images = [image for image in bpy.data.images if image not in images_before]
         dependencies = [*model_source.native_dependencies(path), *_image_files(images)]
-        collection = bpy.data.collections.new(name)
-        _tag(collection, path, None, _stamp(path, dependencies), dependencies)
-        self._root.children.link(collection)
+        # Other scenes and untracked placements may still instance this collection. Replace
+        # its contents only after a successful import, never the collection's identity.
+        collection = existing if existing is not None else bpy.data.collections.new(name)
+        _empty(collection)
+        _tag(collection, path, None, _stamp(path, dependencies, self.stamps), dependencies)
+        if existing is None:
+            self._root.children.link(collection)
 
         for obj in created:
             for parent in list(obj.users_collection):
@@ -411,8 +425,11 @@ def _under_assets(path: str) -> str | None:
     return "/".join(parts[len(parts) - 1 - parts[::-1].index("assets"):]) if "assets" in parts else None
 
 
-def _stamp(path: str, dependencies) -> str:
-    return "|".join(store.stamp_of(part) for part in (path, *dependencies))
+def _stamp(path: str, dependencies, stamps: dict[str, str] | None = None) -> str:
+    if stamps is None:
+        return "|".join(store.stamp_of(part) for part in (path, *dependencies))
+    return "|".join(stamps.setdefault(os.path.normcase(os.path.abspath(part)), store.stamp_of(part))
+                    for part in (path, *dependencies))
 
 
 def _stored_dependencies(block) -> list[str]:
@@ -420,11 +437,11 @@ def _stored_dependencies(block) -> list[str]:
     return stored.split("\n") if isinstance(stored, str) and stored else []
 
 
-def _stamp_library(library: bpy.types.Library, path: str) -> None:
+def _stamp_library(library: bpy.types.Library, path: str, stamps: dict[str, str]) -> None:
     """Record what ``library`` was read from: the ``.blend`` and the image files its data names."""
     dependencies = _image_files(image for image in bpy.data.images if image.library == library)
     library[DEPENDENCIES_KEY] = "\n".join(dependencies)
-    library[STAMP_KEY] = _stamp(path, dependencies)
+    library[STAMP_KEY] = _stamp(path, dependencies, stamps)
 
 
 def _image_files(images) -> list[str]:
@@ -469,11 +486,6 @@ def _empty(collection: bpy.types.Collection) -> None:
             bpy.data.objects.remove(obj, do_unlink=True)
         else:
             collection.objects.unlink(obj)
-
-
-def _discard_library_collection(collection: bpy.types.Collection) -> None:
-    _empty(collection)
-    bpy.data.collections.remove(collection)
 
 
 def _find_layer_collection(layer, name: str):

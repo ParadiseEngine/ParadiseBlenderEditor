@@ -98,16 +98,17 @@ import therefore leaves the last good view with the reason in the panel, and the
 failed attempt are watched so their repair retries. The refresh waits while Blender is busy, a
 modal operator or authored action runs, an object is out of Object Mode, the workfile holds a
 refused save or pending component edits, or a document object, shape or helper changed since the
-view was loaded or saved; saving accepts those edits. The refresh after the addon's own save keeps
-action state rather than replaying toggles and previews. Selection is restored by identity,
-extras parented to document objects are re-parented, and no document is written. An imported
-model's library collection is refilled in place only after its import succeeds, so every scene
-and placement instancing it follows and a failed import keeps the old geometry. Undo and redo can
-restore old library contents, so they mark the view stale while keeping the last accepted
-fingerprint: restored edits stay until saved or reloaded. A workfile whose refresh on open was
-refused is watched from its document too. The timer and its `load_pre`, `undo_post` and
-`redo_post` handlers are persistent and removed on unregister; `tests/integration/test_auto_reload.py`
-covers them.
+view was loaded or saved — a shape's display size included, since a sphere saves it as its
+radius; saving accepts those edits. The refresh after the addon's own save keeps action state
+rather than replaying toggles and previews. Selection is restored by identity, extras parented to
+document objects are re-parented, light previews are rebuilt with their owners rather than
+restored, and no document is written. An imported model's library collection is refilled in place
+only after its import succeeds, so every scene and placement instancing it follows and a failed
+import keeps the old geometry. Undo and redo can restore old library contents, so they mark the
+view stale while keeping the last accepted fingerprint: restored edits stay until saved or
+reloaded. A workfile whose refresh on open was refused is watched from its document too. The
+timer and its `load_pre`, `undo_post` and `redo_post` handlers are persistent and removed on
+unregister; `tests/integration/test_auto_reload.py` covers them.
 
 **A load leaves the scene holding the document and nothing else, but only when asked.**
 `load_document(..., clear_startup=True)` removes Blender's startup content — the cube, the

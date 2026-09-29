@@ -111,7 +111,7 @@ def _selection_key(obj) -> tuple[str, str] | None:
 
 def _reload(scene: bpy.types.Scene, session: _Session, current: dict[str, str]) -> str | None:
     from ..document.prefab import loads
-    from . import load, shapes, transform_helpers
+    from . import light_preview, load, shapes, transform_helpers
 
     layout = store.project_of(scene)
     if layout is None:
@@ -123,15 +123,17 @@ def _reload(scene: bpy.types.Scene, session: _Session, current: dict[str, str]) 
                         and all(path == document_key or stamp == session.sources[path]
                                 for path, stamp in current.items()))
 
-    def owned(obj) -> bool:
-        return bool(store.guid_of(obj) or shapes.is_shape(obj) or transform_helpers.is_helper(obj))
+    def rebuilt(obj) -> bool:
+        return bool(store.guid_of(obj) or shapes.is_shape(obj) or transform_helpers.is_helper(obj)
+                    or light_preview.is_preview(obj))
 
-    # The rebuild deletes document objects, and Blender unparents (and so moves) the author's
-    # extras hung under them. Re-attach each to its parent's replacement by identity.
+    # The load deletes document objects and remakes them with the shapes, helpers and light
+    # previews it hangs under them; Blender unparents (and so moves) the author's extras from a
+    # deleted parent. Re-attach each extra to its parent's replacement by identity.
     extras = [(obj, _selection_key(obj.parent), obj.matrix_parent_inverse.copy(),
                obj.matrix_basis.copy(), obj.matrix_world.copy())
               for obj in scene.objects
-              if obj.parent is not None and owned(obj.parent) and not owned(obj)]
+              if obj.parent is not None and rebuilt(obj.parent) and not rebuilt(obj)]
 
     selections = []
     for layer in scene.view_layers:
@@ -199,6 +201,8 @@ def tick(*, now: float | None = None) -> float:
         except Exception as error:
             # Blender unregisters a timer that raises; one bad input must not stop every level.
             problem = str(error)
+        # A load that completed installed a new session; a later failure belongs to that one.
+        session = _SESSIONS.get(key, session)
         if problem is not None:
             session.failed = True
             _reason(session, problem)

@@ -124,9 +124,11 @@ def scene_fingerprint(scene: bpy.types.Scene, *, document_only: bool = False) ->
     if document_only:
         objects = (obj for obj in objects
                    if guid_of(obj) or shapes.is_shape(obj) or transform_helpers.is_helper(obj))
+    # A shape Empty's display size is not in its matrix, yet a save reads it: a sphere's radius.
     return tuple(sorted((obj.as_pointer(), obj.name, obj.parent.as_pointer() if obj.parent else 0,
                          tuple(value for row in obj.matrix_basis for value in row),
                          tuple(value for row in obj.matrix_parent_inverse for value in row),
+                         obj.empty_display_size if shapes.is_shape(obj) else 0.0,
                          repr(sorted((key, str(value)) for key, value in obj.items())))
                         for obj in objects))
 

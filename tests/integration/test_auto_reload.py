@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import struct
 import sys
@@ -15,15 +17,32 @@ import bpy
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from test_overrides import CHILD_LOCAL, INSTANCE, ROOT_LOCAL, TAG, make_project, opened
+from test_overrides import CHILD_LOCAL, INSTANCE, LEVEL_GUID, ROOT_LOCAL, TAG, make_project, opened
 
 from paradise_assets import action_ops, edits
 from paradise_assets.document import prefab
 from paradise_assets.document.asset_reference import AssetReference
-from paradise_assets.materialize import load, meshes, refresh, save, store
+from paradise_assets.materialize import light_preview, load, meshes, refresh, save, shapes, store
 
 MESH = "cccccccc-0000-4000-8000-000000000001"
 ASSET = "dddddddd-0000-4000-8000-000000000001"
+LIGHT = "eeeeeeee-0000-4000-8000-000000000001"
+COLLIDER = "eeeeeeee-0000-4000-8000-000000000002"
+SCHEMA = {"components": [
+    {"id": LIGHT, "type": "Test.Omni", "previewLight": "Point", "fields": []},
+    {"id": COLLIDER, "type": "Game.AuthoredColliders", "fields": [{
+        "name": "Shapes", "type": "array", "items": {
+            "name": "Shapes", "type": "object", "authoredBy": "shape", "fields": [
+                {"name": "ShapeType", "type": "enum", "values": ["Box", "Sphere", "Capsule"]},
+                {"name": "LocalCenter", "type": "vector3"},
+                {"name": "LocalRotation", "type": "quaternion"},
+                {"name": "Size", "type": "vector3"},
+                {"name": "Radius", "type": "float"},
+                {"name": "Height", "type": "float"},
+            ]}}]},
+]}
+SPHERE = {"ShapeType": "Sphere", "LocalCenter": [0.0, 0.0, 0.0], "LocalRotation": [0.0, 0.0, 0.0, 1.0],
+          "Size": [0.0, 0.0, 0.0], "Radius": 0.5, "Height": 0.0}
 _clock = 0.0
 
 
@@ -347,6 +366,55 @@ def check_read_stamps(work: str):
     print("PASS undo/redo invalidation keeps local edits until saved, then refresh resumes")
 
 
+def check_generated_children(work: str):
+    level, nested = make_project(work)
+    Path(work, ".editor").mkdir()
+    Path(work, ".editor", "authoring-schema.json").write_text(json.dumps(SCHEMA))
+    document = prefab.loads(Path(level).read_text(), level)
+    document.by_guid()[LEVEL_GUID].components += [
+        prefab.PrefabComponent(LIGHT, "Test.Omni", {}),
+        prefab.PrefabComponent(COLLIDER, "Game.AuthoredColliders", {"Shapes": [SPHERE]}),
+    ]
+    Path(level).write_text(prefab.dumps(document))
+    opened(level)
+    scene = bpy.context.scene
+
+    def root():
+        return store.object_with_guid(scene, LEVEL_GUID)
+
+    def previews():
+        return [obj for obj in scene.objects if light_preview.is_preview(obj)]
+
+    assert [preview.parent for preview in previews()] == [root()]
+    note = bpy.data.objects.new("AuthorChild", None)
+    scene.collection.objects.link(note)
+    note.parent = root()
+    note.location = (1.0, 2.0, 3.0)
+    note.select_set(True)
+    change_prefab(nested, 2)
+    printed = io.StringIO()
+    with contextlib.redirect_stdout(printed):
+        settle()
+    assert value() == 2 and "deferred" not in printed.getvalue(), printed.getvalue()
+    assert note.parent == root() and tuple(note.location) == (1.0, 2.0, 3.0) and note.select_get()
+    assert [preview.parent for preview in previews()] == [root()]
+    print("PASS light previews are rebuilt, not restored, beside a re-parented author child")
+
+    shape = next(obj for obj in scene.objects if shapes.is_shape(obj))
+    shape.empty_display_size = 1.25
+    change_prefab(nested, 3)
+    settle()
+    assert value() == 2 and shape.empty_display_size == 1.25
+    assert refresh.pending_reason(scene) is not None
+    save.save_prefab(scene, invoke_actions=False)
+    settle()
+    assert value() == 3 and refresh.pending_reason(scene) is None
+    saved = prefab.loads(Path(level).read_text(), level).by_guid()[LEVEL_GUID]
+    assert saved.component(COLLIDER).data["Shapes"][0]["Radius"] == 1.25
+    assert next(obj for obj in scene.objects if shapes.is_shape(obj)).empty_display_size == 1.25
+    print("PASS resizing a collision shape pauses reload until saved, and the save keeps it")
+
+
 def main() -> int:
     addon_utils.enable("paradise_assets", default_set=True, persistent=False)
     bpy.context.preferences.addons["paradise_assets"].preferences.auto_watch = False
@@ -364,6 +432,7 @@ def main() -> int:
         check_prefab_updates(str(Path(work, "prefabs")))
         check_model_updates(str(Path(work, "models")))
         check_read_stamps(str(Path(work, "read-stamps")))
+        check_generated_children(str(Path(work, "generated")))
     return 0
 
 

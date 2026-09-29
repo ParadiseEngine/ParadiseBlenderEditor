@@ -102,8 +102,8 @@ The panel says *"the prefab's; edit it there"*.
 *is* that model, so its geometry is not edited in the level. Right-click a placement of a model
 made from a `.blend` and choose **Edit Source in New Blender**: the `.blend` opens in a second
 Blender, with its quads and modifiers -- the whole file, when the model is one of its asset
-collections. Save it; the watcher re-extracts it, and placements show the change when their
-document is reloaded. A model in any other format (`.glb`, `.gltf`, `.fbx`, `.obj`, `.usd`, ...)
+collections. Save it; the watcher re-extracts it, and an open level placing it refreshes once
+the save settles. A model in any other format (`.glb`, `.gltf`, `.fbx`, `.obj`, `.usd`, ...)
 is edited in the application that exported it, then exported again. A model with no mesh -- a
 `.bvh`, a skeleton and its animation -- has no geometry to edit; its clips are set up in the
 Components panel's Animation clips section. To give one placement a shape of its own, make a new
@@ -133,6 +133,11 @@ Prefab Document panel writes only the document.
 
 A save is refused if the document changed on disk since it was opened; the panel says so, and
 your work stays in the working file. Reload, then redo the edit.
+
+An open document refreshes itself when it, or a prefab, mesh document or model it shows, changes
+on disk. The refresh waits while the scene holds unsaved edits -- including ones Undo brought
+back -- and the panel says why: save to keep them, or Reload to discard them. A file that is
+half-written or fails to import keeps the last good view until it is fixed.
 
 ## 7. Play
 

@@ -87,6 +87,28 @@ Session from undoing the whole point — then rebuilds from the document. It par
 BEFORE deleting anything, so a document that will not parse leaves the author with the cache
 they still had rather than with neither it nor a scene.
 
+**An open document refreshes itself when a file it read changes, but never over local work.**
+`materialize/refresh.py` keeps, per scene, the `(mtime, size)` of every file the last load read —
+the document, nested prefabs, `.mesh` documents, model sources and their dependencies — stamped
+as each was READ, so a file saved during a slow import still counts as changed. A persistent timer
+polls only those files; once a change has been quiet for 0.3 s it rematerializes through
+`load_document(..., require_complete=True)`, which resolves every prefab and loads every model
+BEFORE `_clear_previous` removes anything. A half-written prefab, a missing file or a failed
+import therefore leaves the last good view with the reason in the panel, and the inputs of the
+failed attempt are watched so their repair retries. The refresh waits while Blender is busy, a
+modal operator or authored action runs, an object is out of Object Mode, the workfile holds a
+refused save or pending component edits, or a document object, shape or helper changed since the
+view was loaded or saved; saving accepts those edits. The refresh after the addon's own save keeps
+action state rather than replaying toggles and previews. Selection is restored by identity,
+extras parented to document objects are re-parented, and no document is written. An imported
+model's library collection is refilled in place only after its import succeeds, so every scene
+and placement instancing it follows and a failed import keeps the old geometry. Undo and redo can
+restore old library contents, so they mark the view stale while keeping the last accepted
+fingerprint: restored edits stay until saved or reloaded. A workfile whose refresh on open was
+refused is watched from its document too. The timer and its `load_pre`, `undo_post` and
+`redo_post` handlers are persistent and removed on unregister; `tests/integration/test_auto_reload.py`
+covers them.
+
 **A load leaves the scene holding the document and nothing else, but only when asked.**
 `load_document(..., clear_startup=True)` removes Blender's startup content — the cube, the
 camera, the light and the `Collection` around them — and only `open_prefab` passes it, because

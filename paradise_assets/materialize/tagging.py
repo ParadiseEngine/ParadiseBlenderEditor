@@ -37,6 +37,7 @@ class Resolution:
 
     #: Every file the resolution READ, so a cache can key on what was touched.
     sources: set[str] = field(default_factory=set)
+    stamps: dict[str, str] = field(default_factory=dict)
 
     #: guid -> what the PREFAB alone says about it (:func:`overrides.baseline`).
     base: dict[str, PrefabObject] = field(default_factory=dict)
@@ -96,6 +97,7 @@ def _read(layout: project.ProjectLayout, reference, result: Resolution, warn):
     """A referenced prefab, reporting rather than raising."""
     path = layout.resolve(reference.path)
     result.sources.add(os.path.normcase(os.path.abspath(path)))
+    result.stamps.setdefault(os.path.normcase(os.path.abspath(path)), store.stamp_of(path))
     try:
         with open(path, encoding="utf-8") as handle:
             return parse_document(handle.read(), path)

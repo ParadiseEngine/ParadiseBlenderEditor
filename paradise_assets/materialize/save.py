@@ -128,6 +128,9 @@ def save_prefab(scene: bpy.types.Scene, *, invoke_actions: bool = True) -> SaveR
     for obj in _document_objects(scene) + _derived_objects(scene):
         component_edits.clear(obj)
 
+    from . import refresh
+    refresh.saved(scene)
+
     result.written = len(merged.objects)
     if invoke_actions:
         problem = action_ops.after_save(scene)

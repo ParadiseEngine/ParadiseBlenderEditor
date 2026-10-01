@@ -113,6 +113,31 @@ def test_reference_only_keeps_the_identity_root_and_reference(reference_document
     assert prefab.loads(prefab.dumps(result)) == result
 
 
+@pytest.mark.parametrize("include_raw", [False, True])
+def test_composition_keeps_carriers_after_their_owner(reference_document, raw_seed, include_raw):
+    carrier = overrides.new_carrier(REFERENCE, RAW_LEAF)
+    carrier.components.append(mesh_component())
+    following = PrefabObject.with_meta(RAW_INSTANCE, "Following reference", SELECTION_ROOT)
+    following.prefab = PREFAB_ASSET
+    reference_document.objects.extend([carrier, following])
+    plan = SelectionPlan(
+        raw=[object()] if include_raw else [],
+        document=reference_document,
+        origin=None,
+        has_references=True,
+    )
+    before = copy.deepcopy(reference_document)
+
+    result = compose(plan, raw_seed if include_raw else None)
+
+    assert result.objects[:4] == before.objects
+    assert result.objects[2].target == RAW_LEAF
+    assert result.objects[2].parent == result.objects[1].guid
+    assert result.objects[3].guid == following.guid
+    assert prefab.loads(prefab.dumps(result)).objects[:4] == before.objects
+    assert reference_document == before
+
+
 def test_reference_only_returns_a_deeply_independent_document(reference_document):
     plan = SelectionPlan(raw=[], document=reference_document, origin=None, has_references=True)
     before = copy.deepcopy(reference_document)
@@ -147,7 +172,9 @@ def test_mixed_keeps_the_raw_root_transform_and_all_geometry(mixed_plan, raw_see
     assert len(appended) == len(raw_seed.objects)
     assert appended[0].parent == SELECTION_ROOT
     assert appended[0].name == raw_seed.root().name
-    assert appended[0].component(well_known.TRANSFORM_ID) == raw_seed.root().component(well_known.TRANSFORM_ID)
+    assert appended[0].component(well_known.TRANSFORM_ID) == raw_seed.root().component(
+        well_known.TRANSFORM_ID
+    )
     assert appended[0].component(MESH_COMPONENT) == raw_seed.root().component(MESH_COMPONENT)
     assert appended[2].component(MESH_COMPONENT) == raw_seed.by_guid()[RAW_LEAF].component(MESH_COMPONENT)
     for original, cloned in zip(raw_seed.objects, appended, strict=True):
@@ -235,7 +262,8 @@ def test_mixed_does_not_mutate_or_share_nested_payloads_with_either_input(mixed_
 def test_mixed_refuses_a_missing_seed(mixed_plan):
     before = copy.deepcopy(mixed_plan.document)
 
-    with pytest.raises(CreateError, match="mixed selection requires an extracted prefab seed for its raw meshes"):
+    message = "mixed selection requires an extracted prefab seed for its raw meshes"
+    with pytest.raises(CreateError, match=message):
         compose(mixed_plan, None)
 
     assert mixed_plan.document == before

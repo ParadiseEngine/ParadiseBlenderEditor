@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import math
 
+import pytest
+
 from paradise_assets.document import axes
 
 
@@ -102,3 +104,40 @@ class TestIdentity:
         approx(position, (0.0, 0.0, 0.0))
         approx(scale, (1.0, 1.0, 1.0))
         assert abs(abs(rotation[3]) - 1.0) < 1e-9
+
+
+class TestMatrixToDocumentTrs:
+    def test_identity(self):
+        position, rotation, scale = axes.matrix_to_document_trs(axes.identity())
+        approx(position, (0.0, 0.0, 0.0))
+        approx(rotation, (0.0, 0.0, 0.0, 1.0))
+        approx(scale, (1.0, 1.0, 1.0))
+
+    def test_document_axes_are_not_rebased(self):
+        matrix = axes.trs_to_matrix((1.0, 2.0, 3.0), (0.0, 0.0, 0.0, 1.0), (2.0, 3.0, 4.0))
+        position, rotation, scale = axes.matrix_to_document_trs(matrix)
+        approx(position, (1.0, 2.0, 3.0))
+        approx(rotation, (0.0, 0.0, 0.0, 1.0))
+        approx(scale, (2.0, 3.0, 4.0))
+
+    @pytest.mark.parametrize("rotation", [
+        (0.1, 0.2, 0.3, 0.927),
+        (1.0, 0.0, 0.0, 0.0),
+        (0.0, 1.0, 0.0, 0.0),
+        (0.0, 0.0, 1.0, 0.0),
+    ])
+    @pytest.mark.parametrize("scale", [
+        (2.0, 3.0, 4.0),
+        (-2.0, 3.0, 4.0),
+        (2.0, -3.0, 4.0),
+        (2.0, 3.0, -4.0),
+    ])
+    def test_rotated_nonuniform_and_mirrored_matrices_round_trip(self, rotation, scale):
+        matrix = axes.trs_to_matrix((4.0, -5.0, 6.0), rotation, scale)
+        position, decomposed_rotation, decomposed_scale = axes.matrix_to_document_trs(matrix)
+        approx(position, (4.0, -5.0, 6.0))
+        assert all(math.isfinite(value) for value in decomposed_rotation)
+        approx(decomposed_scale, (-2.0 if any(value < 0.0 for value in scale) else 2.0, 3.0, 4.0))
+        rebuilt = axes.trs_to_matrix(position, decomposed_rotation, decomposed_scale)
+        for actual, expected in zip(rebuilt, matrix, strict=True):
+            approx(actual, expected)

@@ -1,7 +1,8 @@
 """Prepare selection snapshots without exporting geometry already owned by an asset.
 
 Only raw meshes go to the model exporter. Documents and references remain authoritative;
-Blender contributes names, selection and live placement, never cached component payloads.
+Blender contributes names for independent objects, selection and live placement, never
+cached component payloads. Live derived-child renames are not captured, matching save.
 """
 
 from __future__ import annotations
@@ -58,6 +59,7 @@ def prepare(context, layout, name: str) -> SelectionPlan:
     Selected reference parents are retained. Across raw/unselected parents placement is
     rebased to the new root, since the model exporter bakes raw objects into world space.
     A derived child alone is not an independent asset: select its owning instance instead.
+    Rename derived children in the source prefab instead; per-instance renames are not captured.
     """
     from . import store
 
@@ -95,8 +97,12 @@ def prepare(context, layout, name: str) -> SelectionPlan:
         elif marker is not None:
             entry = PrefabObject.with_meta(identity or str(uuid.uuid4()))
             entry.prefab = marker
-        elif identity is not None or any(key in obj for key in (store.GUID_KEY, store.PREFAB_KEY, store.COMPONENTS_KEY)):
-            raise CreateError(f"'{obj.name}' is not in the current document. Reload it; its mesh will not be exported.")
+        elif identity is not None or any(
+            key in obj for key in (store.GUID_KEY, store.PREFAB_KEY, store.COMPONENTS_KEY)
+        ):
+            raise CreateError(
+                f"'{obj.name}' is not in the current document. Reload it; its mesh will not be exported."
+            )
         else:
             _refuse_model_source(obj)
             if obj.type != "MESH" or any(mod.type == "ARMATURE" for mod in obj.modifiers):
@@ -111,7 +117,7 @@ def prepare(context, layout, name: str) -> SelectionPlan:
     if len(identities) != len(set(identities)):
         raise CreateError("Selected document objects share an identity. Save or reload the document first.")
 
-    owners = {store.guid_of(obj): obj for obj, entry in selected if entry.prefab is not None}
+    owners = {store.guid_of(obj) for obj, entry in selected if entry.prefab is not None}
     for obj in members:
         if not store.is_derived(obj):
             continue
@@ -135,12 +141,13 @@ def prepare(context, layout, name: str) -> SelectionPlan:
         _validate_components(entry, layout, fields)
 
     ids = {id(obj): str(uuid.uuid4()) for obj, _ in selected}
-    old_ids = {entry.guid: ids[id(obj)] for obj, entry in selected}
     scene_objects = list(context.scene.objects)
     for obj, entry in selected:
+        carriers = []
         if entry.prefab is not None:
-            _instance_children(obj, entry, source, expanded.document, locals_map,
-                               scene_objects, document, ids[id(obj)])
+            carriers = _instance_children(
+                obj, entry, source, expanded.document, locals_map, scene_objects, ids[id(obj)]
+            )
         parent = obj.parent
         seen = {id(obj)}
         while parent is not None and id(parent) not in ids:
@@ -155,18 +162,7 @@ def prepare(context, layout, name: str) -> SelectionPlan:
                   ids[id(parent)] if parent is not None else document.root_guid)
         _set_transform(entry, matrix)
         document.objects.append(entry)
-    # Preserve saved overrides for children not materialized by Blender (newly placed instances).
-    existing = {(entry.parent, entry.target) for entry in document.objects if entry.target}
-    for carrier in source.objects:
-        if carrier.target is None or carrier.parent not in old_ids:
-            continue
-        owner = old_ids[carrier.parent]
-        if (owner, carrier.target) not in existing:
-            cloned = copy.deepcopy(carrier)
-            cloned.meta.data[well_known.PARENT] = owner
-            if well_known.GUID in cloned.meta.data:
-                cloned.meta.data[well_known.GUID] = str(uuid.uuid4())
-            document.objects.append(cloned)
+        document.objects.extend(carriers)
     document = _validated(document, "selection snapshot")
     return SelectionPlan(raw, document, origin, bool(selected))
 
@@ -247,14 +243,18 @@ def _asset_path(layout, path: str, identity: str | None = None) -> str:
         raise CreateError("An asset reference has no path. Repair it before creating a prefab.")
     absolute = os.path.realpath(layout.resolve(path))
     try:
-        inside = os.path.commonpath((absolute, os.path.realpath(layout.assets))) == os.path.realpath(layout.assets)
+        asset_root = os.path.realpath(layout.assets)
+        inside = os.path.commonpath((absolute, asset_root)) == asset_root
     except ValueError:
         inside = False
     if not inside or not os.path.isfile(absolute):
         raise CreateError(f"Asset reference '{path}' is missing or outside the project. Repair it first.")
-    if identity is not None:
-        if not guid.is_text(identity) or assets.read_sidecar_guid(absolute + ".meta") != guid.canonical(identity):
-            raise CreateError(f"Asset reference '{path}' has a missing or mismatched identity. Repair it first.")
+    if identity is not None and (
+        not guid.is_text(identity) or assets.read_sidecar_guid(absolute + ".meta") != guid.canonical(identity)
+    ):
+        raise CreateError(
+            f"Asset reference '{path}' has a missing or mismatched identity. Repair it first."
+        )
     return absolute
 
 
@@ -327,11 +327,13 @@ def _set_transform(entry, matrix):
     converted = axes.to_document(matrix)
     if not all(math.isfinite(value) for row in converted for value in row):
         raise CreateError("A referenced object has a non-finite transform.")
-    position, rotation, scale = axes._decompose(converted)
+    position, rotation, scale = axes.matrix_to_document_trs(converted)
     rebuilt = axes.trs_to_matrix(position, rotation, scale)
     if any(abs(converted[r][c] - rebuilt[r][c]) > 1e-5 * max(1.0, abs(converted[r][c]))
            for r in range(4) for c in range(4)):
-        raise CreateError("A referenced object has shear that a prefab transform cannot represent. Fix its hierarchy first.")
+        raise CreateError(
+            "A referenced object has shear that a prefab transform cannot represent. Fix its hierarchy first."
+        )
     component = entry.component(well_known.TRANSFORM_ID)
     if component is None:
         component = PrefabComponent(well_known.TRANSFORM_ID, well_known.TRANSFORM_TYPE)
@@ -341,7 +343,7 @@ def _set_transform(entry, matrix):
                       well_known.SCALE: list(scale)}
 
 
-def _instance_children(obj, entry, source, expanded, locals_map, scene_objects, document, new_id):
+def _instance_children(obj, entry, source, expanded, locals_map, scene_objects, new_id) -> list[PrefabObject]:
     from . import store
 
     expected = {identity: local for identity, local in locals_map.items() if local.instance == entry.guid}
@@ -353,11 +355,14 @@ def _instance_children(obj, entry, source, expanded, locals_map, scene_objects, 
             continue
         identity = store.guid_of(child)
         if identity not in expected or identity in live or local[1] != expected[identity].local:
-            raise CreateError(f"'{child.name}' has stale or duplicate prefab-child identity. Reload the document.")
+            raise CreateError(
+                f"'{child.name}' has stale or duplicate prefab-child identity. Reload the document."
+            )
         live[identity] = child
     materialized = store.resolved_children(obj) or set()
     if materialized - {expected[identity].local for identity in live}:
         raise CreateError(f"'{obj.name}' has missing prefab children. Save or reload the document first.")
+    carriers = []
     for identity, child in live.items():
         _refuse_edits(child)
         original = by_guid.get(identity)
@@ -370,9 +375,7 @@ def _instance_children(obj, entry, source, expanded, locals_map, scene_objects, 
         carrier.meta.data[well_known.PARENT] = new_id
         if well_known.GUID in carrier.meta.data:
             carrier.meta.data[well_known.GUID] = str(uuid.uuid4())
-        name = store.document_name(child)
-        if name != original.name:
-            carrier.meta.data[well_known.NAME] = name or ""
+        # Ignore live child renames, as save does; any saved carrier metadata stays authoritative.
         transformed = PrefabObject()
         _set_transform(transformed, _relative_matrix(child, child.parent, None))
         current = transformed.component(well_known.TRANSFORM_ID)
@@ -383,11 +386,26 @@ def _instance_children(obj, entry, source, expanded, locals_map, scene_objects, 
         expected_matrix = axes.trs_to_matrix(
             baseline[well_known.POSITION], baseline[well_known.ROTATION], baseline[well_known.SCALE])
         actual_matrix = axes.trs_to_matrix(
-            current.data[well_known.POSITION], current.data[well_known.ROTATION], current.data[well_known.SCALE])
+            current.data[well_known.POSITION],
+            current.data[well_known.ROTATION],
+            current.data[well_known.SCALE],
+        )
         if any(abs(expected_matrix[r][c] - actual_matrix[r][c]) > 1e-5 * max(1.0, abs(expected_matrix[r][c]))
                for r in range(4) for c in range(4)):
             carrier.components = [component for component in carrier.components
                                   if component.id != well_known.TRANSFORM_ID]
             carrier.components.append(current)
         if not overrides.is_empty(carrier):
-            document.objects.append(carrier)
+            carriers.append(carrier)
+    # Preserve saved overrides for children not materialized by Blender (newly placed instances).
+    existing = {carrier.target for carrier in carriers}
+    for saved in source.objects:
+        if saved.target is None or saved.parent != entry.guid or saved.target in existing:
+            continue
+        cloned = copy.deepcopy(saved)
+        cloned.meta.data[well_known.PARENT] = new_id
+        if well_known.GUID in cloned.meta.data:
+            cloned.meta.data[well_known.GUID] = str(uuid.uuid4())
+        carriers.append(cloned)
+    # Match save's new-carrier ordering, independent of Blender's scene object order.
+    return sorted(carriers, key=lambda carrier: carrier.target)

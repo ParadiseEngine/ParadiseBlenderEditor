@@ -105,7 +105,7 @@ Everything lives in the **Paradise** tab of the 3D viewport sidebar (`N`), as fi
 
 | panel | scope | what it is for |
 |---|---|---|
-| **Prefab Document** | prefab authoring | open, save, reload, recreate; create from raw mesh selection; add an instance; extract a document subtree |
+| **Prefab Document** | prefab authoring | open, save, reload, recreate; create from raw meshes and/or existing asset references; add an instance; extract a document subtree |
 | **Project** | the project it lives in | the asset watcher, Build / Verify / Clean, the Asset Browser catalogue |
 | **Play** | the open document | run the game on it, and say why it stopped |
 | **Document Tree** | the open document | its objects with what the Outliner cannot show: which are prefab instances, which are a prefab's children, and which are overridden |
@@ -118,6 +118,10 @@ holds if you have not worked on anything yet.
 
 Right-clicking a **document object** — in the Outliner or in the viewport — adds these entries:
 
+- **Create Prefab from Selection…** — copy selected mesh-bearing objects and prefab instances
+  into a reusable prefab without changing the scene. Existing assets are referenced, not
+  duplicated; raw meshes are saved as a native `.blend` and extracted by the CLI. This action
+  is also available on raw Blender meshes before a document is open.
 - **Open Prefab in New Blender** — for an instance (or anything under one), opens the prefab it
   came from in a *second* Blender. The level stays open in this one; the watcher reconciles what
   either writes.

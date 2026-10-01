@@ -96,13 +96,15 @@ object as an ID property (`materialize/store.py`). It is stored, not derived —
 opposite of what the `.blend`-is-truth exporter did, and the reason renaming an object here is
 free.
 
-**Create Prefab from Selection** snapshots raw static meshes into a GLB, then lets the CLI
-extract canonical mesh/material/prefab documents and mint their sidecars. If extraction routes
-the prefab elsewhere, `paradise assets mv` moves the seed and its identity to the chosen path.
-The Blender scene is unchanged. **Create Prefab from Object** instead extracts an existing
-document subtree and leaves an instance. In either workflow, save the level containing the
-instance and build assets before playing. Keep `.meta` files with their assets; a linked `.blend`
-library and name-derived GUIDs are not part of this workflow.
+**Create Prefab from Selection** snapshots raw static meshes into a native `.blend`, then lets the
+CLI convert it into a disposable GLB cache and extract canonical mesh/material/prefab documents
+with sidecars. Existing prefab and mesh-bearing document objects retain their asset references;
+mixed selections export only raw geometry, and reference-only selections create only a prefab.
+If extraction routes the prefab elsewhere, `paradise assets mv` moves the seed and its identity
+to the chosen path. The Blender scene is unchanged. **Create Prefab from Object** instead extracts
+an existing document subtree and leaves an instance. In either workflow, save the level containing
+the instance and build assets before playing. Keep authored `.blend` sources and all `.meta` files
+with their assets; `.editor/blend/` workfiles and `.editor/converted/` outputs are disposable.
 
 The one identity this addon does mint lives inside a model `.blend`, not in a sidecar: each asset
 collection of a `.blend` holding several models carries its GUID in its `paradise_guid` custom
@@ -141,10 +143,11 @@ document, which the CLI compiles; the `.blend` is a cache and anything read out 
 second source for a value that already has one. The one exception is display: `load.py` reads a
 material document's `BaseColorFactor` into `obj.color` so an untextured instance is not grey.
 
-Explicit creation from raw geometry is a one-time import: Blender's glTF exporter snapshots
-evaluated meshes and supported materials, with matrices baked into vertices relative to the
-active object's world origin. Baking retains shear from nonuniformly scaled parents; mirrored
-geometry reverses winding. Later prefab saves read canonical documents, never the source meshes.
+Explicit creation from raw geometry is a one-time native `.blend` snapshot: evaluated meshes
+and their materials are written without changing the original scene, with matrices baked into
+vertices relative to the active object's world origin. Baking retains shear from nonuniformly
+scaled parents; mirrored geometry reverses winding. Edit the published `.blend` to change that
+model; later prefab saves read canonical documents, never the original raw meshes.
 
 **Colour edits preserve the canonical payload.** The Components panel reads and writes the
 engine's `{r,g,b,a}` object. Native light previews decode sRGB for display, but their values never

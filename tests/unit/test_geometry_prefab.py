@@ -34,7 +34,7 @@ def test_preflight_preserves_existing_native_model_or_identity(tmp_path, name):
     layout = project(tmp_path, '[extract]\ndirectory = "parts"\n')
     existing = tmp_path / "assets" / name
     existing.write_bytes(b"author's model or extraction metadata")
-    with pytest.raises(CreateError, match="already exists|take over its identity"):
+    with pytest.raises(CreateError, match=r"already exists|take over its identity"):
         prepare(layout.resolve("Crate.prefab"), layout)
     assert existing.read_bytes() == b"author's model or extraction metadata"
     assert not (tmp_path / "assets/Crate.prefab").exists()

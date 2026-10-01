@@ -20,7 +20,7 @@ from mathutils import Matrix, Vector
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from paradise_assets import edits
-from paradise_assets.document import new_prefab, prefab, resolve, well_known
+from paradise_assets.document import new_prefab, overrides, prefab, resolve, well_known
 from paradise_assets.document.asset_reference import AssetReference
 from paradise_assets.document.canonical_toml import InlineTable
 from paradise_assets.document.prefab import PrefabComponent, PrefabObject
@@ -202,11 +202,101 @@ class SelectionPreparationTests(unittest.TestCase):
         self.assertEqual(len(carriers), 1)
         self.assertEqual(carriers[0].target, child_entry.guid)
         self.assertEqual(carriers[0].parent, instances[0].guid)
+        self.assertEqual(plan.document.objects, [plan.document.root(), instances[0], carriers[0]])
         resolved = resolve.resolve(plan.document, lambda ref: target)
         self.assertEqual(resolved.errors, [])
         self.assertEqual(len(resolved.document.objects), 3)
         with self.assertRaisesRegex(new_prefab.CreateError, "owning instance"):
             self.prepare([child])
+
+    def test_live_child_renames_are_not_captured_with_or_without_transform_changes(self):
+        owner, _, target, child_entry = self.prefab_instance(with_child=True)
+        child = self.obj("Part", child_entry, mesh=True)
+        store.tag_object(child, resolve.mint_child_guid(store.guid_of(owner), child_entry.guid), [])
+        store.mark_derived(child)
+        store.tag_local(child, store.guid_of(owner), child_entry.guid, True)
+        store.tag_children(owner, [child_entry.guid])
+        child.parent = owner
+        child.name = "Renamed part"
+        self.assertEqual(store.document_name(child), "Renamed part")
+
+        for moved in (False, True):
+            with self.subTest(moved=moved):
+                child.matrix_world = owner.matrix_world @ Matrix.Translation((0, 2 if moved else 0, 0))
+                plan = self.prepare([owner, child], owner)
+                carriers = [entry for entry in plan.document.objects if entry.target]
+                self.assertEqual(len(carriers), int(moved))
+                if moved:
+                    self.assertNotIn(well_known.NAME, carriers[0].meta.data)
+                    self.assertEqual(plan.document.objects[2], carriers[0])
+                    self.assertEqual(carriers[0].parent, plan.document.objects[1].guid)
+                resolved = resolve.resolve(plan.document, lambda ref: target)
+                self.assertEqual(resolved.errors, [])
+                child_id = resolve.mint_child_guid(plan.document.objects[1].guid, child_entry.guid)
+                self.assertEqual(resolved.document.by_guid()[child_id].name, child_entry.name)
+                self.assertEqual(child.name, "Renamed part")
+
+    def test_unmaterialized_saved_carriers_follow_each_owner_and_keep_metadata(self):
+        owner, reference, _, child_entry = self.prefab_instance(with_child=True)
+        document = new_prefab.root_only("Level")
+        first = PrefabObject.with_meta(store.guid_of(owner), "First", document.root_guid)
+        first.prefab = reference
+        second = PrefabObject.with_meta(identity(), "Second", document.root_guid)
+        second.prefab = reference
+        other = self.obj("Second", second)
+        store.tag_prefab(other, reference.guid, reference.path)
+        store.tag_children(other, [])
+        carriers = []
+        for entry in (first, second):
+            carrier = overrides.new_carrier(entry.guid, child_entry.guid)
+            carrier.meta.data[well_known.GUID] = identity()
+            carrier.meta.data[well_known.NAME] = "Saved child name"
+            carrier.components.append(
+                PrefabComponent(self.mesh_id, "Game.Mesh", {"Unknown": {"Value": 23}})
+            )
+            carriers.append(carrier)
+        # Input positions must not leak into the new snapshot's owner/carrier grouping.
+        document.objects.extend([carriers[1], first, second, carriers[0]])
+        path = self.current(document)
+        before = path.read_bytes()
+
+        plan = self.prepare([owner, other], owner)
+
+        self.assertEqual(len(plan.document.objects), 5)
+        for offset, original in zip((1, 3), carriers, strict=True):
+            instance, carrier = plan.document.objects[offset:offset + 2]
+            self.assertEqual(instance.prefab, reference)
+            self.assertEqual(carrier.parent, instance.guid)
+            self.assertEqual(carrier.target, child_entry.guid)
+            self.assertNotEqual(carrier.guid, original.guid)
+            self.assertEqual(carrier.name, original.name)
+            self.assertEqual(carrier.component(self.mesh_id), original.component(self.mesh_id))
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_live_carriers_are_sorted_by_local_identity_not_scene_order(self):
+        owner, reference, target, first = self.prefab_instance(with_child=True)
+        first.meta.data[well_known.GUID] = "ffffffff-0000-4000-8000-000000000001"
+        second = self.mesh_entry("Second part", target.root_guid)
+        second.meta.data[well_known.GUID] = "aaaaaaaa-0000-4000-8000-000000000001"
+        target.objects.append(second)
+        Path(self.layout.resolve(reference.path)).write_text(prefab.dumps(target), encoding="utf-8")
+        children = []
+        for name, entry in (("A part", first), ("Z part", second)):
+            child = self.obj(name, entry, mesh=True)
+            store.tag_object(child, resolve.mint_child_guid(store.guid_of(owner), entry.guid), [])
+            store.mark_derived(child)
+            store.tag_local(child, store.guid_of(owner), entry.guid, True)
+            child.parent = owner
+            child.matrix_world = owner.matrix_world @ Matrix.Translation((0, 2, 0))
+            children.append(child)
+        store.tag_children(owner, [first.guid, second.guid])
+
+        plan = self.prepare([owner, *children], owner)
+
+        self.assertEqual([entry.target for entry in plan.document.objects],
+                         [None, None, second.guid, first.guid])
+        self.assertTrue(all(entry.parent == plan.document.objects[1].guid
+                            for entry in plan.document.objects[2:]))
 
     def test_stale_document_and_missing_tagged_entry_refuse_export(self):
         document = new_prefab.root_only("Level")

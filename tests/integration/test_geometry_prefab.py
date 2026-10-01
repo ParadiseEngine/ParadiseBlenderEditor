@@ -66,7 +66,7 @@ def reopened(root):
     identity = sidecar.read(target + ".meta").guid
     bpy.ops.wm.open_mainfile(filepath=workfile.path_for(layout, target))
     expected = [tuple(value) for value in json.loads(Path(root, "expected-vertices.json").read_text())]
-    assert vertices(bpy.data.collections["GLB/GeometryProbe.blend"].objects) == expected
+    assert vertices(bpy.data.collections["GeometryProbe.blend"].objects) == expected
     save.save_prefab(bpy.context.scene)
     assert Path(target).read_bytes() == before
     assert sidecar.read(target + ".meta").guid == identity
@@ -122,6 +122,7 @@ def run(source, root):
     assert bpy.ops.paradise_assets.create_prefab(filepath=target) == {"FINISHED"}
     assert Path(target).with_suffix(".blend").is_file()
     assert not Path(target).with_suffix(".glb").exists()
+    assert not list(Path(target).parent.glob("*.tmp")), "staged model file leaked after publication"
     with open(layout.resolve("meshes/GeometryProbe.mesh"), "rb") as handle:
         assert tomllib.load(handle)["source"]["path"] == "prefabs/GeometryProbe.blend"
     assert set(bpy.data.objects) == original_objects
@@ -148,7 +149,7 @@ def run(source, root):
     print("PASS duplicate creation refuses without altering saved assets")
 
     open_document(target, layout)
-    actual = vertices(bpy.data.collections["GLB/GeometryProbe.blend"].objects)
+    actual = vertices(bpy.data.collections["GeometryProbe.blend"].objects)
     assert actual == expected, (actual, expected)
     model_document = prefab.loads(Path(target).read_text(), target)
     mesh_object = store.object_with_guid(bpy.context.scene, model_document.root_guid)

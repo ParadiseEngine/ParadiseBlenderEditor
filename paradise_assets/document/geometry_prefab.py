@@ -1,4 +1,4 @@
-"""Preflight a new GLB and the files the CLI will extract from it.
+"""Preflight a new native Blender model and the files the CLI will extract from it.
 
 The engine owns extraction. Reading its documented directory rules here is only for refusing
 collisions before any source is written, and locating the prefab seed to move to the chosen path.
@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from . import new_prefab, schema
 from .project import ProjectLayout
 
-#: What ``paradise assets extract`` writes for a GLB, each routed by the project's ``[extract]``.
+#: What ``paradise assets extract`` writes for a model, routed by the project's ``[extract]``.
 EXTRACTED_KINDS = ("meshes", "materials", "textures", "prefabs")
 
 
@@ -35,7 +35,7 @@ def prepare(path: str, layout: ProjectLayout) -> GeometryTarget:
             "static mesh component before geometry can become a renderable prefab."
         )
     stem = os.path.splitext(os.path.basename(path))[0]
-    model = os.path.splitext(path)[0] + ".glb"
+    model = os.path.splitext(path)[0] + ".blend"
     new_prefab.refuse_target(model, layout)
     directories = extraction_directories(layout, os.path.dirname(path))
     for destination in directories.values():
@@ -58,8 +58,8 @@ def prepare(path: str, layout: ProjectLayout) -> GeometryTarget:
 def extraction_directories(
     layout: ProjectLayout, beside: str, kinds: tuple[str, ...] = EXTRACTED_KINDS
 ) -> dict[str, str]:
-    """Where the engine routes each kind it extracts from a GLB in the folder ``beside``: the
-    project's ``[extract]`` entry for that kind, else its ``directory``, else the GLB's own
+    """Where the engine routes each kind it extracts from a model in the folder ``beside``: the
+    project's ``[extract]`` entry for that kind, else its ``directory``, else the model's own
     folder -- the documented rule, read so a collision is refused before any file is written."""
     with open(layout.manifest, "rb") as handle:
         extraction = tomllib.load(handle).get("extract", {})

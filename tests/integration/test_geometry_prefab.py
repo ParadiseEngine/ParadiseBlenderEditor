@@ -1,4 +1,4 @@
-"""Raw meshes -> GLB -> CLI prefab -> a new Blender process -> saved instance -> built level.
+"""Raw meshes -> .blend -> CLI prefab -> a new Blender process -> saved instance -> built level.
 
 All writes stay in a temporary copy of the supplied asset project. PARADISE_GEOMETRY_OUTPUT
 keeps that copy for a launcher smoke run; PARADISE_ASSETS_CLI selects an already-built CLI.
@@ -66,7 +66,7 @@ def reopened(root):
     identity = sidecar.read(target + ".meta").guid
     bpy.ops.wm.open_mainfile(filepath=workfile.path_for(layout, target))
     expected = [tuple(value) for value in json.loads(Path(root, "expected-vertices.json").read_text())]
-    assert vertices(bpy.data.collections["GLB/GeometryProbe"].objects) == expected
+    assert vertices(bpy.data.collections["GLB/GeometryProbe.blend"].objects) == expected
     save.save_prefab(bpy.context.scene)
     assert Path(target).read_bytes() == before
     assert sidecar.read(target + ".meta").guid == identity
@@ -115,11 +115,15 @@ def run(source, root):
             raise AssertionError("creation proceeded without a watcher")
         except RuntimeError as error:
             assert "watcher unavailable" in str(error)
-    assert not Path(target).exists() and not Path(target).with_suffix(".glb").exists()
+    assert not Path(target).exists() and not Path(target).with_suffix(".blend").exists()
     assert set(bpy.data.objects) == original_objects
     print("PASS unavailable watcher leaves no exported files or temporary Blender objects")
 
     assert bpy.ops.paradise_assets.create_prefab(filepath=target) == {"FINISHED"}
+    assert Path(target).with_suffix(".blend").is_file()
+    assert not Path(target).with_suffix(".glb").exists()
+    with open(layout.resolve("meshes/GeometryProbe.mesh"), "rb") as handle:
+        assert tomllib.load(handle)["source"]["path"] == "prefabs/GeometryProbe.blend"
     assert set(bpy.data.objects) == original_objects
     assert bpy.context.active_object == cube and cube.select_get()
     assert cube.matrix_world == original_transform
@@ -144,8 +148,27 @@ def run(source, root):
     print("PASS duplicate creation refuses without altering saved assets")
 
     open_document(target, layout)
-    actual = vertices(bpy.data.collections["GLB/GeometryProbe"].objects)
+    actual = vertices(bpy.data.collections["GLB/GeometryProbe.blend"].objects)
     assert actual == expected, (actual, expected)
+    model_document = prefab.loads(Path(target).read_text(), target)
+    mesh_object = store.object_with_guid(bpy.context.scene, model_document.root_guid)
+    for obj in bpy.context.selected_objects:
+        obj.select_set(False)
+    mesh_object.select_set(True)
+    bpy.context.view_layer.objects.active = mesh_object
+    mesh_copy = layout.resolve("prefabs/ReusedMesh.prefab")
+    prior_assets = {path for path in Path(root, "assets").rglob("*") if path.is_file()}
+    with patch("paradise_assets.ops.geometry.export", side_effect=AssertionError("mesh reference exported")):
+        assert bpy.ops.paradise_assets.create_prefab(filepath=mesh_copy) == {"FINISHED"}
+    copied_document = prefab.loads(Path(mesh_copy).read_text(), mesh_copy)
+    from paradise_assets.document import schema
+    vocabulary = schema.load(root)
+    original_mesh = schema.mesh_field(model_document.root().components, vocabulary)
+    assert any(schema.mesh_field(entry.components, vocabulary) == original_mesh
+               for entry in copied_document.objects)
+    new_assets = {path for path in Path(root, "assets").rglob("*") if path.is_file()} - prior_assets
+    assert new_assets == {Path(mesh_copy), Path(mesh_copy + ".meta")}, new_assets
+    print("PASS mesh-bearing objects retain existing mesh and material assets without exporting")
     save.save_prefab(bpy.context.scene)
     workfile.save(layout, target)
     Path(root, "expected-vertices.json").write_text(json.dumps(actual))
@@ -169,6 +192,41 @@ def run(source, root):
     assert placed is not None and placed.instance_collection is not None
     save.save_prefab(bpy.context.scene)
     assert Path(level).read_bytes() == before
+
+    for obj in bpy.context.selected_objects:
+        obj.select_set(False)
+    placed.select_set(True)
+    bpy.context.view_layer.objects.active = placed
+    source_assets = {path: path.read_bytes() for path in Path(root, "assets").rglob("*") if path.is_file()}
+    reused = layout.resolve("prefabs/ReusedGeometry.prefab")
+    with patch("paradise_assets.ops.geometry.export", side_effect=AssertionError("reference exported")):
+        assert bpy.ops.paradise_assets.create_prefab(filepath=reused) == {"FINISHED"}
+    reused_document = prefab.loads(Path(reused).read_text(), reused)
+    references = [entry.prefab for entry in reused_document.objects if entry.prefab is not None]
+    assert len(references) == 1 and references[0].guid == sidecar.read(target + ".meta").guid
+    created = {path for path in Path(root, "assets").rglob("*") if path.is_file()} - source_assets.keys()
+    assert created == {Path(reused), Path(reused + ".meta")}, created
+    assert all(path.read_bytes() == content for path, content in source_assets.items())
+    assert bpy.context.active_object == placed and placed.select_get()
+    print("PASS reference-only selection reuses the prefab without creating model/material assets")
+
+    bpy.ops.mesh.primitive_cube_add(location=(8, 4, 2))
+    raw = bpy.context.object
+    placed.select_set(True)
+    bpy.context.view_layer.objects.active = placed
+    bpy.context.view_layer.update()
+    mixed = layout.resolve("prefabs/MixedGeometry.prefab")
+    from paradise_assets.materialize import geometry
+    with patch.object(geometry, "export", wraps=geometry.export) as exporting:
+        assert bpy.ops.paradise_assets.create_prefab(filepath=mixed) == {"FINISHED"}
+        assert exporting.call_args.args[1] == [raw]
+        assert exporting.call_args.kwargs["origin"] == placed.matrix_world.translation
+    mixed_document = prefab.loads(Path(mixed).read_text(), mixed)
+    assert any(entry.prefab and entry.prefab.guid == references[0].guid for entry in mixed_document.objects)
+    assert Path(mixed).with_suffix(".blend").is_file()
+    assert not Path(mixed).with_suffix(".glb").exists()
+    assert Path(level).read_bytes() == before
+    print("PASS mixed selection exports only raw geometry and retains the existing prefab reference")
 
     scratch = bpy.data.scenes.new("Raw geometry without a document")
     bpy.context.window.scene = scratch

@@ -36,7 +36,7 @@ from .document import (
 )
 from .document import prefab as prefab_document
 from .document.prefab import PrefabDocumentError, loads
-from .materialize import geometry, grouping, instancing, load, save, store, workfile
+from .materialize import geometry, grouping, instancing, load, save, selection_prefab, store, workfile
 from .play import host
 
 __all__ = ["classes"]
@@ -425,7 +425,7 @@ class PARADISE_ASSETS_OT_add_prefab_instance(Operator):
 
 
 class PARADISE_ASSETS_OT_create_prefab(Operator):
-    """Save selected static meshes as a reusable prefab, keeping the source Blender scene"""
+    """Save selected geometry and existing asset references as a reusable prefab"""
 
     bl_idname = "paradise_assets.create_prefab"
     bl_label = "Create Prefab from Selection"
@@ -437,7 +437,7 @@ class PARADISE_ASSETS_OT_create_prefab(Operator):
     @classmethod
     def poll(cls, context):
         return context.mode == "OBJECT" and any(
-            obj.type == "MESH" and store.guid_of(obj) is None for obj in context.selected_objects
+            selection_prefab.can_select(obj) for obj in context.selected_objects
         )
 
     def invoke(self, context, event):
@@ -459,38 +459,45 @@ class PARADISE_ASSETS_OT_create_prefab(Operator):
 
         written = False
         try:
-            members = geometry.selection(context)
-            target = geometry_prefab.prepare(path, layout)
-            if host.resolve_cli_command(layout.root) is None:
+            plan = selection_prefab.prepare(context, layout, os.path.splitext(os.path.basename(path))[0])
+            new_prefab.refuse_target(path, layout)
+            target = geometry_prefab.prepare(path, layout) if plan.raw else None
+            if plan.raw and host.resolve_cli_command(layout.root) is None:
                 raise new_prefab.CreateError("Install the Paradise CLI or set its path in addon preferences.")
+            blocked = watch.ensure(layout.root)
+            if blocked:
+                raise new_prefab.CreateError(blocked)
 
-            with tempfile.TemporaryDirectory(prefix="paradise-geometry-") as temporary:
-                staged = os.path.join(temporary, "selection.glb")
-                geometry.export(context, members, staged)
-                blocked = watch.ensure(layout.root)
-                if blocked:
-                    raise new_prefab.CreateError(blocked)
-                geometry_prefab.prepare(path, layout)
-                os.makedirs(os.path.dirname(target.model), exist_ok=True)
-                # Publish a complete GLB so the watcher cannot observe a partial export. A hard
-                # link refuses a target another author created while Blender was exporting.
-                with tempfile.NamedTemporaryFile(
-                    dir=os.path.dirname(target.model), suffix=".tmp", delete_on_close=False,
-                ) as pending:
-                    with open(staged, "rb") as source:
-                        shutil.copyfileobj(source, pending)
-                    pending.close()
-                    os.link(pending.name, target.model)
-                written = True
+            if target is not None:
+                with tempfile.TemporaryDirectory(prefix="paradise-geometry-") as temporary:
+                    staged = os.path.join(temporary, "selection.blend")
+                    geometry.export(context, plan.raw, staged, origin=plan.origin)
+                    geometry_prefab.prepare(path, layout)
+                    os.makedirs(os.path.dirname(target.model), exist_ok=True)
+                    # Publish a complete source; never expose a half-written .blend or replace
+                    # a file another author created while Blender was taking the snapshot.
+                    with tempfile.NamedTemporaryFile(
+                        dir=os.path.dirname(target.model), suffix=".tmp", delete_on_close=False,
+                    ) as pending:
+                        with open(staged, "rb") as source:
+                            shutil.copyfileobj(source, pending)
+                        pending.close()
+                        os.link(pending.name, target.model)
+                    written = True
 
-            new_prefab.identify(target.model, layout.relative(target.model))
-            _geometry_cli(["assets", "extract", target.model], layout)
-            with open(target.seed, encoding="utf-8") as handle:
-                loads(handle.read(), target.seed)
-            if os.path.normcase(target.seed) != os.path.normcase(target.prefab):
-                new_prefab.refuse_target(target.prefab, layout)
-                _geometry_cli(["assets", "mv", target.seed, target.prefab], layout)
-            reference = new_prefab.identify(target.prefab, layout.relative(target.prefab))
+                new_prefab.identify(target.model, layout.relative(target.model))
+                _geometry_cli(["assets", "extract", target.model], layout)
+                with open(target.seed, encoding="utf-8") as handle:
+                    seed = loads(handle.read(), target.seed)
+                if plan.has_references:
+                    document = selection_prefab.compose(plan, seed)
+                    atomic.write_text(target.seed, prefab_document.dumps(document))
+                if os.path.normcase(target.seed) != os.path.normcase(target.prefab):
+                    new_prefab.refuse_target(target.prefab, layout)
+                    _geometry_cli(["assets", "mv", target.seed, target.prefab], layout)
+                reference = new_prefab.identify(target.prefab, layout.relative(target.prefab))
+            else:
+                reference = new_prefab.create(path, layout, selection_prefab.compose(plan, None))
         except (new_prefab.CreateError, PrefabDocumentError, OSError, ValueError, RuntimeError) as error:
             recovery = (
                 f" The geometry is saved at {layout.relative(target.model)}; "
@@ -503,17 +510,27 @@ class PARADISE_ASSETS_OT_create_prefab(Operator):
         self.report(
             {"INFO"},
             f"Saved {reference.path}. Use Add Prefab to place it, or Open Prefab to edit its components. "
-            "The selected source meshes are unchanged.",
+            "The selected source objects are unchanged.",
         )
         return {"FINISHED"}
 
 
 def _geometry_cli(arguments: list[str], layout: project.ProjectLayout) -> None:
-    result = host.run_cli([*arguments, "--project", layout.root], layout.root)
-    if result is None:
-        raise new_prefab.CreateError("The Paradise CLI could not be started.")
-    if result.returncode != 0:
-        raise new_prefab.CreateError((result.stderr or result.stdout).strip()[-1500:])
+    for attempt in range(2):
+        result = host.run_cli([*arguments, "--project", layout.root], layout.root)
+        if result is None:
+            raise new_prefab.CreateError("The Paradise CLI could not be started.")
+        if result.returncode == 0:
+            return
+        diagnostic = (result.stderr or result.stdout).strip()
+        # A watcher converting the same new .blend can mint a mesh after extraction's index
+        # was scanned. A fresh extraction reuses those files and identities; never retry moves
+        # or conversion/validation errors, and never hide a persistent extraction failure.
+        if attempt == 0 and arguments[:2] == ["assets", "extract"] and (
+            "no asset under assets/ carries" in diagnostic
+        ):
+            continue
+        raise new_prefab.CreateError(diagnostic[-1500:])
 
 
 class PARADISE_ASSETS_OT_extract_prefab(Operator):

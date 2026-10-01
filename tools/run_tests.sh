@@ -120,6 +120,12 @@ if command -v "$BLENDER" >/dev/null 2>&1; then
     '^(INFO|[0-9]{2}:[0-9]{2}:[0-9]{2}|Info: |.*\| Saved:)' \
     "${PARADISE_ASSETS_PROJECT:-../shiningpie}"
 
+  integration "native blend selection snapshots" \
+    tests/integration/test_geometry_prefab_blend_export.py "$DEFAULT_NOISE"
+
+  integration "selection reuses existing asset references" \
+    tests/integration/test_selection_prefab_prepare.py "$DEFAULT_NOISE"
+
   integration "create a prefab from raw geometry and reopen in another Blender" \
     tests/integration/test_geometry_prefab.py "$DEFAULT_NOISE" \
     "${PARADISE_ASSETS_PROJECT:-../shiningpie}"

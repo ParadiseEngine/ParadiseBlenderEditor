@@ -22,7 +22,7 @@ import bpy
 from bpy.types import Operator
 
 from .document import model_source
-from .materialize import store
+from .materialize import selection_prefab, store
 from .materialize.meshes import model_of
 
 __all__ = ["classes", "register_menu", "unregister_menu"]
@@ -174,20 +174,13 @@ class PARADISE_ASSETS_OT_edit_model_source(Operator):
 
 
 def _draw(self, context) -> None:
-    """Append our entries, and only for an object the addon has something to say about.
-
-    A DOCUMENT object, not any object: both entries act on the document, so on a cube somebody
-    just added they could only ever be greyed out, and a menu that grows two dead rows on every
-    object is worse than one that says nothing. Between document objects the operators' own
-    polls decide, which is Blender's convention — a greyed row says the entry exists.
-    """
+    """Append creation and document actions for the active selection."""
     obj = getattr(context, "active_object", None)
-    if obj is not None and obj.type == "MESH" and store.guid_of(obj) is None:
+    if obj is not None and selection_prefab.can_select(obj):
         self.layout.separator()
         column = self.layout.column()
         column.operator_context = "INVOKE_DEFAULT"
         column.operator("paradise_assets.create_prefab", text="Create Prefab from Selection…", icon="EXPORT")
-        return
     if obj is None or store.read_state(context.scene) is None or store.guid_of(obj) is None:
         return
 

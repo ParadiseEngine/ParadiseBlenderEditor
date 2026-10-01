@@ -195,8 +195,9 @@ name is a hint for people, repaired by the next extraction as a reference's `pat
 asset's documents are named after its collection when first extracted -- a later rename keeps the
 files. `mesh_document.source_for` returns a `model_source.Model(path, asset guid, name)`, equal by
 path and GUID alone; the library keeps one collection per (source, asset GUID), found by its tags
-(`paradise_glb_source`, `paradise_glb_asset`) and named `GLB/<file>.blend/<name>` (a name that
-predates native loading), linking the asset collection whose `paradise_guid` is that GUID. Linking
+(`paradise_glb_source`, `paradise_glb_asset`) and named `<file>.blend/<name>`, linking the
+asset collection whose `paradise_guid` is that GUID. Collection labels use the source filename;
+old `GLB/` labels are renamed in place on load, while the identity tags remain unchanged. Linking
 goes by name and the GUID is inside the collection, so the recorded name is linked first and, when
 that is not it (renamed since the extraction), every asset collection of the file is linked to
 find it (`meshes._asset_collection`). An asset GUID the file no longer holds, or a whole-file
@@ -213,7 +214,7 @@ the buffer views re-pointed into it. A buffer or image uri that is absolute, rem
 library does not import such a file.
 Blender's importer opens the `.gltf` itself; the library stamps it with its buffer and image files,
 so a re-exported `.bin` re-imports on the next load, and it keeps the extension in its collection
-name (`GLB/Lamp.gltf`) so a `Lamp.glb` beside it keeps its own.
+name (`Lamp.gltf`) so a `Lamp.glb` beside it keeps its own `Lamp.glb` collection.
 
 **A GROUP is an Empty, and the format knows nothing about it.** A document object carrying only
 `meta` and `transform` whose members are its children is shown exactly like every other object:

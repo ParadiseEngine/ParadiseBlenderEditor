@@ -154,38 +154,52 @@ and CI run the same game the same way.
 
 ## 8. Create a prefab
 
-For new Blender geometry:
+For a reusable copy of selected geometry, existing asset references, or both:
 
-1. Build the game's launcher once so `.editor/authoring-schema.json` names its static mesh
-   component. Select one or more unrigged mesh objects in **Object Mode**.
+1. Select objects in **Object Mode**. Raw geometry must be unrigged meshes; build the game's
+   launcher once so `.editor/authoring-schema.json` names its static mesh component. Existing
+   prefab instances and mesh-bearing document objects can be selected alongside raw meshes.
 2. Choose **Create Prefab from Selection…** in the Paradise sidebar or the object right-click
    menu. Pick a new path such as `assets/prefabs/Crate.prefab`.
-3. The addon snapshots the evaluated meshes, including modifiers and glTF-compatible materials,
-   into `Crate.glb` beside that path. The active object's world origin becomes the prefab's
-   origin; relative placement, rotation, scale and parenting effects are baked into the geometry.
-   The CLI creates mesh/material/texture documents using the project's `[extract]` directories,
-   and saves the prefab at the chosen path. Existing files and orphan sidecars are refused.
-4. Open a level and use **Add Prefab…** to place the new prefab, then **Save** or **Ctrl+S**.
+3. For raw geometry, the addon snapshots evaluated meshes, including baked modifiers and
+   supported materials, into `Crate.blend` beside that path. The active object's world origin
+   becomes the prefab's origin; relative placement, rotation, scale and parenting effects are
+   baked into the raw geometry. The CLI converts the source into a disposable GLB under
+   `.editor/converted/`, extracts mesh/material/texture documents using the project's `[extract]`
+   directories, and saves the prefab at the chosen path. Existing files and orphan sidecars are
+   refused.
+4. Existing prefab, mesh and material references are reused, not exported again. A mixed
+   selection exports only its raw meshes; a reference-only selection writes just the new prefab,
+   with no new model, mesh or material assets. Relative placement is preserved.
+5. Open a level and use **Add Prefab…** to place the new prefab, then **Save** or **Ctrl+S**.
    Use **Open Prefab…** to edit the prefab's components, or **Catalogue** to add its thumbnail.
-5. Wait for the asset watcher to compile those assets, then **Build & Play** loads the instance in
+6. Wait for the asset watcher to compile those assets, then **Build & Play** loads the instance in
    the game.
 
-Creation leaves the source Blender scene and selection intact. It creates a static snapshot: to
-change the model later, re-export the GLB and run `paradise assets extract` on it.
-The meshes become one reusable model; rigged objects, native lights, cameras and gameplay
-components are not copied by this command. Add game components through the prefab's Components
-panel. If extraction fails after export, the error names the saved GLB to recover from.
+Creation leaves the source Blender scene and selection intact. Raw meshes become one static
+snapshot model; their modifiers are already evaluated in the published `.blend`. To change that
+model, use **Edit Source in New Blender** on its placement, edit the source `.blend`, and save.
+Run `paradise assets extract assets/prefabs/Crate.blend` when explicit extraction is needed; the
+cached GLB is not an authored source to edit or re-export. If extraction fails after publication,
+the error names the saved `.blend` to recover from.
 
-For objects already in a Paradise document, select the subtree's parent and choose **Create
-Prefab from Object…** in its right-click menu, or **Extract…** in the sidebar. This preserves
-components and child hierarchy, saves the new prefab, and replaces the subtree with an instance.
-For several document objects, **Group Selected** first, save, then extract the group. Save pending
-work before extraction; the document root itself cannot be extracted.
+Raw rigged objects, native lights, cameras and raw objects' gameplay components are not imported;
+add game components through the prefab's Components panel. Existing referenced document objects
+retain their authored components and asset references. Save pending component edits first.
+Broken or stale references, standalone derived prefab children, and reference transforms with
+unrepresentable shear are refused rather than silently duplicated.
+
+To **move a subtree out of the current document and replace it with an instance**, select its
+parent and choose **Create Prefab from Object…** in the right-click menu, or **Extract…** in the
+sidebar. Unlike selection-based creation, this changes the current document. It preserves
+components and child hierarchy. For several document objects, **Group Selected** first, save,
+then extract the group. Save pending work before extraction; the document root cannot be extracted.
 
 The Prefab Document panel shows the open asset's GUID from its `.meta` sidecar. Keep each asset
 and its sidecar together; use `paradise assets mv` to move or rename asset files. Object renames
-preserve their stored identities. Linked `.blend` libraries are unnecessary: canonical
-`assets/*.prefab` and sidecars survive Blender restarts, while `.editor/blend/` is disposable.
+preserve their stored identities. Model sources such as `assets/prefabs/Crate.blend` are authored
+assets linked by placements; keep them and their sidecars. Only the working files under
+`.editor/blend/` are disposable caches of the canonical `assets/*.prefab` documents.
 
 ## 9. Import an existing model
 

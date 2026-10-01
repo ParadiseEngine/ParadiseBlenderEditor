@@ -20,6 +20,7 @@ __all__ = [
     "from_blender_trs",
     "identity",
     "matmul",
+    "matrix_to_document_trs",
     "to_blender",
     "to_blender_trs",
     "to_document",
@@ -113,7 +114,17 @@ def to_blender_trs(position: Vec3, rotation: Quat, scale: Vec3) -> tuple[Vec3, Q
 
 def from_blender_trs(position: Vec3, rotation: Quat, scale: Vec3) -> tuple[Vec3, Quat, Vec3]:
     """A Blender TRS as a document TRS -- the inverse of :func:`to_blender_trs`."""
-    return _decompose(to_document(trs_to_matrix(position, rotation, scale)))
+    return matrix_to_document_trs(to_document(trs_to_matrix(position, rotation, scale)))
+
+
+def matrix_to_document_trs(m: Mat4) -> tuple[Vec3, Quat, Vec3]:
+    """Split a document-basis matrix into position, rotation (xyzw) and scale.
+
+    No basis conversion is performed; use :func:`to_document` for a Blender matrix first.
+    Mirrored transforms keep the negative scale on X. Shear is not representable as TRS;
+    callers requiring a lossless result must compare the recomposed matrix with the input.
+    """
+    return _decompose(m)
 
 
 def _decompose(m: Mat4) -> tuple[Vec3, Quat, Vec3]:

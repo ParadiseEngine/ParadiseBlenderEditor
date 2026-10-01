@@ -44,8 +44,8 @@ __all__ = ["LIBRARY_COLLECTION", "MeshLibrary", "model_of"]
 #: One collection per model, excluded from the view layer.
 LIBRARY_COLLECTION = "ParadiseAssets/Library"
 
-#: The model source the collection shows. The key -- like the ``GLB/`` collection names --
-#: predates native sources; renaming it would orphan every existing workfile's library.
+#: The model source the collection shows. This key predates native sources; keep it stable
+#: so existing workfiles reuse their libraries even when their display names change.
 SOURCE_KEY = "paradise_glb_source"
 
 #: The GUID of the asset of a multi-asset source the collection shows, and the asset
@@ -121,16 +121,16 @@ class MeshLibrary:
         if not os.path.isfile(path):
             self._warn(f"mesh not found: {path}")
             return None
-        basename = os.path.basename(path)
-        # Only a ``.glb`` is named by its stem: ``car.blend`` or ``car.gltf`` beside ``car.glb``
-        # must not take over that model's collection.
-        name = f"GLB/{os.path.splitext(basename)[0] if path.lower().endswith('.glb') else basename}"
+        name = os.path.basename(path)
         if model.asset is not None:
             name += f"/{model.name or model.asset}"
         # By the tags, not the name: the name follows the asset collection's, which may change.
         existing = next((found for found in self._root.children
                          if found.library is None and _same_source(found, path, model.asset)), None)
         if existing is not None:
+            # Names are display-only: migrate cached labels without replacing instanced data,
+            # including the unchanged-source fast paths in _link and _import.
+            existing.name = name
             _stamp(path, _stored_dependencies(existing), self.stamps)
         if model_source.is_linked(path):
             return self._link(model, name, existing)

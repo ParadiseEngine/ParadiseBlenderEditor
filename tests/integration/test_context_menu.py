@@ -280,6 +280,7 @@ def main() -> int:
             bpy.context.view_layer.objects.active = instance
             check(
                 drawn(bpy.context) == [
+                    "paradise_assets.create_prefab",
                     "paradise_assets.open_prefab_elsewhere",
                     "paradise_assets.extract_prefab",
                     "paradise_assets.group_objects",

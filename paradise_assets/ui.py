@@ -40,7 +40,9 @@ class PARADISE_ASSETS_PT_document(_AssetsPanel, Panel):
 
         if state is None:
             layout.label(text="No document open.", icon="INFO")
-            layout.operator("paradise_assets.open_prefab", text="Open Prefab…", icon="FILE_FOLDER")
+            layout.operator(
+                "paradise_assets.open_prefab", text="Open Prefab…", icon="FILE_FOLDER"
+            ).filepath = ""
             layout.operator(
                 "paradise_assets.create_prefab", text="Create Prefab from Selection…", icon="EXPORT")
             _draw_openable(layout, context)
@@ -95,7 +97,9 @@ class PARADISE_ASSETS_PT_document(_AssetsPanel, Panel):
         row.operator("paradise_assets.add_prefab_instance", text="Add Prefab…", icon="ADD")
         row.operator("paradise_assets.extract_prefab", text="Extract…", icon="EXPORT")
         layout.operator("paradise_assets.create_prefab", text="Create Prefab from Selection…", icon="EXPORT")
-        layout.operator("paradise_assets.open_prefab", text="Open Another…", icon="FILE_FOLDER")
+        layout.operator(
+            "paradise_assets.open_prefab", text="Open Another…", icon="FILE_FOLDER"
+        ).filepath = ""
 
 
 def _where(document_path: str, located) -> str:

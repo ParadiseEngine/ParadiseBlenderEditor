@@ -63,8 +63,8 @@ class PARADISE_ASSETS_OT_open_prefab(Operator):
     def invoke(self, context, event):
         # A panel row for a specific prefab sets ``filepath`` and means "open THAT" -- putting a
         # file browser in front of it would ask the author to pick the file they just clicked.
-        # Panel buttons get fresh property defaults per draw, so the plain Open… button (which
-        # sets nothing) still browses.
+        # Browse buttons explicitly set ``filepath`` to "" so Blender cannot restore the
+        # last-used path as a ghost value for this REGISTER operator.
         if self.filepath:
             return self.execute(context)
         context.window_manager.fileselect_add(self)

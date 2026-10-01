@@ -17,6 +17,8 @@ What it pins:
 - Every operator any panel draws exists.
 - The landing state offers the project's documents, and offers them BY PATH -- a row that did
   not set ``filepath`` would silently open the file browser instead.
+- Both browse buttons explicitly clear ``filepath``: leaving it unset lets Blender restore
+  the REGISTER operator's last-used path as a ghost value and silently reopen it (#60).
 - A sub-panel's ``bl_parent_id`` names a panel registered BEFORE it: Blender drops a child
   whose parent is missing or registers later silently, so the registration order is checked.
 """
@@ -170,10 +172,15 @@ def main() -> int:
             )
 
             landing = draw(ui.PARADISE_ASSETS_PT_document, context)
-            offered = [
-                props.filepath for props in properties_for(landing, "paradise_assets.open_prefab")
-                if hasattr(props, "filepath")
+            landing_paths = [
+                getattr(props, "filepath", None)
+                for props in properties_for(landing, "paradise_assets.open_prefab")
             ]
+            check(
+                landing_paths[:1] == [""],
+                "Open Prefab explicitly clears filepath to block last-used path restoration",
+            )
+            offered = landing_paths[1:]
             check(
                 offered == [document],
                 f"the landing state offers the project's document by path ({offered})",
@@ -207,11 +214,11 @@ def main() -> int:
                 "and offers Save",
             )
             check(
-                not any(
-                    hasattr(props, "filepath")
+                [
+                    getattr(props, "filepath", None)
                     for props in properties_for(open_panel, "paradise_assets.open_prefab")
-                ),
-                "while Open Another… browses rather than naming a file",
+                ] == [""],
+                "Open Another explicitly clears filepath to block last-used path restoration",
             )
 
             components = draw(ui.PARADISE_ASSETS_PT_object, context)

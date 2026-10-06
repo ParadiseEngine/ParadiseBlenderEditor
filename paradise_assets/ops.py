@@ -301,7 +301,9 @@ class PARADISE_ASSETS_OT_toggle_watch(Operator):
             return {"CANCELLED"}
 
         if watch.is_running(layout.root):
-            watch.stop(layout.root)
+            if problem := watch.stop(layout.root):
+                self.report({"ERROR"}, problem)
+                return {"CANCELLED"}
             self.report({"INFO"}, "Asset watch stopped")
             return {"FINISHED"}
 
@@ -310,7 +312,11 @@ class PARADISE_ASSETS_OT_toggle_watch(Operator):
         if problem is not None:
             self.report({"ERROR"}, problem)
             return {"CANCELLED"}
-        self.report({"INFO"}, "Asset watch started")
+        message = (
+            "Asset watch will resume after Build & Play" if watch.is_paused(layout.root)
+            else "Asset watch started"
+        )
+        self.report({"INFO"}, message)
         return {"FINISHED"}
 
 

@@ -213,6 +213,9 @@ class PARADISE_ASSETS_PT_project(_AssetsPanel, Panel):
 
 def _draw_watch(layout, root: str) -> None:
     """Whether a watcher is running for this project, and the last thing it complained about."""
+    if watch.is_paused(root):
+        layout.label(text="Asset builds: watcher paused for Play", icon="PAUSE")
+        return
     running = watch.is_running(root)
     row = layout.row(align=True)
     row.label(
@@ -324,20 +327,22 @@ class PARADISE_ASSETS_PT_play(_AssetsPanel, Panel):
 
 
 def _draw_session(layout, session, root: str) -> None:
-    """Whether the game is running, and why it stopped if it stopped on its own."""
+    """The build/play session's phase and any failure, without assuming a game window opened."""
     process = session.process_for(root)
     if process is not None:
         row = layout.row(align=True)
-        row.label(text=f"Playing (pid {process.pid})", icon="RADIOBUT_ON")
+        row.label(text=process.status, icon="RADIOBUT_ON")
         row.operator("paradise_assets.stop_play", text="Stop", icon="PAUSE")
         return
 
     if (reason := session.exit_reason(root)) is not None:
         box = layout.box()
         box.alert = True
-        box.label(text="The game stopped on its own.", icon="ERROR")
+        box.label(text="Build & Play failed.", icon="ERROR")
         for line in _wrap(reason, 44)[:3]:
             box.label(text=line)
+        if session.needs_recovery(root):
+            box.operator("paradise_assets.stop_play", text="Retry Stop", icon="PAUSE")
 
 
 #: How many rows the tree draws before it stops. A ShiningPie level is 300+ objects and a

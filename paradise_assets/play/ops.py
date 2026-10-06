@@ -244,12 +244,16 @@ class PARADISE_ASSETS_OT_stop_play(Operator):
         if state is None:
             return False
         layout = project.locate(state.path)
-        return layout is not None and session.is_running(layout.root)
+        return layout is not None and (
+            session.is_running(layout.root) or session.needs_recovery(layout.root)
+        )
 
     def execute(self, context):
         found = _playable(self)
         if found is None:
             return {"CANCELLED"}
+        # Unlike the former fire-and-forget reaper, confirm cleanup before reporting success.
+        # An unresponsive child can hold the UI during the bounded terminate/kill grace.
         if problem := session.stop(found[0].root):
             self.report({"ERROR"}, problem)
             return {"CANCELLED"}

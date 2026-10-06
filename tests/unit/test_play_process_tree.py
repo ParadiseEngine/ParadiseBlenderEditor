@@ -197,7 +197,7 @@ def test_unverified_orphan_blocks_replacement_without_signals(tmp_path, posix_tr
     posix_tree.processes.clear()
     posix_tree.processes[101] = tree._Process(101, 1, 100, "unwitnessed")
     error = tree.stop(tmp_path)
-    assert "replacement is blocked" in error
+    assert "retry Stop before launching again" in error
     assert "Cannot verify" in error
     assert not posix_tree.signals
     assert tree._path(tree._root(tmp_path)).exists()
@@ -243,7 +243,10 @@ def test_stale_release_does_not_stop_replacement(tmp_path, posix_tree):
 def test_corrupt_state_is_not_removed_or_signaled(tmp_path, posix_tree):
     path = tree._path(tree._root(tmp_path))
     path.write_text("not json")
-    assert "replacement is blocked" in tree.stop(tmp_path)
+    error = tree.stop(tmp_path)
+    assert "retry Stop before launching again" in error
+    assert f"Malformed process ownership JSON; inspect {path}:" in error
+    assert "Expecting value" in error
     assert path.read_text() == "not json"
     assert not posix_tree.signals
 

@@ -123,7 +123,10 @@ def _load(path: Path, root: str) -> dict | None:
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_size > 1024 * 1024:
             raise OSError("Invalid process ownership file")
-        data = json.load(stream)
+        try:
+            data = json.load(stream)
+        except json.JSONDecodeError as exc:
+            raise OSError(f"Malformed process ownership JSON; inspect {path}: {exc}") from exc
     if not isinstance(data, dict) or data.get("version") != 1 or data.get("root") != root:
         raise OSError("Invalid process ownership metadata; inspect " + str(path))
     if not re.fullmatch(r"[0-9a-f]{32}", data.get("identity", "")):
@@ -422,7 +425,10 @@ def _stop(project_root, ownership: Ownership | None) -> str | None:
             path.unlink()
         return None
     except (OSError, ValueError, TypeError, subprocess.SubprocessError) as exc:
-        return f"Cannot confirm the previous Play tree stopped; replacement is blocked: {exc}"
+        return (
+            "Cannot confirm the previous Play tree stopped; resolve the cleanup error "
+            f"and retry Stop before launching again: {exc}"
+        )
 
 
 def stop(project_root) -> str | None:

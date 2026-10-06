@@ -30,6 +30,7 @@ import bpy
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import paradise_assets
+from paradise_assets import watch as asset_watch
 from paradise_assets.document import project
 from paradise_assets.materialize import store
 from paradise_assets.play import host, session
@@ -61,8 +62,10 @@ Name = "Level"
 """
 
 #: Append one complete record per invocation; build must finish even when play should linger.
-TOOL = """import json, os, sys, time
+TOOL = """import json, os, signal, sys, time
 argv = sys.argv[1:]
+if argv[:2] == ["assets", "watch"]:
+    signal.signal(signal.SIGINT, lambda *_args: sys.exit(0))
 with open(os.environ["RECORD_TO"], "a", encoding="utf-8") as handle:
     handle.write(json.dumps({
         "argv": argv,
@@ -94,6 +97,8 @@ elif stage == ["host", "play"]:
             print("dotnet watch: Waiting for a file to change before restarting...", flush=True)
     if os.environ.get("LINGER"):
         time.sleep(60)
+elif stage == ["assets", "watch"]:
+    time.sleep(60)
 """
 
 
@@ -219,6 +224,8 @@ def check_late_modal_failure(root: str) -> None:
     process = SimpleNamespace(code=None, reason=None)
     process.poll = lambda: process.code
     timer = object()
+    # Seed the former deadline deliberately: reintroducing the old timeout branch would
+    # incorrectly release this timer at the mocked time below.
     operator = SimpleNamespace(
         _process=process, _root=root, _timer=timer, _deadline=180.0,
         report=lambda levels, message: reports.append((set(levels), message)),
@@ -250,6 +257,64 @@ def check_late_modal_failure(root: str) -> None:
         check(removed_timers == [timer], "later cancellation does not remove the timer twice")
 
 
+def check_cleanup_recovery_controls(root: str) -> None:
+    from paradise_assets import ui
+
+    failed = SimpleNamespace(poll=lambda: 1, _asset_pause=object(), detail="cleanup failed")
+    buttons = []
+    layout = SimpleNamespace(
+        label=lambda **_kwargs: None,
+        operator=lambda name, **_kwargs: buttons.append(name),
+    )
+    layout.box = lambda: layout
+    with patch.dict(session._SESSIONS, {session._normalize(root): failed}, clear=True), \
+            patch.dict(session._EXITS, {}, clear=True):
+        check(not session.is_running(root), "failed cleanup is not presented as a running game")
+        check(bpy.ops.paradise_assets.stop_play.poll(), "Stop stays enabled for failed cleanup")
+        ui._draw_session(layout, session, root)
+        check(buttons == ["paradise_assets.stop_play"], "the failure panel offers Retry Stop")
+
+
+def check_asset_watcher_serialization(root: str, cli_log: str) -> None:
+    """Real managed watcher processes must exit before either Play build starts."""
+    popen = session.subprocess.Popen
+    os.environ["LINGER"] = "1"
+    try:
+        for fail_stage in ("", "assets"):
+            _reset(cli_log)
+            os.environ["FAIL_STAGE"] = fail_stage
+            check(asset_watch.start(root) is None, "managed asset watcher starts")
+            check(wait_for(cli_log, verb=("assets", "watch")) is not None, "asset watcher reached its loop")
+            earlier = asset_watch._WATCHERS.get(asset_watch._normalize(root))
+            observed = []
+
+            def guarded_spawn(argv, previous=earlier, stages=observed, **options):
+                stage = argv[2:4]
+                if stage in (["assets", "build"], ["host", "build"]):
+                    stages.append(stage)
+                    check(previous is not None and previous.poll() is not None,
+                          f"asset watcher has exited before {stage}")
+                    check(asset_watch.is_paused(root), f"new watcher starts are reserved during {stage}")
+                return popen(argv, **options)
+
+            with patch.object(session.subprocess, "Popen", guarded_spawn):
+                result = play(watch=False)
+            expected = {"CANCELLED"} if fail_stage else {"FINISHED"}
+            check(result == expected, f"Play with an active asset watcher returns {expected} ({result})")
+            check(bool(observed), "Play attempted its asset build after stopping the watcher")
+            check(not asset_watch.is_paused(root), "Play releases the watcher reservation")
+            check(asset_watch.is_running(root), "managed watcher restored after success or failure")
+            check(asset_watch._WATCHERS.get(asset_watch._normalize(root)) is not earlier,
+                  "restoration uses a new watcher after confirmed exit")
+            session.stop(root)
+            asset_watch.stop(root)
+    finally:
+        session.stop(root)
+        asset_watch.stop(root)
+        os.environ["FAIL_STAGE"] = ""
+        os.environ.pop("LINGER", None)
+
+
 def main() -> int:
     paradise_assets.register()
     original = (host.resolve_cli_command, host._preference, play_ops.resolve_cli_command)
@@ -274,6 +339,7 @@ def main() -> int:
             configure(ktx=os.path.join(work, "ktx"))
             patch_cli(cli_script)
             open_document(document)
+            check_cleanup_recovery_controls(root)
             os.environ.update({
                 "RECORD_TO": cli_log, "FAIL_STAGE": "", "LINGER": "1",
                 "REBUILD_TRIGGER": rebuild_trigger,
@@ -351,6 +417,16 @@ def main() -> int:
             check(second is not None and second is not first, "a new session replaced the old")
             check(first is not None and first.poll() is not None, "and the old one was stopped")
 
+            print("\n== a missing CLI preserves the running game ==")
+            previous_calls = invocations(cli_log)
+            patch_cli(None)
+            result = play(watch=False)
+            check(result == {"CANCELLED"}, "a missing CLI cancels the new request")
+            check(second is not None and second.poll() is None, "the earlier game remains alive")
+            check(session.process_for(root) is second, "the earlier session remains tracked")
+            check(invocations(cli_log) == previous_calls, "no replacement build was attempted")
+            patch_cli(cli_script)
+
             print("\n== Stop ends it ==")
             bpy.ops.paradise_assets.stop_play()
             check(not session.is_running(root), "nothing is running after Stop")
@@ -426,6 +502,8 @@ def main() -> int:
             check(result == {"CANCELLED"}, f"Play cancels without a CLI ({result})")
             check(recorded(cli_log) is None, "nothing was launched")
             patch_cli(cli_script)
+            print("\n== the managed asset watcher cannot race Play's build stages ==")
+            check_asset_watcher_serialization(root, cli_log)
 
             print("\n== the other verbs ==")
             _reset(cli_log)
@@ -472,6 +550,7 @@ def main() -> int:
             )
     finally:
         session.stop_all()
+        asset_watch.stop_all()
         host.resolve_cli_command, host._preference, play_ops.resolve_cli_command = original
         for key, value in original_env.items():
             if value is None:

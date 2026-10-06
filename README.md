@@ -179,8 +179,11 @@ A typical loop:
    holds; Recreate does not, which is why it asks first. A level also refreshes itself when a
    prefab, mesh document or model it shows is saved elsewhere; while it holds unsaved edits the
    refresh waits, and the Prefab Document panel says why.
-4. **Build & Play.** The asset watcher keeps `build/` current; the CLI brings the launcher up to
-   date without rebuilding assets and runs the game on the open document.
+4. **Build & Play.** Build assets, then the launcher, then run the game on the open document;
+   each stage must succeed before the next starts. The whole session is supervised, including
+   descendant cleanup; a **Watch & Play** rebuild failure stops the game rather than leaving
+   the last good build running.
+   The addon's asset watcher is paused during the build stages and restored afterward.
 
 Games can expose point, spot and sun lamps through [schema-driven light previews](docs/light-preview.md).
 Edit their canonical values in **Components**; the native child lamp follows those values and the

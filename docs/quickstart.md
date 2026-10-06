@@ -141,12 +141,18 @@ half-written or fails to import keeps the last good view until it is fixed.
 
 ## 7. Play
 
-**Build & Play** runs `paradise host play --no-assets`: the asset watcher keeps `build/` current,
-while the CLI brings the game's launcher up to date and runs it on the open document. A failed
-launcher build therefore stops the launch rather than running the last good one.
+**Build & Play** builds assets, then the game's launcher, then runs it on the open document.
+Each stage must succeed before the next starts; the asset watcher alone is not the launch gate.
+A failed build stops the launch rather than running the last good one.
+The addon's asset watcher is paused while assets and the launcher build, then restored on
+success, failure or cancellation. This coordinates the watcher managed by this Blender; do not
+run independent asset builds or watchers against the same project at the same time.
+If shutdown cannot be confirmed, Play fails closed. Follow the reported cleanup instructions;
+if the watcher is still stopping, wait for its child builds to exit and restart **Asset Watch**.
 
-**Watch & Play** does the same under `dotnet watch`, so a C# edit is hot-patched into the running
-game. Slower to start; no rebuild afterwards.
+**Watch & Play** uses the same gates before running under `dotnet watch`, so a C# edit can be
+hot-patched into the running game. The whole session is supervised, including descendant
+cleanup; a watch rebuild failure stops the game rather than leaving the last good build running.
 
 If the panel says *"No `[host]` project in assets/project.toml"*, the project has not declared
 which launcher is its game — that is the project's business, not a preference, so that a script
@@ -173,8 +179,7 @@ For a reusable copy of selected geometry, existing asset references, or both:
    with no new model, mesh or material assets. Relative placement is preserved.
 5. Open a level and use **Add Prefab…** to place the new prefab, then **Save** or **Ctrl+S**.
    Use **Open Prefab…** to edit the prefab's components, or **Catalogue** to add its thumbnail.
-6. Wait for the asset watcher to compile those assets, then **Build & Play** loads the instance in
-   the game.
+6. **Build & Play** builds the assets and launcher, then loads the instance in the game.
 
 Creation leaves the source Blender scene and selection intact. Raw meshes become one static
 snapshot model; their modifiers are already evaluated in the published `.blend`. To change that

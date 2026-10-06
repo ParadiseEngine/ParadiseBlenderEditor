@@ -17,6 +17,7 @@ import subprocess
 import tempfile
 import threading
 
+from .. import watch as asset_watch
 from . import process_tree
 
 __all__ = [
@@ -24,6 +25,7 @@ __all__ = [
     "first_error_line",
     "is_running",
     "log_path",
+    "needs_recovery",
     "play_command",
     "process_for",
     "start",
@@ -77,7 +79,10 @@ def process_for(project_root: str) -> PlaySession | None:
     if process is None:
         return None
     if (code := process.poll()) is not None:
-        _SESSIONS.pop(key, None)
+        # A failed cleanup still owns the watcher pause. Keep it for Stop/replacement
+        # recovery, without presenting this completed worker as a running game.
+        if process._asset_pause is None:
+            _SESSIONS.pop(key, None)
         failed = code not in (0, INTERRUPTED)
         _EXITS[key] = (code, process.detail if failed else None)
         return None
@@ -88,10 +93,19 @@ def is_running(project_root: str) -> bool:
     return process_for(project_root) is not None
 
 
+def needs_recovery(project_root: str) -> bool:
+    """A completed worker still owns cleanup and its asset-watcher reservation."""
+    process = _SESSIONS.get(_normalize(project_root))
+    return process is not None and process.poll() is not None and process._asset_pause is not None
+
+
 class PlaySession:
     """One worker owns every stage and its cleanup; polling never launches work from a draw."""
 
-    def __init__(self, root: str, stages: list[tuple[str, list[str]]], environment: dict, *, watch: bool):
+    def __init__(
+        self, root: str, stages: list[tuple[str, list[str]]], environment: dict,
+        *, watch: bool, asset_pause: asset_watch.WatchPause | None = None,
+    ):
         self.root = root
         self.status = stages[0][0]
         self.detail: str | None = None
@@ -99,6 +113,8 @@ class PlaySession:
         self._stages = stages
         self._environment = environment
         self._watch = watch
+        self._asset_pause = asset_pause
+        self._cleanup_failed = False
         self._process: subprocess.Popen | None = None
         self._ownership: process_tree.Ownership | None = None
         self._stopping = threading.Event()
@@ -111,7 +127,11 @@ class PlaySession:
         # Open before returning from start(), so an unwritable log is an immediate error.
         self._output = open(log_path(root), "wb")  # noqa: SIM115 -- worker owns the handle
         self._thread = threading.Thread(target=self._run, name="paradise-play", daemon=True)
-        self._thread.start()
+        try:
+            self._thread.start()
+        except RuntimeError:
+            self._output.close()
+            raise
 
     @property
     def pid(self) -> int:
@@ -137,16 +157,21 @@ class PlaySession:
     def _run(self) -> None:
         try:
             with self._output, open(log_path(self.root), "rb") as reader:
+                if self._asset_pause is not None and (problem := self._asset_pause.pause()):
+                    raise RuntimeError(problem)
                 for index, (label, argv) in enumerate(self._stages):
                     if self._stopping.is_set():
                         self.returncode = INTERRUPTED
                         break
                     self.status = label
+                    self.returncode = None
                     self._playing = index == len(self._stages) - 1
                     self._diagnostic = None
                     self._first_line = None
                     self._watch_error = None
                     self._ownership = None
+                    if self._playing and (problem := self._resume_assets()):
+                        raise RuntimeError(problem)
                     options = process_tree.launch_options(self._environment)
                     self._process = subprocess.Popen(
                         argv, cwd=self.root, stdout=self._output,
@@ -161,22 +186,51 @@ class PlaySession:
                         _kill_unrecorded(self._process)
                         raise
                     self.returncode = self._monitor(reader)
+                    self._cleanup_failed = True
                     problem = self._clean_tree()
+                    self._cleanup_failed = bool(problem)
                     if problem:
                         self.returncode, self.detail = 1, problem
                     elif self.returncode not in (0, INTERRUPTED):
                         self.detail = self._watch_error or self._diagnostic or self._first_line
                     if self.returncode != 0:
                         break
-        except Exception as error:
-            # A worker exception must not leave a live game or an eternally pending session.
-            problem = self._clean_tree() if self._process is not None else None
+        except BaseException as error:
+            # A worker owns its children even on SystemExit. Publish failure before cleanup,
+            # which can itself fail; a completed worker must never look permanently alive.
             self.returncode = 1
             self.detail = f"Could not run Build & Play: {error}"
+            self._cleanup_failed = self._process is not None
+            try:
+                problem = self._clean_tree() if self._process is not None else None
+                self._cleanup_failed = bool(problem)
+            except BaseException as cleanup_error:
+                problem = f"Could not clean up the play process: {cleanup_error}"
             if problem:
                 self.detail += f"; {problem}"
         finally:
-            self._done.set()
+            if self.returncode is None:
+                self.returncode = 1
+                self.detail = self.detail or "Build & Play worker ended unexpectedly."
+            try:
+                if problem := self._resume_assets():
+                    self.returncode = 1
+                    self.detail = f"{self.detail}; {problem}" if self.detail else problem
+            except BaseException as resume_error:
+                self.returncode = 1
+                problem = f"Could not restore the asset watcher: {resume_error}"
+                self.detail = f"{self.detail}; {problem}" if self.detail else problem
+            finally:
+                self._done.set()
+
+    def _resume_assets(self) -> str | None:
+        if self._asset_pause is not None and self._cleanup_failed:
+            return (
+                "Asset watcher remains paused because build cleanup is unconfirmed; "
+                "resolve the cleanup error and retry Stop or Play."
+            )
+        pause, self._asset_pause = self._asset_pause, None
+        return pause.resume() if pause is not None else None
 
     def _clean_tree(self) -> str | None:
         problem = process_tree.release(self.root, self._ownership) if self._ownership is not None else None
@@ -222,9 +276,6 @@ class PlaySession:
             self._diagnostic = line[:300]
         if not self._playing:
             return
-        if line.startswith("build:") and "asset(s) into" in line:
-            # This only acknowledges a CLI session, not a window we cannot observe.
-            self.status = "Watch & Play session" if self._watch else "Play session"
         if self._watch and self._watch_error is None and _watch_failed(line):
             self._watch_error = line[:300]
 
@@ -261,14 +312,14 @@ def start(
     """Replace the whole earlier tree before building, including a prior Blender's orphan."""
     from . import host
 
-    if problem := stop(project_root):
-        return None, problem
     command = host.resolve_cli_command(project_root)
     if command is None:
         return None, (
             "No `paradise` CLI found. Install it as a dotnet tool, or point 'Paradise CLI' in "
             "the addon preferences at it."
         )
+    if problem := stop(project_root):
+        return None, problem
 
     stages = []
     if cli_build := host._build_stage(project_root):
@@ -286,10 +337,14 @@ def start(
     environment = host.subprocess_environment()
     # Watch's text protocol has no structured status API in the supported CLI versions.
     environment.update({"DOTNET_CLI_UI_LANGUAGE": "en-US", "DOTNET_WATCH_SUPPRESS_EMOJIS": "1"})
+    asset_pause = None
     try:
-        process = PlaySession(project_root, stages, environment, watch=watch)
-    except OSError as error:
-        return None, f"Could not open the play log: {error}"
+        asset_pause = asset_watch.prepare_pause(project_root, command, environment)
+        process = PlaySession(project_root, stages, environment, watch=watch, asset_pause=asset_pause)
+    except (OSError, RuntimeError) as error:
+        problem = asset_pause.resume() if asset_pause is not None else None
+        detail = f"Could not start Build & Play: {error}"
+        return None, f"{detail}; {problem}" if problem else detail
     key = _normalize(project_root)
     _SESSIONS[key] = process
     _EXITS.pop(key, None)
@@ -308,6 +363,15 @@ def stop(project_root: str) -> str | None:
             return "The earlier play session is still stopping; try again after it exits."
     if problem := process_tree.stop(project_root):
         return problem
+    if process is not None and process._asset_pause is not None:
+        if process._process is not None:
+            try:
+                process._process.wait(timeout=2.0)
+            except (OSError, subprocess.SubprocessError) as error:
+                return f"Cannot confirm the earlier build stopped: {error}"
+        process._cleanup_failed = False
+        if problem := process._resume_assets():
+            return problem
     _SESSIONS.pop(key, None)
     _EXITS.pop(key, None)
     return None
@@ -342,7 +406,10 @@ def first_error_line(path: str) -> str | None:
     """The most explanatory line of a failed run's log: the first diagnostic (``error:`` from
     the CLI, ``error CS1002:``/``error MSB4025:`` from MSBuild, a crash banner), else the FIRST
     non-warning line -- a launcher prints its cause first and hints after, and the first line of
-    a build log is usually an irrelevant SDK warning that would read as the diagnosis."""
+    a build log is usually an irrelevant SDK warning that would read as the diagnosis.
+
+    Kept as the exported standalone log helper; live sessions track diagnostics per stage.
+    """
     try:
         with open(path, encoding="utf-8", errors="replace") as handle:
             head = handle.read(_HEAD_BYTES)

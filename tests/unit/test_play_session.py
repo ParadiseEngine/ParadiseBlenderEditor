@@ -392,3 +392,169 @@ def test_a_new_failed_play_stops_an_earlier_process_missing_from_the_registry(fa
         if earlier.poll() is None:
             earlier.kill()
             earlier.wait(timeout=2)
+
+
+def test_missing_cli_preserves_the_running_session(fake_cli, monkeypatch):
+    from paradise_assets.play import host
+
+    _behavior(fake_cli, linger_stage="host play")
+    earlier = _start(fake_cli)
+    _wait_for_file(fake_cli / "waiting")
+    calls = _calls(fake_cli)
+    monkeypatch.setattr(host, "resolve_cli_command", lambda root: None)
+    process, error = session.start(str(fake_cli), "new.prefab", watch=False)
+    assert process is None and "No `paradise` CLI" in error
+    assert earlier.poll() is None
+    assert session.process_for(str(fake_cli)) is earlier
+    assert _calls(fake_cli) == calls
+
+
+@pytest.mark.parametrize("during_play", [False, True])
+def test_worker_system_exit_is_a_terminal_failure_and_reclaims_its_child(
+    fake_cli, monkeypatch, during_play,
+):
+    monitor = session.PlaySession._monitor
+
+    def exit_worker(self, reader):
+        if self._playing == during_play:
+            raise SystemExit("worker exited")
+        return monitor(self, reader)
+
+    monkeypatch.setattr(session.PlaySession, "_monitor", exit_worker)
+    _behavior(fake_cli, linger_stage="host play" if during_play else "assets build")
+    process = _start(fake_cli)
+    assert process.wait(timeout=10) == 1
+    assert process._process.poll() is not None
+    assert "worker exited" in process.reason
+    assert not session.is_running(str(fake_cli))
+
+
+def test_worker_error_remains_terminal_when_error_handler_cleanup_also_fails(fake_cli, monkeypatch):
+    def fail_monitor(self, reader):
+        raise RuntimeError("monitor failed")
+
+    def fail_cleanup(self):
+        raise RuntimeError("cleanup failed")
+
+    monkeypatch.setattr(session.PlaySession, "_monitor", fail_monitor)
+    monkeypatch.setattr(session.PlaySession, "_clean_tree", fail_cleanup)
+    _behavior(fake_cli, linger_stage="assets build")
+    process = _start(fake_cli)
+    assert process.wait(timeout=10) == 1
+    assert "monitor failed" in process.reason and "cleanup failed" in process.reason
+    assert not session.is_running(str(fake_cli))
+    # The durable record remains available for a later successful Stop.
+    assert session.stop(str(fake_cli)) is None
+    assert process._process.poll() is not None
+
+
+def test_completed_worker_never_returns_a_pending_status(fake_cli, monkeypatch):
+    monkeypatch.setattr(session.PlaySession, "_monitor", lambda self, reader: None)
+    process = _start(fake_cli)
+    assert process.wait(timeout=10) == 1
+    assert "worker ended unexpectedly" in process.reason
+    assert not session.is_running(str(fake_cli))
+
+
+@pytest.fixture
+def pause_probe(fake_cli, monkeypatch):
+    class Probe:
+        events = []
+        pause_error = None
+        resume_error = None
+
+        def pause(self):
+            self.events.append(("pause", []))
+            return self.pause_error
+
+        def resume(self):
+            calls = _calls(fake_cli) if (fake_cli / "calls.jsonl").exists() else []
+            self.events.append(("resume", [call[:2] for call in calls]))
+            return self.resume_error
+
+    probe = Probe()
+
+    def prepare(root, command, environment):
+        assert threading.current_thread() is threading.main_thread()
+        assert root == str(fake_cli)
+        assert command[0] == sys.executable
+        return probe
+
+    monkeypatch.setattr(session.asset_watch, "prepare_pause", prepare)
+    return probe
+
+
+def test_asset_watcher_pause_spans_builds_but_not_play(fake_cli, pause_probe):
+    assert _start(fake_cli).wait(timeout=10) == 0
+    assert pause_probe.events == [
+        ("pause", []),
+        ("resume", [["assets", "build"], ["host", "build"]]),
+    ]
+    assert _calls(fake_cli)[-1][:2] == ["host", "play"]
+
+
+@pytest.mark.parametrize("stage", ["assets build", "host build"])
+def test_asset_watcher_restored_after_build_failure(fake_cli, pause_probe, stage):
+    _behavior(fake_cli, fail=stage)
+    assert _start(fake_cli).wait(timeout=10) == 7
+    assert [event[0] for event in pause_probe.events] == ["pause", "resume"]
+    assert ["host", "play"] not in pause_probe.events[-1][1]
+
+
+def test_asset_watcher_restored_after_stop_during_build(fake_cli, pause_probe):
+    _behavior(fake_cli, linger_stage="assets build")
+    process = _start(fake_cli)
+    _wait_for_file(fake_cli / "waiting")
+    assert session.stop(str(fake_cli)) is None
+    assert process.poll() == session.INTERRUPTED
+    assert [event[0] for event in pause_probe.events] == ["pause", "resume"]
+
+
+def test_asset_watcher_pause_failure_prevents_every_build(fake_cli, pause_probe):
+    pause_probe.pause_error = "The asset watcher did not stop"
+    process = _start(fake_cli)
+    assert process.wait(timeout=10) == 1
+    assert "asset watcher did not stop" in process.reason
+    assert not (fake_cli / "calls.jsonl").exists()
+    assert [event[0] for event in pause_probe.events] == ["pause", "resume"]
+
+
+def test_asset_watcher_resume_failure_is_terminal_before_play(fake_cli, pause_probe):
+    pause_probe.resume_error = "Could not restart the asset watcher"
+    process = _start(fake_cli)
+    assert process.wait(timeout=10) == 1
+    assert "Could not restart the asset watcher" in process.reason
+    assert [event[0] for event in pause_probe.events] == ["pause", "resume"]
+    assert not (fake_cli / "played.json").exists()
+
+
+@pytest.mark.parametrize("cleanup_raises", [False, True])
+def test_cleanup_failure_holds_watcher_pause_until_stop_confirms_exit(
+    fake_cli, pause_probe, monkeypatch, cleanup_raises,
+):
+    def fail_monitor(self, reader):
+        raise RuntimeError("monitor failed")
+
+    def fail_cleanup(self):
+        if cleanup_raises:
+            raise SystemExit("cleanup failed")
+        return "cleanup failed"
+
+    monkeypatch.setattr(session.PlaySession, "_monitor", fail_monitor)
+    monkeypatch.setattr(session.PlaySession, "_clean_tree", fail_cleanup)
+    _behavior(fake_cli, linger_stage="assets build")
+    process = _start(fake_cli)
+    assert process.wait(timeout=10) == 1
+    assert "cleanup failed" in process.reason
+    assert "watcher remains paused" in process.reason
+    assert [event[0] for event in pause_probe.events] == ["pause"]
+    assert not session.is_running(str(fake_cli))
+    assert session._SESSIONS[str(fake_cli)] is process
+    assert session.needs_recovery(str(fake_cli))
+
+    # The later Stop uses durable ownership, not the failed worker cleanup path.
+    assert session.stop(str(fake_cli)) is None
+    assert process._process.poll() is not None
+    assert [event[0] for event in pause_probe.events] == ["pause", "resume"]
+    assert str(fake_cli) not in session._SESSIONS
+    assert not session.needs_recovery(str(fake_cli))

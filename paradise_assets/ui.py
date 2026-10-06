@@ -324,18 +324,18 @@ class PARADISE_ASSETS_PT_play(_AssetsPanel, Panel):
 
 
 def _draw_session(layout, session, root: str) -> None:
-    """Whether the game is running, and why it stopped if it stopped on its own."""
+    """The build/play session's phase and any failure, without assuming a game window opened."""
     process = session.process_for(root)
     if process is not None:
         row = layout.row(align=True)
-        row.label(text=f"Playing (pid {process.pid})", icon="RADIOBUT_ON")
+        row.label(text=process.status, icon="RADIOBUT_ON")
         row.operator("paradise_assets.stop_play", text="Stop", icon="PAUSE")
         return
 
     if (reason := session.exit_reason(root)) is not None:
         box = layout.box()
         box.alert = True
-        box.label(text="The game stopped on its own.", icon="ERROR")
+        box.label(text="Build & Play failed.", icon="ERROR")
         for line in _wrap(reason, 44)[:3]:
             box.label(text=line)
 

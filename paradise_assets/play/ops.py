@@ -1,14 +1,13 @@
-"""Build, Play, Stop, Verify and Clean as buttons. Play is ``paradise host play --no-assets``:
-the asset watcher keeps the build fresh while the CLI brings the launcher up to date, runs the
-game and waits for it, so a failed launcher build stops the launch and a Stop is one terminate.
-The open document plays; every prefab is playable (§2.9).
+"""Build, Play, Stop, Verify and Clean as buttons.
+
+Build & Play gates the game on successful launcher and asset builds. Its worker supervises
+watch failures for the entire session; the modal handler reports failures while keeping UI live.
 """
 
 from __future__ import annotations
 
 import os
 import subprocess
-import time
 
 import bpy
 from bpy.props import BoolProperty
@@ -21,10 +20,6 @@ from .host import resolve_cli_command, run_cli, start_cli
 
 __all__ = ["classes"]
 
-# How long Play keeps an eye on the game before handing its lifetime to the player. Long enough
-# for a launcher build plus the load: a build that dies a minute in must still be reported here,
-# not only in the panel. Blender cannot see whether a window opened; this bounds the failure.
-WATCH_SECONDS = 180.0
 POLL_INTERVAL = 0.4
 
 #: Background Blender has no event loop; a scripted Play waits this long for an early death.
@@ -168,7 +163,6 @@ class PARADISE_ASSETS_OT_play(Operator):
     _process = None
     _timer = None
     _root = ""
-    _deadline = 0.0
 
     @classmethod
     def poll(cls, context) -> bool:
@@ -180,27 +174,19 @@ class PARADISE_ASSETS_OT_play(Operator):
             return {"CANCELLED"}
         layout, document_path = found
 
-        if resolve_cli_command(layout.root) is None:
-            self.report({"ERROR"}, CLI_MISSING)
-            return {"CANCELLED"}
-
         process, error = session.start(layout.root, document_path, watch=self.watch)
         if process is None:
             self.report({"ERROR"}, error or "Could not start the game")
             return {"CANCELLED"}
 
         self._process, self._root = process, layout.root
-        self.report(
-            {"INFO"},
-            f"{'Watching and playing' if self.watch else 'Playing'} "
-            f"{os.path.basename(document_path)} (pid {process.pid})")
+        self.report({"INFO"}, f"Build & Play started for {os.path.basename(document_path)}")
 
         if not _modal_possible(context):
             return self._background_wait()
 
-        # The panel would show a death too, but only on its next redraw; a build error is worth
-        # a report in the author's face. The handler watches the session it started and no other.
-        self._deadline = time.monotonic() + WATCH_SECONDS
+        # No time limit: a long initial build or a later watch rebuild can still fail. This
+        # handler belongs to its original session, so replacing it cannot report the new one's log.
         window_manager = context.window_manager
         self._timer = window_manager.event_timer_add(POLL_INTERVAL, window=context.window)
         window_manager.modal_handler_add(self)
@@ -211,8 +197,7 @@ class PARADISE_ASSETS_OT_play(Operator):
             return {"PASS_THROUGH"}
 
         if self._process.poll() is None:
-            # Still alive past the window: it opened, and its lifetime is the player's business.
-            return self._release(context) if time.monotonic() >= self._deadline else {"PASS_THROUGH"}
+            return {"PASS_THROUGH"}
 
         status = self._report_exit()
         self._release(context)
@@ -225,17 +210,17 @@ class PARADISE_ASSETS_OT_play(Operator):
         try:
             self._process.wait(timeout=BACKGROUND_WAIT_SECONDS)
         except subprocess.TimeoutExpired:
-            # Still running, which is the good case.
+            # The worker continues supervising; a live CLI is not proof that a window opened.
             return {"FINISHED"}
         return self._report_exit()
 
     def _report_exit(self) -> set[str]:
-        """Reap through the session so the panel and this report agree on the reason."""
+        """Keep the panel's cache current, but report only this operator's own session."""
         session.process_for(self._root)
-        reason = session.exit_reason(self._root)
+        reason = self._process.reason
         if reason is None:
             return {"FINISHED"}
-        self.report({"ERROR"}, f"The game stopped — {reason} (see {session.log_path(self._root)})")
+        self.report({"ERROR"}, f"Build & Play failed - {reason} (see {session.log_path(self._root)})")
         return {"CANCELLED"}
 
     def _release(self, context) -> set[str]:
@@ -265,7 +250,9 @@ class PARADISE_ASSETS_OT_stop_play(Operator):
         found = _playable(self)
         if found is None:
             return {"CANCELLED"}
-        session.stop(found[0].root)
+        if problem := session.stop(found[0].root):
+            self.report({"ERROR"}, problem)
+            return {"CANCELLED"}
         self.report({"INFO"}, "Game stopped")
         return {"FINISHED"}
 

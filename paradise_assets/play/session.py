@@ -1,11 +1,8 @@
-"""The running game, supervised by Blender: ``paradise host play --no-assets`` as a child.
+"""A fail-closed Build & Play session, independent of Blender's UI event loop.
 
-One session per project root. The asset watcher keeps the build current, so Play tells the CLI not
-to rebuild assets; the held process brings the launcher up to date, runs the game and waits for it,
-and a SIGTERM to it takes the game down with it (``dotnet watch`` included) -- so "Stop" is one
-``terminate()`` and a second Play replaces the first instead of stacking a window on it. Output
-goes to a log the panel reads the first error from: a launcher prints its cause first and hints
-after, unlike the asset watcher's log, whose latest rebuild is the interesting one.
+Always build assets and then the launcher before asking ``host play`` to run.
+The CLI's extension-based launcher freshness shortcut cannot account for arbitrary inputs.
+Watch failures end the whole owned process tree, including a game running the previous build.
 """
 
 from __future__ import annotations
@@ -14,10 +11,13 @@ import atexit
 import contextlib
 import hashlib
 import os
+import re
 import signal
 import subprocess
 import tempfile
 import threading
+
+from . import process_tree
 
 __all__ = [
     "exit_reason",
@@ -31,7 +31,7 @@ __all__ = [
     "stop_all",
 ]
 
-_SESSIONS: dict[str, subprocess.Popen] = {}
+_SESSIONS: dict[str, PlaySession] = {}
 
 #: (exit code, first error line) per root, kept until the next start.
 _EXITS: dict[str, tuple[int, str | None]] = {}
@@ -51,13 +51,14 @@ def log_path(project_root: str) -> str:
     return os.path.join(tempfile.gettempdir(), f"paradise_assets_play_{name}_{digest}.log")
 
 
-def play_command(cli_argv: list[str], project_root: str, document_path: str, *, watch: bool) -> list[str]:
-    """The verb: the DOCUMENT's path, not its built twin -- the CLI knows the play tree's
-    layout and this extension need not. The asset watcher owns asset builds; ``--watch`` hands the
-    launcher to ``dotnet watch run``."""
+def play_command(
+    cli_argv: list[str], project_root: str, document_path: str, *, watch: bool, profile: str | None = None,
+) -> list[str]:
+    """Name the document, not its built twin. Assets must have passed the preceding build stage."""
     from .host import _preference
 
-    profile = _preference("build_profile", "dev") or "dev"
+    if profile is None:
+        profile = _preference("build_profile", "dev") or "dev"
     argv = [
         *cli_argv, "host", "play", "--no-assets",
         "--profile", profile,
@@ -69,7 +70,7 @@ def play_command(cli_argv: list[str], project_root: str, document_path: str, *, 
     return argv
 
 
-def process_for(project_root: str) -> subprocess.Popen | None:
+def process_for(project_root: str) -> PlaySession | None:
     """The live session's process, or ``None``; reaps one that has exited."""
     key = _normalize(project_root)
     process = _SESSIONS.get(key)
@@ -78,7 +79,7 @@ def process_for(project_root: str) -> subprocess.Popen | None:
     if (code := process.poll()) is not None:
         _SESSIONS.pop(key, None)
         failed = code not in (0, INTERRUPTED)
-        _EXITS[key] = (code, first_error_line(log_path(project_root)) if failed else None)
+        _EXITS[key] = (code, process.detail if failed else None)
         return None
     return process
 
@@ -87,18 +88,181 @@ def is_running(project_root: str) -> bool:
     return process_for(project_root) is not None
 
 
+class PlaySession:
+    """One worker owns every stage and its cleanup; polling never launches work from a draw."""
+
+    def __init__(self, root: str, stages: list[tuple[str, list[str]]], environment: dict, *, watch: bool):
+        self.root = root
+        self.status = stages[0][0]
+        self.detail: str | None = None
+        self.returncode: int | None = None
+        self._stages = stages
+        self._environment = environment
+        self._watch = watch
+        self._process: subprocess.Popen | None = None
+        self._ownership: process_tree.Ownership | None = None
+        self._stopping = threading.Event()
+        self._done = threading.Event()
+        self._diagnostic: str | None = None
+        self._first_line: str | None = None
+        self._watch_error: str | None = None
+        self._pending = b""
+        self._playing = False
+        # Open before returning from start(), so an unwritable log is an immediate error.
+        self._output = open(log_path(root), "wb")  # noqa: SIM115 -- worker owns the handle
+        self._thread = threading.Thread(target=self._run, name="paradise-play", daemon=True)
+        self._thread.start()
+
+    @property
+    def pid(self) -> int:
+        return self._process.pid if self._process is not None else 0
+
+    @property
+    def reason(self) -> str | None:
+        if self.poll() in (None, 0, INTERRUPTED):
+            return None
+        return f"exit {self.returncode}: {self.detail}" if self.detail else f"exit {self.returncode}"
+
+    def poll(self) -> int | None:
+        return self.returncode if self._done.is_set() else None
+
+    def wait(self, timeout: float | None = None) -> int:
+        if not self._done.wait(timeout):
+            raise subprocess.TimeoutExpired("Build & Play", timeout)
+        return self.returncode
+
+    def cancel(self) -> None:
+        self._stopping.set()
+
+    def _run(self) -> None:
+        try:
+            with self._output, open(log_path(self.root), "rb") as reader:
+                for index, (label, argv) in enumerate(self._stages):
+                    if self._stopping.is_set():
+                        self.returncode = INTERRUPTED
+                        break
+                    self.status = label
+                    self._playing = index == len(self._stages) - 1
+                    self._diagnostic = None
+                    self._first_line = None
+                    self._watch_error = None
+                    self._ownership = None
+                    options = process_tree.launch_options(self._environment)
+                    self._process = subprocess.Popen(
+                        argv, cwd=self.root, stdout=self._output,
+                        stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, **options,
+                    )
+                    try:
+                        self._ownership = process_tree.record(
+                            self.root, self._process, environment=options["env"],
+                        )
+                    except OSError:
+                        # Still our unreaped child: its PID/group cannot yet have been reused.
+                        _kill_unrecorded(self._process)
+                        raise
+                    self.returncode = self._monitor(reader)
+                    problem = self._clean_tree()
+                    if problem:
+                        self.returncode, self.detail = 1, problem
+                    elif self.returncode not in (0, INTERRUPTED):
+                        self.detail = self._watch_error or self._diagnostic or self._first_line
+                    if self.returncode != 0:
+                        break
+        except Exception as error:
+            # A worker exception must not leave a live game or an eternally pending session.
+            problem = self._clean_tree() if self._process is not None else None
+            self.returncode = 1
+            self.detail = f"Could not run Build & Play: {error}"
+            if problem:
+                self.detail += f"; {problem}"
+        finally:
+            self._done.set()
+
+    def _clean_tree(self) -> str | None:
+        problem = process_tree.release(self.root, self._ownership) if self._ownership is not None else None
+        if self._process is not None:
+            try:
+                self._process.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                return problem or "The earlier game did not stop; close it before playing again."
+        return problem
+
+    def _monitor(self, reader) -> int:
+        while True:
+            self._read_output(reader)
+            if self._watch_error:
+                return 1
+            if self._stopping.is_set():
+                return INTERRUPTED
+            code = self._process.poll()
+            if code is not None:
+                self._read_output(reader, final=True)
+                return 1 if self._watch_error else code
+            self._stopping.wait(0.1)
+
+    def _read_output(self, reader, *, final: bool = False) -> None:
+        # Drain available output without sleeping between chunks: a chatty game must not hide a
+        # later watch failure behind a growing backlog. Only complete lines are interpreted.
+        while chunk := reader.read(_HEAD_BYTES):
+            lines = (self._pending + chunk).split(b"\n")
+            self._pending = lines.pop()
+            for raw in lines:
+                self._observe(raw.decode("utf-8", errors="replace"))
+            if self._watch_error or self._stopping.is_set():
+                return
+        if final and self._pending:
+            self._observe(self._pending.decode("utf-8", errors="replace"))
+            self._pending = b""
+
+    def _observe(self, line: str) -> None:
+        line = _ANSI.sub("", line).strip()
+        if self._first_line is None and line and not _is_build_noise(line):
+            self._first_line = line[:300]
+        if self._diagnostic is None and _is_diagnostic(line):
+            self._diagnostic = line[:300]
+        if not self._playing:
+            return
+        if line.startswith("build:") and "asset(s) into" in line:
+            # This only acknowledges a CLI session, not a window we cannot observe.
+            self.status = "Watch & Play session" if self._watch else "Play session"
+        if self._watch and self._watch_error is None and _watch_failed(line):
+            self._watch_error = line[:300]
+
+
+_ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_COMPILER_ERROR = re.compile(r"(?:^|:\s*)error\s+[A-Z]+\d+\s*:", re.IGNORECASE)
+
+
+def _watch_failed(line: str) -> bool:
+    lowered = line.lower()
+    return (
+        bool(_COMPILER_ERROR.search(line))
+        or lowered == "build failed."
+        or ("dotnet watch" in lowered and (
+            "build failed" in lowered or "failed to build" in lowered
+            or ("error(s)" in lowered and "0 error(s)" not in lowered)
+        ))
+    )
+
+
+def _kill_unrecorded(process: subprocess.Popen) -> None:
+    with contextlib.suppress(OSError):
+        if os.name == "nt":
+            process.kill()
+        else:
+            os.killpg(process.pid, signal.SIGKILL)
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        process.wait(timeout=2.0)
+
+
 def start(
     project_root: str, document_path: str, *, watch: bool
-) -> tuple[subprocess.Popen | None, str | None]:
-    """Replace any running session with a new one on ``document_path``; ``(process, error)``.
-
-    ``cwd`` is the project root: the CLI locates the project from it, and the game it runs
-    inherits it -- a detached child of a Dock-launched Blender would otherwise start in ``/``.
-    """
+) -> tuple[PlaySession | None, str | None]:
+    """Replace the whole earlier tree before building, including a prior Blender's orphan."""
     from . import host
 
-    stop(project_root)
-
+    if problem := stop(project_root):
+        return None, problem
     command = host.resolve_cli_command(project_root)
     if command is None:
         return None, (
@@ -106,99 +270,47 @@ def start(
             "the addon preferences at it."
         )
 
-    problem = host.ensure_cli_built(project_root)
-    if problem:
-        return None, problem
-
-    path = log_path(project_root)
+    stages = []
+    if cli_build := host._build_stage(project_root):
+        stages.append(("Building Paradise CLI", cli_build))
+    profile = host._preference("build_profile", "dev") or "dev"
+    stages.append(("Building assets", [
+        *command, "assets", "build", "--editor", "--profile", profile, "--project", project_root,
+    ]))
+    # Asset generation can change launcher inputs, so build those first. Unlike host play's
+    # freshness scan, host build lets MSBuild track Content/EmbeddedResource/native files too.
+    stages.append(("Building launcher", [*command, "host", "build", "--project", project_root]))
+    stages.append(("Watch & Play session" if watch else "Play session", play_command(
+        command, project_root, document_path, watch=watch, profile=profile,
+    )))
+    environment = host.subprocess_environment()
+    # Watch's text protocol has no structured status API in the supported CLI versions.
+    environment.update({"DOTNET_CLI_UI_LANGUAGE": "en-US", "DOTNET_WATCH_SUPPRESS_EMOJIS": "1"})
     try:
-        handle = open(path, "w", encoding="utf-8")  # noqa: SIM115 -- handed to the child, then closed
+        process = PlaySession(project_root, stages, environment, watch=watch)
     except OSError as error:
         return None, f"Could not open the play log: {error}"
-
-    argv = play_command(command, project_root, document_path, watch=watch)
-    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
-    try:
-        # Its own session on POSIX, so `stop` can signal the whole group -- the CLI, a dotnet
-        # watch and the game -- rather than trust the CLI alone to pass a SIGTERM down.
-        process = subprocess.Popen(  # argv is built from resolved paths
-            argv,
-            cwd=project_root,
-            env=host.subprocess_environment(),
-            stdout=handle,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            creationflags=flags,
-            start_new_session=os.name != "nt",
-        )
-    except (OSError, subprocess.SubprocessError) as error:
-        handle.close()
-        return None, f"Could not start the game: {error}"
-    finally:
-        # On Windows an open handle here would lock the log against the next run's truncate.
-        handle.close()
-
-    _SESSIONS[_normalize(project_root)] = process
-    _EXITS.pop(_normalize(project_root), None)
+    key = _normalize(project_root)
+    _SESSIONS[key] = process
+    _EXITS.pop(key, None)
     return process, None
 
 
-#: How long `stop` waits on the calling thread before handing the rest to a reaper.
-_STOP_GRACE_SECONDS = 0.5
-#: How long the reaper gives the tree before SIGKILL.
-_STOP_KILL_AFTER_SECONDS = 5.0
-
-
-def stop(project_root: str) -> None:
-    """End the whole tree -- the CLI, a dotnet watch, the game -- and return quickly.
-
-    POSIX: SIGTERM to the process group (the session is its own), SIGKILL from a reaper thread
-    if it is still there after a grace. Windows: ``taskkill /T /F`` on the CLI's pid, since
-    ``terminate()`` is ``TerminateProcess`` and would orphan the grandchildren. Blender's main
-    thread waits half a second at most.
-    """
+def stop(project_root: str) -> str | None:
+    """Cancel, join and reclaim ownership before a replacement may truncate the old log."""
     key = _normalize(project_root)
-    process = _SESSIONS.pop(key, None)
-    if process is None or process.poll() is not None:
-        return
-
-    if os.name == "nt":
-        _taskkill(process.pid)
-        return
-
-    _signal_group(process, signal.SIGTERM)
-    try:
-        process.wait(timeout=_STOP_GRACE_SECONDS)
-        return
-    except subprocess.TimeoutExpired:
-        pass
-    threading.Thread(target=_reap, args=(process,), name="paradise-play-reaper", daemon=True).start()
-
-
-def _reap(process: subprocess.Popen) -> None:
-    try:
-        process.wait(timeout=_STOP_KILL_AFTER_SECONDS)
-    except subprocess.TimeoutExpired:
-        _signal_group(process, signal.SIGKILL)
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            process.wait(timeout=2.0)
-
-
-def _signal_group(process: subprocess.Popen, signum: int) -> None:
-    try:
-        os.killpg(os.getpgid(process.pid), signum)
-    except OSError:
-        with contextlib.suppress(OSError):
-            process.send_signal(signum)
-
-
-def _taskkill(pid: int) -> None:
-    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    with contextlib.suppress(OSError, subprocess.SubprocessError):
-        subprocess.run(
-            ["taskkill", "/T", "/F", "/PID", str(pid)],
-            capture_output=True, timeout=10.0, creationflags=flags, check=False,
-        )
+    process = _SESSIONS.get(key)
+    if process is not None:
+        process.cancel()
+        try:
+            process.wait(timeout=10.0)
+        except subprocess.TimeoutExpired:
+            return "The earlier play session is still stopping; try again after it exits."
+    if problem := process_tree.stop(project_root):
+        return problem
+    _SESSIONS.pop(key, None)
+    _EXITS.pop(key, None)
+    return None
 
 
 def stop_all() -> None:
@@ -209,6 +321,7 @@ def stop_all() -> None:
 
 def exit_reason(project_root: str) -> str | None:
     """Why the last session ended badly, or ``None`` after a clean exit, a Stop, or never."""
+    process_for(project_root)
     entry = _EXITS.get(_normalize(project_root))
     if entry is None:
         return None
@@ -218,8 +331,7 @@ def exit_reason(project_root: str) -> str | None:
     return f"exit {code}: {detail}" if detail else f"exit {code}"
 
 
-#: The log is the whole `host play` stream, and the cause is near its top: the asset build's
-#: `error:`, MSBuild's `error CSxxxx`, or the launcher's first line. 64 KiB covers all three.
+#: Incremental reader chunk size; the standalone log helper also uses this as its head limit.
 _HEAD_BYTES = 64 * 1024
 
 #: A .NET crash banner, as a whole-word marker; "error" alone would match MSBuild's tally.
@@ -268,5 +380,5 @@ def _is_build_noise(line: str) -> bool:
     return ": warning " in line.lower()
 
 
-#: Quitting is the case unregister cannot see; a crash or SIGKILL is covered by nothing.
+#: Ordinary shutdown joins the worker; durable process ownership also covers a crashed Blender.
 atexit.register(stop_all)

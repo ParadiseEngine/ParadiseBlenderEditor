@@ -158,6 +158,11 @@ if verb == "host play":
         print("dotnet watch : Build failed. Waiting for a file to change.", flush=True)
         time.sleep(60)
     (root / "played.json").write_text((root / "built.json").read_text())
+    if config.get("runtime_diagnostics"):
+        for line in config["runtime_diagnostics"]:
+            print(line, flush=True)
+        print("Runtime diagnostics emitted", flush=True)
+        time.sleep(60)
     if config.get("watch_failure") == "rebuild":
         print("dotnet watch : Started", flush=True)
         while not (root / "rebuild").exists():
@@ -300,10 +305,29 @@ def test_replacement_is_refused_when_old_tree_cannot_be_reclaimed(fake_cli, monk
     "/repo/Game.cs(1,1): error CS1002: ; expected",
     "CSC : error CS0006: metadata file not found",
     "error NU1301: unable to load the service index",
+    "Game.cs(1,1): ERROR CS1002: ; expected",
+    "Game.vb(1,1): error BC30002: Type is not defined",
+    "Game.fs(1,1): error FS0039: value is not defined",
+    "Game.csproj : error MSB3073: command exited with code 1",
+    "error MSBUILD1001: build failed",
+    "Game.csproj : Error NU1301: unable to load the service index",
+    "Game.csproj : error NETSDK1045: SDK does not support this target",
     "Build FAILED.",
 ])
 def test_watch_failure_markers(line):
     assert session._watch_failed(line)
+
+
+_RUNTIME_DIAGNOSTICS = [
+    "net: error http404: asset fetch failed",
+    "loader: error level2: missing prefab",
+    "renderer: error dxc3004: undeclared identifier",
+    "shader.hlsl(1,1): error X3004: undeclared identifier",
+    "net: ERROR HTTP404: asset fetch failed",
+    "renderer: error DXC3004: undeclared identifier",
+    "loader: error LEVEL2: missing prefab",
+    "game: error cs1002: application-defined lowercase code",
+]
 
 
 @pytest.mark.parametrize("line", [
@@ -312,9 +336,31 @@ def test_watch_failure_markers(line):
     "warning CS0168: the variable is never used",
     "dotnet watch : Started",
     "[Game] an error counter is now 1",
+    *_RUNTIME_DIAGNOSTICS,
 ])
 def test_watch_build_noise_is_not_a_failure(line):
     assert not session._watch_failed(line)
+
+
+def test_runtime_diagnostics_do_not_stop_a_healthy_watch_session(fake_cli, monkeypatch):
+    observed = threading.Event()
+    observe = session.PlaySession._observe
+
+    def observe_output(self, line):
+        observe(self, line)
+        if line.strip() == "Runtime diagnostics emitted":
+            observed.set()
+
+    monkeypatch.setattr(session.PlaySession, "_observe", observe_output)
+    _behavior(fake_cli, runtime_diagnostics=_RUNTIME_DIAGNOSTICS)
+    process = _start(fake_cli, watch=True)
+    assert observed.wait(10), "watch output was not fully consumed"
+    assert process._watch_error is None
+    assert process._process.poll() is None
+    assert session.is_running(str(fake_cli))
+    assert process.reason is None
+    assert session.stop(str(fake_cli)) is None
+    assert process.poll() == session.INTERRUPTED
 
 
 def _observer():

@@ -281,7 +281,10 @@ class PlaySession:
 
 
 _ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-_COMPILER_ERROR = re.compile(r"(?:^|:\s*)error\s+[A-Z]+\d+\s*:", re.IGNORECASE)
+# The game shares this stream; runtime/shader codes are not .NET build failures.
+_COMPILER_ERROR = re.compile(
+    r"(?:^|:\s*)(?i:error)\s+(?:CS|BC|FS|MSB|MSBUILD|NU|NETSDK)\d+\s*:"
+)
 
 
 def _watch_failed(line: str) -> bool:

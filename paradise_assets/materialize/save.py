@@ -140,10 +140,12 @@ def save_prefab(scene: bpy.types.Scene, *, invoke_actions: bool = True) -> SaveR
 
 
 def _refuse_duplicate_identities(scene: bpy.types.Scene) -> None:
-    """Refuse when two objects claim one identity. Shift+D copies custom properties, guid
-    included; writing both produced a document that would not load while the save reported
-    success. Refused rather than re-minted because the addon cannot know which copy the
-    author meant to keep."""
+    """Refuse when two objects claim one identity. A duplicate made in the viewport is
+    re-minted when it appears (``duplicates.py``); this is the safety net for a clash that
+    path cannot attribute -- detection disabled, or both claimants created between passes --
+    because writing both produced a document that would not load while the save reported
+    success. Refused rather than re-minted here: with no copy gesture to observe, which
+    object the author meant to keep is guesswork."""
     seen: dict[str, str] = {}
     clashes: dict[str, list[str]] = {}
 
@@ -166,8 +168,8 @@ def _refuse_duplicate_identities(scene: bpy.types.Scene) -> None:
     raise SaveError(
         "two objects share one identity, so the document would not load again:\n"
         + "\n".join(lines)
-        + "\n\nA duplicated object keeps the original's identity. Delete the copy, or use "
-        "Add Prefab Instance to place a genuinely new one."
+        + "\n\nA duplicated object gets an identity of its own the moment it appears; this "
+        "clash was made some other way. Delete one of the two, or reload the document."
     )
 
 

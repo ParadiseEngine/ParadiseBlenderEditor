@@ -238,6 +238,21 @@ the document has no field for. The save folds such an inverse into the channels 
 (`save._fold_parent_inverses`) so hand parenting is safe too; before it, an object parented by
 Ctrl+P loaded back somewhere else.
 
+**A duplicated document object is minted an identity of its own the moment it appears**
+(`duplicates.py`). Every copy gesture — Shift+D, Alt+D, paste — copies ID properties,
+`paradise_guid` included, and the save once refused both objects because it could not tell
+which one the author meant. A `depsgraph_update_post` pass remembers which object holds each
+unique identity (by pointer, never name), so a second claimant is attributable to the copy; a
+timer re-mints it, because mutating inside the depsgraph callback is undefined behaviour. A
+duplicated instance keeps `paradise_prefab` and is re-tagged like a freshly placed one —
+showing the prefab's payload, authoring nothing, no resolved children recorded: the original's
+list would tell the save the copy showed children it does not have, and their absence would be
+written as `Dropped = true`. The pending-edit overlay is cleared, since it speaks about the
+original's file entry, which the copy does not have. A copy of a resolved prefab CHILD is not
+re-minted — `save._refuse_duplicate_derived` still refuses it — and
+`save._refuse_duplicate_identities` remains the net for a clash the pass cannot attribute
+(handler disabled, both claimants created between passes).
+
 **A collision shape is an Empty under its object, and the Empty is the editor.** A shape row is
 the host shape itself (`authoredBy: shape` on the row — ShiningPie's `AuthoredColliders` rows,
 and every marker's `Volume`: `ObstacleMarker`'s solid, a trigger's sensor) or a game record with

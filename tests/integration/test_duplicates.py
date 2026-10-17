@@ -30,7 +30,7 @@ import bpy
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import paradise_assets
-from paradise_assets import duplicates
+from paradise_assets import component_ops, duplicates
 from paradise_assets import edits as component_edits
 from paradise_assets.document import prefab as prefab_document
 from paradise_assets.document import project, well_known
@@ -145,20 +145,32 @@ def operator_duplicate(obj):
     return bpy.context.view_layer.objects.active
 
 
+def panel(obj) -> dict[str, dict]:
+    """What the sidebar draws, ``{component id: payload}``: snapshot plus pending structure,
+    each payload with its pending field edits merged in. Identity and transform are drawn from
+    the object, not from here."""
+    owned = {well_known.META_ID.lower(), well_known.TRANSFORM_ID.lower()}
+    shown = {}
+    for component in component_ops.components_of(obj):
+        cid = str(component.get("id", "")).lower()
+        if cid and cid not in owned:
+            shown[cid] = component_ops.merged_data(obj, component["id"], component.get("data"))
+    return shown
+
+
 def payload(obj, component_id: str) -> dict:
-    found = next(
-        (c.get("data") for c in store.component_json(obj)
-         if isinstance(c, dict) and str(c.get("id", "")).lower() == component_id.lower()),
-        None,
-    )
-    return found if isinstance(found, dict) else {}
+    return panel(obj).get(component_id.lower(), {})
 
 
 def shows(obj, component_id: str) -> bool:
-    return any(
-        isinstance(c, dict) and str(c.get("id", "")).lower() == component_id.lower()
-        for c in store.component_json(obj)
-    )
+    return component_id.lower() in panel(obj)
+
+
+def own_components(entry) -> dict[str, dict]:
+    """An entry's own components as the save wrote them, in the panel's shape."""
+    owned = {well_known.META_ID.lower(), well_known.TRANSFORM_ID.lower()}
+    return {c.id.lower(): dict(c.data) for c in entry.components
+            if c.id.lower() not in owned and not c.removed}
 
 
 def main() -> int:
@@ -328,6 +340,43 @@ def main() -> int:
                                                       "prefab child")
             bpy.data.objects.remove(stray, do_unlink=True)
 
+            print("\n== a copy's panel and its saved entry agree under every overlay gesture ==")
+            opened(level)
+            scene = bpy.context.scene
+            duplicates.settle()
+            crate = store.object_with_guid(scene, CRATE)
+            instance = store.object_with_guid(scene, INSTANCE)
+            stripped = duplicate(crate)       # plain copy, one inherited component removed
+            discarded = duplicate(crate)      # plain copy, every pending edit discarded
+            bare = duplicate(instance)        # instance copy, every pending edit discarded
+            duplicates.settle()
+            check(shows(stripped, TAG) and shows(discarded, TAG),
+                  "a plain copy shows the original's components")
+            check(payload(bare, TAG).get("Value") == 3,
+                  "an instance copy shows the original's override")
+            component_edits.remove_component(stripped, TAG)
+            component_edits.clear(discarded)
+            component_edits.clear(bare)
+            check(not shows(stripped, TAG), "removing an inherited component hides it")
+            check(panel(discarded) == {}, "discarding a plain copy's edits empties its panel")
+            prefab_root = {c["id"].lower(): c.get("data") for c in store.base_json(bare)
+                           if c["id"].lower() not in (well_known.META_ID.lower(),
+                                                      well_known.TRANSFORM_ID.lower())}
+            check(panel(bare) == prefab_root,
+                  "discarding an instance copy's edits shows the prefab's own root")
+            stripped_shown = panel(stripped)
+            stripped_guid, discarded_guid, bare_guid = (
+                store.guid_of(obj) for obj in (stripped, discarded, bare))
+            save.save_prefab(scene)
+            entries = read(level).by_guid()
+            check(own_components(entries[stripped_guid]) == stripped_shown,
+                  "the save writes the stripped copy as its panel showed it")
+            check(own_components(entries[discarded_guid]) == {},
+                  "the save writes the discarded plain copy with nothing of its own")
+            check(own_components(entries[bare_guid]) == {}
+                  and not any(c.removed for c in entries[bare_guid].components),
+                  "and the discarded instance copy as a bare instance of the prefab")
+
             print("\n== a clash the detection cannot attribute stays refused ==")
             foreign = "99999999-0000-4000-8000-000000000099"
             first = bpy.data.objects.new("Claim_A", None)
@@ -350,6 +399,23 @@ def main() -> int:
             save.save_prefab(scene)
             check(read(level).by_guid().get(foreign) is not None,
                   "and the survivor saves once the clash is gone")
+
+            print("\n== the first duplicate after opening a workfile is attributable ==")
+            workfile = os.path.join(root, "dupe.blend")
+            bpy.ops.wm.save_as_mainfile(filepath=workfile)
+            bpy.ops.wm.open_mainfile(filepath=workfile)
+            check(bpy.app.timers.is_registered(duplicates._observe_all),
+                  "opening a file queues a pass that records the file's holders")
+            # The event loop would run it next; a background Blender does not pump timers.
+            bpy.app.timers.unregister(duplicates._observe_all)
+            duplicates._observe_all()
+            scene = bpy.context.scene
+            crate = store.object_with_guid(scene, CRATE)
+            opening_copy = duplicate(crate)   # no depsgraph pass, no settle in between
+            save.save_prefab(scene)
+            check(store.guid_of(opening_copy) not in (None, CRATE)
+                  and store.guid_of(crate) == CRATE,
+                  "so the save re-mints the copy rather than refusing the clash")
     finally:
         paradise_assets.unregister()
 

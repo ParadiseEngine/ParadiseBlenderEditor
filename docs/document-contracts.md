@@ -257,7 +257,13 @@ The copy keeps everything the gesture promises: a plain object's copy carries th
 components (queued as additions) and a duplicated instance keeps its overrides, rebuilt from
 the per-field difference between the resolved payload and the prefab baseline — the resolver
 merges per top-level field, so that difference IS the override — plus any unsaved edits, which
-win over the inherited state. The copy records no resolved children: the original's list would
+win over the inherited state. Like every other new object, the copy's snapshot is what the file
+will hold before this session's edits — nothing for a plain copy (as an adopted group), the
+prefab's root for an instance copy (as a placed one) — and everything it inherits is pending
+overlay on top. The panel draws snapshot + overlay and the save writes the copy's fresh entry
+from the overlay, so they agree under every overlay gesture: discarding a copy's edits leaves
+an empty object or a bare instance in the panel and in the file, and removing an inherited
+component hides it in both. The copy records no resolved children: the original's list would
 tell the save the copy showed children it does not have, and their absence would be written as
 `Dropped = true`. So a duplicated instance shows no prefab children until the save's automatic
 refresh (or a Reload) resolves them from the prefab: its saved entry is an ordinary instance.
@@ -268,9 +274,10 @@ select the Empties with the host to copy them. A copy of a resolved prefab CHILD
 re-minted — `save._refuse_duplicate_derived` still refuses it, and duplicating an instance
 together with its children is the most common way to hit that refusal; duplicate the instance
 alone — and `save._refuse_duplicate_identities` remains the net for a clash the pass cannot
-attribute (handler disabled, or both claimants created between passes — for one, a duplicate
-that is the first change after opening a workfile: `load_post` clears the records and nothing
-has observed the scene yet). The save runs the same pass (`duplicates.settle()`) before that
+attribute (handler disabled, or both claimants created between passes). Opening a file or
+enabling the addon is no depsgraph update the handler sees, so each queues one pass that only
+records holders (`_observe_all`); without it the first duplicate after opening a workfile
+would be unattributable. The save runs the same pass (`duplicates.settle()`) before the
 refusal, so a copy whose timer has not fired yet — or a clash an undo restored without an
 update the handler scans — is re-minted rather than refused.
 

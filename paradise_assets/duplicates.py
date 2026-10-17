@@ -52,8 +52,6 @@ _KNOWN: dict[tuple[int, str], int] = {}
 #: which gives every ID a new ``session_uid``.
 _MINTED: dict[tuple[str, int], str] = {}
 
-_scheduled = False
-
 #: Components the copy must NOT inherit: identity is re-minted, the name travels as
 #: ``NAME_KEY``, and the transform rides the object's channels.
 _OWNED = frozenset({well_known.META_ID.lower(), well_known.TRANSFORM_ID.lower()})
@@ -116,14 +114,25 @@ def _mint_for(obj, original_guid: str, claimed: set[str]) -> str:
 
 def _remint(obj, original_guid: str, claimed: set[str]) -> None:
     """Give a duplicated document object an identity of its own, keeping what the duplicate
-    gesture promises: the components it shows, an instance's overrides, and unsaved edits."""
+    gesture promises: the components it shows, an instance's overrides, and unsaved edits.
+
+    The copy follows the convention of every other new object: its snapshot is what the FILE
+    will have before this session's edits -- nothing for a plain object (as a newly adopted
+    group), the prefab's root for an instance (as a placed one) -- and everything it inherits
+    is pending overlay on top. The panel draws snapshot + overlay and the save writes a fresh
+    entry from the overlay, so the two agree under every overlay gesture: discarding the edits
+    leaves an empty object or a bare instance in the panel AND in the file, and removing an
+    inherited component hides it in both. Keeping the original's payload as the snapshot
+    would have the panel go on showing what the save no longer writes.
+    """
     shown = store.component_json(obj)
     pending_edits = component_edits.read(obj)
     pending_structure = component_edits.read_structure(obj)
     component_edits.clear(obj)
 
     if store.prefab_of(obj) is not None:
-        _carry_instance_overrides(obj, shown, store.base_json(obj))
+        base = store.base_json(obj)
+        _carry_instance_overrides(obj, shown, base)
         # Everything it shows is the prefab's, so its own entry authors nothing yet -- exactly
         # like a placed instance, and what makes the reconstructed overrides save as OVERRIDES
         # rather than as a frozen copy of the prefab's payload.
@@ -133,14 +142,16 @@ def _remint(obj, original_guid: str, claimed: set[str]) -> None:
         # ``Dropped = true``. Child overrides (carriers) belong to the original's instance
         # relation and are not copied; the copy's children come from the prefab as authored.
         store.tag_children(obj, [])
+        snapshot = base
     else:
         # A plain object's shown payload IS its entry, so queue it as additions: the copy
         # keeps the original's components, and its unsaved edits have something to land on.
         for component in shown:
             _queue_component(obj, component)
+        snapshot = []
 
     _replay_pending(obj, pending_edits, pending_structure)
-    store.tag_object(obj, _mint_for(obj, original_guid, claimed), shown)
+    store.tag_object(obj, _mint_for(obj, original_guid, claimed), snapshot)
 
     # The authored name belongs to the object, so the copy inherits it (the format allows two
     # objects one name); the SHOWN name is Blender's (``Crate.001``), or the save would record
@@ -219,8 +230,6 @@ def _replay_pending(obj, pending_edits: dict, pending_structure: dict) -> None:
 
 def _remint_pending() -> None:
     """The timer body: re-mint every claimant :data:`_KNOWN` does not recognize."""
-    global _scheduled
-    _scheduled = False
     live = {scene.session_uid for scene in bpy.data.scenes}
     for key in list(_KNOWN):
         if key[0] not in live:
@@ -249,12 +258,17 @@ def _remint_pending() -> None:
 
 def settle() -> None:
     """One synchronous detection + re-mint pass: the handler's work on demand, so a test does
-    not have to pump Blender's timer queue."""
-    global _scheduled
-    _scheduled = False
+    not have to pump Blender's timer queue. A timer still queued finds nothing left to do."""
+    _observe_all()
+    _remint_pending()
+
+
+def _observe_all() -> None:
+    """Record every scene's holders, re-minting nothing. Also the one-shot timer after a file
+    load or addon registration: neither is a depsgraph update this handler sees, and without a
+    record the first duplicate made afterwards would be unattributable."""
     for scene in bpy.data.scenes:
         _observe(scene)
-    _remint_pending()
 
 
 def _transform_only(depsgraph) -> bool:
@@ -274,26 +288,32 @@ def _transform_only(depsgraph) -> bool:
 
 @bpy.app.handlers.persistent
 def _on_depsgraph_update(scene, depsgraph) -> None:
-    global _scheduled
     # Only the scene that changed, and non-document scenes skip immediately -- the early-out
     # dropped.py relies on. Every copy gesture creates objects, so a clash always arrives with
     # an update on the scene it happened in; an undo that restores one re-evaluates the scene
-    # (collection included), which is an update here as well.
-    if _scheduled or _transform_only(depsgraph):
+    # (collection included), which is an update here as well. A queued re-mint already covers
+    # whatever this pass would find.
+    if bpy.app.timers.is_registered(_remint_pending) or _transform_only(depsgraph):
         return
     if _observe(scene):
-        _scheduled = True
         bpy.app.timers.register(_remint_pending, first_interval=0.0)
+
+
+def _schedule_observe_all() -> None:
+    # Persistent: a load clears ordinary timers, and this one is registered from load_post.
+    # Deferred rather than run here: other load_post handlers (watch.py's rematerialization)
+    # may still rebuild the objects, and registration runs with restricted ``bpy.data``.
+    if not bpy.app.timers.is_registered(_observe_all):
+        bpy.app.timers.register(_observe_all, first_interval=0.0, persistent=True)
 
 
 @bpy.app.handlers.persistent
 def _on_load_post(*_) -> None:
-    """A new file gives every ID a new ``session_uid``, so every record is dead, and a pending
-    timer may have died with the old file."""
-    global _scheduled
+    """A new file gives every ID a new ``session_uid``, so every record is dead; the file's
+    holders are recorded again once the load settles."""
     _KNOWN.clear()
     _MINTED.clear()
-    _scheduled = False
+    _schedule_observe_all()
 
 
 def register_handler() -> None:
@@ -301,16 +321,17 @@ def register_handler() -> None:
         bpy.app.handlers.depsgraph_update_post.append(_on_depsgraph_update)
     if _on_load_post not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(_on_load_post)
+    # Enabling the addon onto an open workfile fires no load_post.
+    _schedule_observe_all()
 
 
 def unregister_handler() -> None:
-    global _scheduled
     if _on_depsgraph_update in bpy.app.handlers.depsgraph_update_post:
         bpy.app.handlers.depsgraph_update_post.remove(_on_depsgraph_update)
     if _on_load_post in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(_on_load_post)
-    # A pending re-mint would otherwise run this module's callback after the addon is gone
-    # (or reloaded), and ``_scheduled`` would stay set for a re-registration.
-    if bpy.app.timers.is_registered(_remint_pending):
-        bpy.app.timers.unregister(_remint_pending)
-    _scheduled = False
+    # A queued pass would otherwise run this module's callback after the addon is gone (or
+    # reloaded).
+    for timer in (_remint_pending, _observe_all):
+        if bpy.app.timers.is_registered(timer):
+            bpy.app.timers.unregister(timer)

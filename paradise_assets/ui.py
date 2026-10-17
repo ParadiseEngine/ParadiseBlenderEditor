@@ -94,7 +94,11 @@ class PARADISE_ASSETS_PT_document(_AssetsPanel, Panel):
         layout.operator("paradise_assets.recreate_workfile", icon="TRASH")
 
         row = layout.row(align=True)
-        row.operator("paradise_assets.add_prefab_instance", text="Add Prefab…", icon="ADD")
+        # ``filepath = ""`` keeps REGISTER from restoring the last placed prefab as a ghost
+        # value: the button must browse, never silently re-place the previous file (#63).
+        row.operator(
+            "paradise_assets.add_prefab_instance", text="Add Prefab…", icon="ADD"
+        ).filepath = ""
         row.operator("paradise_assets.extract_prefab", text="Extract…", icon="EXPORT")
         layout.operator("paradise_assets.create_prefab", text="Create Prefab from Selection…", icon="EXPORT")
         layout.operator(

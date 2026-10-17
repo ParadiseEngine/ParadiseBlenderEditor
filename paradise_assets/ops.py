@@ -20,7 +20,7 @@ import subprocess
 import tempfile
 
 import bpy
-from bpy.props import StringProperty
+from bpy.props import CollectionProperty, StringProperty
 from bpy.types import Operator
 
 from . import catalogue, watch
@@ -381,6 +381,11 @@ class PARADISE_ASSETS_OT_add_prefab_instance(Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     filepath: StringProperty(subtype="FILE_PATH")  # type: ignore[valid-type]
+    # The pair a file browser multi-selection arrives as. Without ``files`` Blender still lets
+    # the author box-select prefab files but hands the operator only the active one (#72).
+    directory: StringProperty(subtype="DIR_PATH", options={"HIDDEN"})  # type: ignore[valid-type]
+    files: CollectionProperty(  # type: ignore[valid-type]
+        type=bpy.types.OperatorFileListElement, options={"HIDDEN"})
     filter_glob: StringProperty(default="*.prefab", options={"HIDDEN"})  # type: ignore[valid-type]
 
     @classmethod
@@ -388,10 +393,22 @@ class PARADISE_ASSETS_OT_add_prefab_instance(Operator):
         return store.read_state(context.scene) is not None
 
     def invoke(self, context, event):
+        # Only a directly named file skips the browser: the .prefab drag-and-drop handler and
+        # scripted callers hand one over as ``filepath``. A browser confirm calls ``execute``
+        # directly, so ``files`` never needs this door -- and without one, a REGISTER-restored
+        # selection cannot place prefabs silently (#63); the button clears ``filepath`` so a
+        # restored path cannot either.
         if self.filepath:
             return self.execute(context)
         context.window_manager.fileselect_add(self)
         return {"RUNNING_MODAL"}
+
+    def _selected_paths(self) -> list[str]:
+        """What the author confirmed: every file of a browser selection, or the one named file
+        (a drag-and-drop, a script) that arrived without a browser at all."""
+        if self.files:
+            return [os.path.join(self.directory, entry.name) for entry in self.files]
+        return [self.filepath] if self.filepath else []
 
     def execute(self, context):
         state = store.read_state(context.scene)
@@ -399,34 +416,51 @@ class PARADISE_ASSETS_OT_add_prefab_instance(Operator):
             self.report({"ERROR"}, "No prefab document is open — open one before adding to it.")
             return {"CANCELLED"}
 
-        path = os.path.abspath(bpy.path.abspath(self.filepath))
-        if not os.path.isfile(path):
-            self.report({"ERROR"}, f"No such file: {path}")
+        # Every instance lands at the cursor, as a single add does: the placement is a starting
+        # point, and all of them are left selected so one drag moves the whole batch.
+        location = tuple(context.scene.cursor.location)
+        added: list[bpy.types.Object] = []
+        problems: list[str] = []
+        for path in self._selected_paths():
+            path = os.path.abspath(bpy.path.abspath(path))
+            if not os.path.isfile(path):
+                problems.append(f"no such file: {path}")
+                continue
+            if os.path.normcase(path) == os.path.normcase(state.path):
+                # The resolver would catch the cycle later; here it says so at the moment it happens.
+                problems.append(
+                    f"a document cannot instantiate itself: {os.path.basename(path)}")
+                continue
+            layout = project.locate(path)
+            if layout is None:
+                problems.append(f"no asset project above {path}")
+                continue
+            try:
+                added.append(instancing.add_instance(context.scene, path, layout, location))
+            except instancing.InstanceError as error:
+                problems.append(str(error))
+
+        if not added:
+            self.report({"ERROR"}, problems[0] if problems else "No prefab file was chosen.")
             return {"CANCELLED"}
 
-        if os.path.normcase(path) == os.path.normcase(state.path):
-            # The resolver would catch the cycle later; here it says so at the moment it happens.
-            self.report({"ERROR"}, "A document cannot instantiate itself.")
-            return {"CANCELLED"}
-
-        layout = project.locate(path)
-        if layout is None:
-            self.report({"ERROR"}, f"No asset project above {path}")
-            return {"CANCELLED"}
-
-        try:
-            added = instancing.add_instance(context.scene, path, layout, tuple(context.scene.cursor.location))
-        except instancing.InstanceError as error:
-            self.report({"ERROR"}, str(error))
-            return {"CANCELLED"}
-
-        # Selected and active: the next thing anyone does is move it.
+        # Selected and active: the next thing anyone does is move them.
         for obj in context.selected_objects:
             obj.select_set(False)
-        added.select_set(True)
-        context.view_layer.objects.active = added
+        for obj in added:
+            obj.select_set(True)
+        context.view_layer.objects.active = added[-1]
 
-        self.report({"INFO"}, f"Added '{added.name}'. Save to write it to the document.")
+        if len(added) == 1:
+            summary = f"Added '{added[0].name}'"
+        else:
+            names = ", ".join(f"'{obj.name}'" for obj in added)
+            summary = f"Added {len(added)} prefabs: {names}"
+        if problems:
+            self.report({"WARNING"}, f"{summary}, skipped {len(problems)}: {problems[0]}")
+        else:
+            pronoun = "it" if len(added) == 1 else "them"
+            self.report({"INFO"}, f"{summary}. Save to write {pronoun} to the document.")
         return {"FINISHED"}
 
 

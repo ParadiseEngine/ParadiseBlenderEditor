@@ -4,16 +4,19 @@
 
 Every Blender copy gesture copies ID properties, ``paradise_guid`` included; the handler
 re-mints the claimant it has never seen. What is pinned here: the copy keeps the original's
-components, an instance's overrides, and unsaved edits; the minted guid is repeatable for the
-same copy (what undo/redo relies on); a duplicated prefab CHILD stays refused; and a clash the
-detection cannot attribute still trips the save's refusal.
+components, an instance's overrides, and unsaved edits (a pending whole-component revert
+included); the guid minted for a copy comes back when the clash is restored (what undo relies
+on) but is never handed to a different object -- not after a rename, not after a delete; a
+duplicated prefab CHILD stays refused; and a clash the detection cannot attribute still trips
+the save's refusal.
 
 Copies are made with ``obj.copy()`` + link, which is what Shift+D, Alt+D and Ctrl+V each do to
-ID properties, and once through ``bpy.ops.object.duplicate`` for the operator path.
+ID properties, and through ``bpy.ops.object.duplicate`` for the operator path.
 ``duplicates.settle()`` is the handler's detection-and-re-mint pass run synchronously, because
 a background Blender does not pump the timer queue the handler defers through. Background
-Blender also refuses ``bpy.ops.ed.undo`` (no window), so undo is covered by its load-bearing
-property: re-minting the same recreated copy produces the same guid.
+Blender also refuses ``bpy.ops.ed.undo`` (no window), so an undo across the duplicate is stood
+in for by what it does to the copy: the same ID (same ``session_uid``) claims the original's
+guid again.
 """
 
 from __future__ import annotations
@@ -42,6 +45,7 @@ PREFAB_GUID = "5f2a1111-2222-4333-8444-555555555555"
 ROOT_LOCAL = "aaaaaaaa-0000-4000-8000-000000000001"
 CHILD_LOCAL = "aaaaaaaa-0000-4000-8000-000000000002"
 TAG = "01b792a0-f12e-4fe9-9867-907ae988b301"
+EXTRA = "01b792a0-f12e-4fe9-9867-907ae988b302"
 
 
 def check(condition: bool, label: str) -> bool:
@@ -99,6 +103,8 @@ def make_project(work: str) -> str:
             + f'prefab = {{ guid = "{PREFAB_GUID}", path = "prefabs/lamp.prefab" }}\n'
             + meta(f'Guid = "{INSTANCE}"\nName = "Lamp_03"\nParent = "{LEVEL_GUID}"\n')
             + transform(5.0)
+            # An instance ADDITION: a component the prefab does not have.
+            + f'\n[[objects.components]]\nid = "{EXTRA}"\ntype = "Game.Extra"\nWeight = 2\n'
             # The instance's override of the prefab root's Tag: only the touched field.
             + f'\n[[objects.components]]\nid = "{TAG}"\ntype = "Game.Tag"\nValue = 3\n'
         )
@@ -124,6 +130,15 @@ def duplicate(obj):
     copy = obj.copy()
     bpy.context.scene.collection.objects.link(copy)
     return copy
+
+
+def operator_duplicate(obj):
+    """Shift+D through the operator: the copy is left active."""
+    bpy.ops.object.select_all(action="DESELECT")
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    bpy.ops.object.duplicate()
+    return bpy.context.view_layer.objects.active
 
 
 def payload(obj, component_id: str) -> dict:
@@ -187,7 +202,10 @@ def main() -> int:
             instance = store.object_with_guid(scene, INSTANCE)
             check(payload(instance, TAG).get("Value") == 3,
                   "the instance shows its saved override")
+            check(payload(instance, EXTRA).get("Weight") == 2,
+                  "and its saved addition")
             component_edits.set_field(instance, TAG, "Colour", "blue")   # pending, unsaved
+            component_edits.revert_field(instance, EXTRA, "")   # pending: hand the addition back
             duplicates.settle()
             second = duplicate(instance)
             duplicates.settle()
@@ -217,36 +235,52 @@ def main() -> int:
                   "and the original gained its pending edit, nothing more")
             check(not any(e.dropped for e in written.objects),
                   "and no child was written dropped for the copy")
+            check(instances[second_guid].component(EXTRA) is None,
+                  "the original's pending revert of its addition rides along: the copy drops it")
+            check(instances[INSTANCE].component(EXTRA) is None,
+                  "as the original does")
 
-            print("\n== the minted guid is repeatable for the same copy (undo/redo) ==")
-            # Background Blender refuses bpy.ops.ed.undo (no window), so undo is covered by its
-            # load-bearing property: the clash redo restores has the same name, and the re-mint
-            # must produce the guid the copy already had rather than churning the document.
+            print("\n== a minted guid belongs to one copy: undo restores it, nothing reuses it ==")
             opened(level)
             scene = bpy.context.scene
             duplicates.settle()
             crate = store.object_with_guid(scene, CRATE)
-            bpy.ops.object.select_all(action="DESELECT")
-            crate.select_set(True)
-            bpy.context.view_layer.objects.active = crate
-            bpy.ops.object.duplicate()
-            first_copy = bpy.context.view_layer.objects.active
+
+            first_copy = operator_duplicate(crate)
+            first_name = first_copy.name
             duplicates.settle()
             first_guid = store.guid_of(first_copy)
             check(first_copy is not crate and first_guid is not None and first_guid != CRATE,
                   "the operator's duplicate was re-minted")
-            first_name = first_copy.name
-            bpy.data.objects.remove(first_copy, do_unlink=True)
-            bpy.ops.object.select_all(action="DESELECT")
-            crate.select_set(True)
-            bpy.context.view_layer.objects.active = crate
-            bpy.ops.object.duplicate()
-            recreated = bpy.context.view_layer.objects.active
+
+            # Undo across the duplicate: the same ID claims the original's identity again.
+            first_copy[store.GUID_KEY] = CRATE
             duplicates.settle()
-            check(recreated.name == first_name,
-                  "the recreated copy bears the same name, as an undo restore does")
-            check(store.guid_of(recreated) == first_guid,
-                  "and is re-minted the SAME guid, so undo/redo does not churn the document")
+            check(store.guid_of(first_copy) == first_guid,
+                  "a restored clash re-mints the guid the copy already had")
+            check(store.guid_of(crate) == CRATE, "and the original keeps its own")
+
+            save.save_prefab(scene)
+            first_copy.name = "Barrel"   # the author renames the copy, then duplicates again
+            duplicates.settle()
+            second_copy = operator_duplicate(crate)
+            duplicates.settle()
+            check(second_copy.name == first_name,
+                  "the next duplicate reuses the freed Blender name")
+            second_copy_guid = store.guid_of(second_copy)
+            check(second_copy_guid not in (None, CRATE, first_guid),
+                  "but is minted an identity of its own")
+            check(store.guid_of(first_copy) == first_guid,
+                  "and the renamed, saved copy keeps the identity the document holds")
+
+            bpy.data.objects.remove(first_copy, do_unlink=True)
+            save.save_prefab(scene)
+            check(read(level).by_guid().get(first_guid) is None,
+                  "a deleted copy leaves the document")
+            third_copy = operator_duplicate(crate)
+            duplicates.settle()
+            check(store.guid_of(third_copy) not in (None, CRATE, first_guid, second_copy_guid),
+                  "and a later duplicate does not bring its identity back")
 
             print("\n== duplicating a resolved prefab child is still refused ==")
             bulb = next(o for o in scene.collection.all_objects if store.is_derived(o))

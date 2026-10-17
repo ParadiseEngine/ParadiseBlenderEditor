@@ -9,16 +9,21 @@ duplication that is unambiguous -- the copy is the object that was just created 
 depsgraph callback is undefined behaviour; ``dropped.py`` is the prior art).
 
 Attribution is by MEMORY, not guesswork: while an identity is unique the pass records which
-object holds it (:data:`_KNOWN`, by name with the pointer as fallback -- undo restores names
-wholesale, while pointers are allocation artifacts a memfile undo may reshuffle). When a second
-claimant appears, the one already known is the original. A clash the pass cannot attribute --
-the handler was disabled, or both claimants appeared between passes -- is left alone, and
+object holds it (:data:`_KNOWN`, by ``ID.session_uid``). When a second claimant appears, the one
+already known is the original. ``session_uid`` is the key because it is the one handle that
+fits: undo/redo restores it (pointers are reallocated by a memfile undo), a rename does not
+change it (names do), and Blender never hands it to another ID within a session (``.001``
+names are reused the moment they are free). A clash the pass cannot attribute -- the handler
+was disabled, or both claimants appeared between passes -- is left alone, and
 ``save._refuse_duplicate_identities`` remains as the safety net that names the objects.
 
-The minted guid is REPEATABLE for the same copy: ``uuid5`` over the original's identity and the
-copy's (unique) Blender name, not a bare ``uuid4``. Undo restores the clash with the same name,
-so the re-mint after undo/redo produces the guid the copy already had -- the document's entries
-do not churn every time the author steps across the duplicate.
+The minted guid is a ``uuid4`` REMEMBERED per copy (:data:`_MINTED`, by the original's
+identity and the copy's ``session_uid``). The re-mint runs in a timer after the operator's undo
+push, so it never enters the undo history: stepping back across the duplicate restores the
+clash, and the re-mint after that undo hands the restored copy the guid it already had instead
+of churning the document's entries. A deleted copy, or a fresh duplicate of the same original,
+is a new ID with a new ``session_uid`` and therefore a new guid -- an identity the document
+once held is never given to an unrelated object.
 
 A copy of a resolved prefab child (``paradise_derived``) is NOT re-minted: it is a second claim
 on one prefab child, not a new object, and ``save._refuse_duplicate_derived`` keeps refusing it
@@ -32,18 +37,20 @@ import uuid
 import bpy
 
 from . import edits as component_edits
-from .document import guid as document_guid
 from .document import overrides, well_known
 from .materialize import store
 
 __all__ = ["register_handler", "settle", "unregister_handler"]
 
-#: Who holds each identity, ``(scene pointer, lowercase guid) -> (object name, object
-#: pointer)``. Refreshed while the guid is unique, so a collision can be attributed to the
-#: claimant the pass has never seen. Pruned as objects go away and CLEARED on file load: a new
-#: file's objects may reuse freed memory, and a stale record could otherwise attribute a clash
-#: the pass never saw.
-_KNOWN: dict[tuple[int, str], tuple[str, int]] = {}
+#: Who holds each identity, ``(scene session_uid, lowercase guid) -> object session_uid``.
+#: Refreshed while the guid is unique, so a collision can be attributed to the claimant the
+#: pass has never seen. Pruned as scenes and identities go away, and cleared on file load.
+_KNOWN: dict[tuple[int, str], int] = {}
+
+#: The guid each copy was minted, ``(lowercase original guid, copy session_uid) -> guid``, so an
+#: undo that restores the clash re-mints the guid the copy already had. Cleared on file load,
+#: which gives every ID a new ``session_uid``.
+_MINTED: dict[tuple[str, int], str] = {}
 
 _scheduled = False
 
@@ -71,12 +78,12 @@ def _observe(scene) -> bool:
     when the timer runs."""
     if store.read_state(scene) is None:
         return False
-    scene_key = scene.as_pointer()
+    scene_key = scene.session_uid
     claims = _claims(scene)
     clashing = False
     for guid, objects in claims.items():
         if len(objects) == 1:
-            _KNOWN[(scene_key, guid)] = (objects[0].name, objects[0].as_pointer())
+            _KNOWN[(scene_key, guid)] = objects[0].session_uid
         else:
             clashing = True
     present = {(scene_key, guid) for guid in claims}
@@ -87,32 +94,27 @@ def _observe(scene) -> bool:
 
 
 def _original_of(scene_key: int, guid: str, objects: list):
-    """The claimant :data:`_KNOWN` remembers, or ``None`` when no record singles one out.
-    Names before pointers: both are recorded, but a rename between passes is the ordinary case
-    and a recycled pointer after undo is the treacherous one."""
-    record = _KNOWN.get((scene_key, guid))
-    if record is None:
+    """The claimant :data:`_KNOWN` remembers, or ``None`` when no record singles one out."""
+    holder = _KNOWN.get((scene_key, guid))
+    if holder is None:
         return None
-    name, pointer = record
-    by_name = [obj for obj in objects if obj.name == name]
-    if len(by_name) == 1:
-        return by_name[0]
-    by_pointer = [obj for obj in objects if obj.as_pointer() == pointer]
-    return by_pointer[0] if len(by_pointer) == 1 else None
+    found = [obj for obj in objects if obj.session_uid == holder]
+    return found[0] if len(found) == 1 else None
 
 
-def _mint_for(obj, original_guid: str) -> str:
-    """A guid that is repeatable for THIS copy: ``uuid5`` over the original's identity and the
-    copy's Blender name, which is unique per file and is what undo/redo restores. Falls back to
-    ``uuid4`` when the claimed identity is not a guid at all -- the save refuses such an
-    original by name anyway."""
-    namespace = document_guid.parse(original_guid)
-    if namespace is None:
-        return str(uuid.uuid4())
-    return str(uuid.uuid5(namespace, f"paradise-duplicate:{obj.name}"))
+def _mint_for(obj, original_guid: str, claimed: set[str]) -> str:
+    """The guid this copy was minted before -- an undo restored the clash -- or a fresh
+    ``uuid4``. Never one another object in the scene already claims: a remembered guid that is
+    taken again is replaced rather than handed out twice."""
+    key = (original_guid, obj.session_uid)
+    guid = _MINTED.get(key)
+    if guid is None or guid.lower() in claimed:
+        guid = str(uuid.uuid4())
+        _MINTED[key] = guid
+    return guid
 
 
-def _remint(obj, original_guid: str) -> None:
+def _remint(obj, original_guid: str, claimed: set[str]) -> None:
     """Give a duplicated document object an identity of its own, keeping what the duplicate
     gesture promises: the components it shows, an instance's overrides, and unsaved edits."""
     shown = store.component_json(obj)
@@ -138,7 +140,7 @@ def _remint(obj, original_guid: str) -> None:
             _queue_component(obj, component)
 
     _replay_pending(obj, pending_edits, pending_structure)
-    store.tag_object(obj, _mint_for(obj, original_guid), shown)
+    store.tag_object(obj, _mint_for(obj, original_guid, claimed), shown)
 
     # The authored name belongs to the object, so the copy inherits it (the format allows two
     # objects one name); the SHOWN name is Blender's (``Crate.001``), or the save would record
@@ -219,15 +221,17 @@ def _remint_pending() -> None:
     """The timer body: re-mint every claimant :data:`_KNOWN` does not recognize."""
     global _scheduled
     _scheduled = False
-    live = {scene.as_pointer() for scene in bpy.data.scenes}
+    live = {scene.session_uid for scene in bpy.data.scenes}
     for key in list(_KNOWN):
         if key[0] not in live:
             del _KNOWN[key]
     for scene in bpy.data.scenes:
         if store.read_state(scene) is None:
             continue
-        scene_key = scene.as_pointer()
-        for guid, objects in _claims(scene).items():
+        scene_key = scene.session_uid
+        claims = _claims(scene)
+        claimed = set(claims)
+        for guid, objects in claims.items():
             if len(objects) < 2:
                 continue
             original = _original_of(scene_key, guid, objects)
@@ -237,8 +241,10 @@ def _remint_pending() -> None:
                 continue
             for obj in objects:
                 if obj is not original:
-                    _remint(obj, guid)
-                    _KNOWN[(scene_key, store.guid_of(obj).lower())] = (obj.name, obj.as_pointer())
+                    _remint(obj, guid, claimed)
+                    minted = store.guid_of(obj).lower()
+                    claimed.add(minted)
+                    _KNOWN[(scene_key, minted)] = obj.session_uid
 
 
 def settle() -> None:
@@ -251,13 +257,29 @@ def settle() -> None:
     _remint_pending()
 
 
+def _transform_only(depsgraph) -> bool:
+    """True for a pass that only moved objects -- every frame of a transform drag. No copy
+    gesture arrives that way: linking a new object always updates its collection too."""
+    updates = depsgraph.updates
+    if not updates:
+        return False
+    return all(
+        isinstance(update.id, bpy.types.Object)
+        and update.is_updated_transform
+        and not update.is_updated_geometry
+        and not update.is_updated_shading
+        for update in updates
+    )
+
+
 @bpy.app.handlers.persistent
 def _on_depsgraph_update(scene, depsgraph) -> None:
     global _scheduled
     # Only the scene that changed, and non-document scenes skip immediately -- the early-out
     # dropped.py relies on. Every copy gesture creates objects, so a clash always arrives with
-    # an update on the scene it happened in.
-    if _scheduled:
+    # an update on the scene it happened in; an undo that restores one re-evaluates the scene
+    # (collection included), which is an update here as well.
+    if _scheduled or _transform_only(depsgraph):
         return
     if _observe(scene):
         _scheduled = True
@@ -266,10 +288,11 @@ def _on_depsgraph_update(scene, depsgraph) -> None:
 
 @bpy.app.handlers.persistent
 def _on_load_post(*_) -> None:
-    """A new file invalidates everything memory-keyed, and a pending timer may have died with
-    the old file: start clean rather than attribute a clash to a recycled pointer."""
+    """A new file gives every ID a new ``session_uid``, so every record is dead, and a pending
+    timer may have died with the old file."""
     global _scheduled
     _KNOWN.clear()
+    _MINTED.clear()
     _scheduled = False
 
 

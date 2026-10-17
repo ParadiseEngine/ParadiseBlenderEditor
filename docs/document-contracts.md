@@ -242,14 +242,22 @@ Ctrl+P loaded back somewhere else.
 (`duplicates.py`). Every copy gesture — Shift+D, Alt+D, paste — copies ID properties,
 `paradise_guid` included, and the save once refused both objects because it could not tell
 which one the author meant. A `depsgraph_update_post` pass remembers which object holds each
-unique identity (by pointer, never name), so a second claimant is attributable to the copy; a
-timer re-mints it, because mutating inside the depsgraph callback is undefined behaviour. A
-duplicated instance keeps `paradise_prefab` and is re-tagged like a freshly placed one —
-showing the prefab's payload, authoring nothing, no resolved children recorded: the original's
-list would tell the save the copy showed children it does not have, and their absence would be
-written as `Dropped = true`. The pending-edit overlay is cleared, since it speaks about the
-original's file entry, which the copy does not have. A copy of a resolved prefab CHILD is not
-re-minted — `save._refuse_duplicate_derived` still refuses it — and
+unique identity (by name, with the pointer as fallback — undo restores names wholesale, while
+pointers are allocation artifacts a memfile undo may reshuffle), so a second claimant is
+attributable to the copy; a timer re-mints it, because mutating inside the depsgraph callback
+is undefined behaviour. The minted guid is REPEATABLE for the same copy (`uuid5` over the
+original's identity and the copy's unique Blender name), so stepping undo/redo across the
+duplicate re-mints the guid the copy already had instead of churning the document's entries.
+The copy keeps everything the gesture promises: a plain object's copy carries the original's
+components (queued as additions) and a duplicated instance keeps its overrides, rebuilt from
+the per-field difference between the resolved payload and the prefab baseline — the resolver
+merges per top-level field, so that difference IS the override — plus any unsaved edits, which
+win over the inherited state. The copy records no resolved children: the original's list would
+tell the save the copy showed children it does not have, and their absence would be written as
+`Dropped = true`. Child overrides (carriers) belong to the original's instance relation and do
+not transfer. A copy of a resolved prefab CHILD is not re-minted —
+`save._refuse_duplicate_derived` still refuses it, and duplicating an instance together with
+its children is the most common way to hit that refusal — and
 `save._refuse_duplicate_identities` remains the net for a clash the pass cannot attribute
 (handler disabled, both claimants created between passes).
 

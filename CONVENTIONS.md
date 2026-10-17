@@ -95,9 +95,9 @@ Object identity inside a document is the document's own `meta.Guid`, carried on 
 object as an ID property (`materialize/store.py`). It is stored, not derived — which is the
 opposite of what the `.blend`-is-truth exporter did, and the reason renaming an object here is
 free. Blender's copy gestures copy ID properties, so a duplicate arrives claiming the
-original's GUID; the copy is minted a fresh `uuid4` the moment it appears (`duplicates.py`),
-and the save's refusal of a shared identity is the net for a clash that pass cannot
-attribute.
+original's GUID; the copy is minted a fresh one the moment it appears (`duplicates.py`) —
+repeatable for the same copy, so undo/redo does not churn it — and the save's refusal of a
+shared identity is the net for a clash that pass cannot attribute.
 
 **Create Prefab from Selection** snapshots raw static meshes into a native `.blend`, then lets the
 CLI convert it into a disposable GLB cache and extract canonical mesh/material/prefab documents

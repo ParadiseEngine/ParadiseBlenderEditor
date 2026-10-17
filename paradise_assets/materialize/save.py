@@ -26,6 +26,7 @@ import uuid
 import bpy
 from mathutils import Matrix, Quaternion
 
+from .. import duplicates
 from .. import edits as component_edits
 from ..document import (
     atomic,
@@ -89,6 +90,10 @@ def save_prefab(scene: bpy.types.Scene, *, invoke_actions: bool = True) -> SaveR
 
     _adopt_new_groups(scene)
     _fold_parent_inverses(scene)
+    # A copy whose re-mint has not run yet -- the timer is still pending, or no depsgraph pass
+    # reported the clash an undo restored -- is attributable now. Only what this pass cannot
+    # attribute reaches the refusal.
+    duplicates.settle()
     _refuse_duplicate_identities(scene)
     _refuse_duplicate_derived(scene)
     _drop_widowed_derived(scene)
@@ -140,12 +145,12 @@ def save_prefab(scene: bpy.types.Scene, *, invoke_actions: bool = True) -> SaveR
 
 
 def _refuse_duplicate_identities(scene: bpy.types.Scene) -> None:
-    """Refuse when two objects claim one identity. A duplicate made in the viewport is
-    re-minted when it appears (``duplicates.py``); this is the safety net for a clash that
-    path cannot attribute -- detection disabled, or both claimants created between passes --
-    because writing both produced a document that would not load while the save reported
-    success. Refused rather than re-minted here: with no copy gesture to observe, which
-    object the author meant to keep is guesswork."""
+    """Refuse when two objects claim one identity. A duplicate is re-minted when it appears,
+    and once more at the start of every save (``duplicates.py``); this is the safety net for a
+    clash that path cannot attribute -- detection disabled, or both claimants created between
+    passes -- because writing both produced a document that would not load while the save
+    reported success. Refused rather than re-minted here: with no copy gesture to observe,
+    which object the author meant to keep is guesswork."""
     seen: dict[str, str] = {}
     clashes: dict[str, list[str]] = {}
 

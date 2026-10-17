@@ -46,6 +46,7 @@ ROOT_LOCAL = "aaaaaaaa-0000-4000-8000-000000000001"
 CHILD_LOCAL = "aaaaaaaa-0000-4000-8000-000000000002"
 TAG = "01b792a0-f12e-4fe9-9867-907ae988b301"
 EXTRA = "01b792a0-f12e-4fe9-9867-907ae988b302"
+GLOW = "01b792a0-f12e-4fe9-9867-907ae988b303"
 
 
 def check(condition: bool, label: str) -> bool:
@@ -82,6 +83,7 @@ def make_project(work: str) -> str:
             "\n[[objects]]\n" + meta(f'Guid = "{ROOT_LOCAL}"\nName = "Post"\n') + transform()
             + f'\n[[objects.components]]\nid = "{TAG}"\ntype = "Game.Tag"\n'
             'Value = 1\nColour = "red"\n'
+            + f'\n[[objects.components]]\nid = "{GLOW}"\ntype = "Game.Glow"\nLevel = 4\n'
             "\n[[objects]]\n"
             + meta(f'Guid = "{CHILD_LOCAL}"\nName = "Bulb"\nParent = "{ROOT_LOCAL}"\n')
             + transform()
@@ -105,6 +107,8 @@ def make_project(work: str) -> str:
             + transform(5.0)
             # An instance ADDITION: a component the prefab does not have.
             + f'\n[[objects.components]]\nid = "{EXTRA}"\ntype = "Game.Extra"\nWeight = 2\n'
+            # An instance REMOVAL of a component the prefab does have.
+            + f'\n[[objects.components]]\nid = "{GLOW}"\nremoved = true\n'
             # The instance's override of the prefab root's Tag: only the touched field.
             + f'\n[[objects.components]]\nid = "{TAG}"\ntype = "Game.Tag"\nValue = 3\n'
         )
@@ -148,6 +152,13 @@ def payload(obj, component_id: str) -> dict:
         None,
     )
     return found if isinstance(found, dict) else {}
+
+
+def shows(obj, component_id: str) -> bool:
+    return any(
+        isinstance(c, dict) and str(c.get("id", "")).lower() == component_id.lower()
+        for c in store.component_json(obj)
+    )
 
 
 def main() -> int:
@@ -204,6 +215,7 @@ def main() -> int:
                   "the instance shows its saved override")
             check(payload(instance, EXTRA).get("Weight") == 2,
                   "and its saved addition")
+            check(not shows(instance, GLOW), "and not the prefab component it removes")
             component_edits.set_field(instance, TAG, "Colour", "blue")   # pending, unsaved
             component_edits.revert_field(instance, EXTRA, "")   # pending: hand the addition back
             duplicates.settle()
@@ -220,6 +232,7 @@ def main() -> int:
                   "with no resolved children recorded as shown")
             check(not store.authors(second, TAG),
                   "authoring nothing yet, like a placed instance")
+            check(not shows(second, GLOW), "nor the component the original removes")
 
             save.save_prefab(scene)
             written = read(level)
@@ -239,6 +252,12 @@ def main() -> int:
                   "the original's pending revert of its addition rides along: the copy drops it")
             check(instances[INSTANCE].component(EXTRA) is None,
                   "as the original does")
+            check(instances[second_guid].component(GLOW) is not None
+                  and instances[second_guid].component(GLOW).removed,
+                  "the copy's entry removes the prefab component the original removes")
+            check(instances[INSTANCE].component(GLOW) is not None
+                  and instances[INSTANCE].component(GLOW).removed,
+                  "and the original still does")
 
             print("\n== a minted guid belongs to one copy: undo restores it, nothing reuses it ==")
             opened(level)
@@ -281,6 +300,19 @@ def main() -> int:
             duplicates.settle()
             check(store.guid_of(third_copy) not in (None, CRATE, first_guid, second_copy_guid),
                   "and a later duplicate does not bring its identity back")
+
+            print("\n== a save attributes a duplicate no pass has re-minted yet ==")
+            duplicates.settle()
+            # No pass after the copy: the timer is still pending, or the depsgraph update after
+            # an undo that restored the clash was not one the handler scans.
+            late = duplicate(crate)
+            save.save_prefab(scene)
+            late_guid = store.guid_of(late)
+            check(late_guid not in (None, CRATE),
+                  "the save re-mints the copy instead of refusing the clash")
+            check(store.guid_of(crate) == CRATE, "and the original keeps its own")
+            check(read(level).by_guid().get(late_guid) is not None,
+                  "and writes the copy under its new identity")
 
             print("\n== duplicating a resolved prefab child is still refused ==")
             bulb = next(o for o in scene.collection.all_objects if store.is_derived(o))

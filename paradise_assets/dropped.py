@@ -85,5 +85,11 @@ def register_handler() -> None:
 
 
 def unregister_handler() -> None:
+    global _scheduled
     if _on_depsgraph_update in bpy.app.handlers.depsgraph_update_post:
         bpy.app.handlers.depsgraph_update_post.remove(_on_depsgraph_update)
+    # A pending conversion would otherwise run this module's callback after the addon is gone
+    # (or reloaded), and ``_scheduled`` would stay set for a re-registration.
+    if bpy.app.timers.is_registered(_convert_pending):
+        bpy.app.timers.unregister(_convert_pending)
+    _scheduled = False

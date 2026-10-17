@@ -264,7 +264,9 @@ transfer. A copy of a resolved prefab CHILD is not re-minted —
 `save._refuse_duplicate_derived` still refuses it, and duplicating an instance together with
 its children is the most common way to hit that refusal — and
 `save._refuse_duplicate_identities` remains the net for a clash the pass cannot attribute
-(handler disabled, both claimants created between passes).
+(handler disabled, both claimants created between passes). The save runs the same pass
+(`duplicates.settle()`) before that refusal, so a copy whose timer has not fired yet — or a
+clash an undo restored without an update the handler scans — is re-minted rather than refused.
 
 **A collision shape is an Empty under its object, and the Empty is the editor.** A shape row is
 the host shape itself (`authoredBy: shape` on the row — ShiningPie's `AuthoredColliders` rows,

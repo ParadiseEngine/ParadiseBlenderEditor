@@ -25,9 +25,16 @@ of churning the document's entries. A deleted copy, or a fresh duplicate of the 
 is a new ID with a new ``session_uid`` and therefore a new guid -- an identity the document
 once held is never given to an unrelated object.
 
-A copy of a resolved prefab child (``paradise_derived``) is NOT re-minted: it is a second claim
-on one prefab child, not a new object, and ``save._refuse_duplicate_derived`` keeps refusing it
--- the prefab decides what is in an instance.
+A copy of a resolved prefab child (``paradise_derived``) is NOT re-minted as a new object --
+it is a second claim on one prefab child, and the prefab decides what is in an instance. The
+one exception is the duplicate that took the WHOLE subtree: Shift+D on an instance together
+with its resolved children copies the derived markers too, and Blender re-parents the child
+copies within the copy's subtree. Those copies are ADOPTED by the instance copy -- their
+``(instance, local)`` carrier address is rewritten to the copy's fresh guid and their own
+guid is re-minted exactly as the resolver will mint the copy's materialization -- so the copy
+keeps the original's child overrides. A child copied WITHOUT its parent chain stays parented
+under the ORIGINAL's subtree; it is not adopted, and ``save._refuse_duplicate_derived`` keeps
+refusing it.
 """
 
 from __future__ import annotations
@@ -37,7 +44,7 @@ import uuid
 import bpy
 
 from . import edits as component_edits
-from .document import overrides, well_known
+from .document import overrides, resolve, well_known
 from .materialize import store
 
 __all__ = ["register_handler", "settle", "unregister_handler"]
@@ -137,10 +144,11 @@ def _remint(obj, original_guid: str, claimed: set[str]) -> None:
         # like a placed instance, and what makes the reconstructed overrides save as OVERRIDES
         # rather than as a frozen copy of the prefab's payload.
         store.tag_authored(obj, [])
-        # It materialized no children: keeping the original's list would tell the save the copy
-        # showed children it does not have, and their absence would be written as
-        # ``Dropped = true``. Child overrides (carriers) belong to the original's instance
-        # relation and are not copied; the copy's children come from the prefab as authored.
+        # It materialized no children of its own: keeping the original's list would tell the
+        # save the copy showed children it does not have, and their absence would be written as
+        # ``Dropped = true``. Children duplicated WITH the instance are adopted below, and only
+        # those are recorded; every other child comes from the prefab as authored on the save's
+        # refresh.
         store.tag_children(obj, [])
         snapshot = base
     else:
@@ -151,7 +159,12 @@ def _remint(obj, original_guid: str, claimed: set[str]) -> None:
         snapshot = []
 
     _replay_pending(obj, pending_edits, pending_structure)
-    store.tag_object(obj, _mint_for(obj, original_guid, claimed), snapshot)
+    minted = _mint_for(obj, original_guid, claimed)
+    store.tag_object(obj, minted, snapshot)
+    if store.prefab_of(obj) is not None:
+        adopted = _adopt_child_copies(obj, original_guid, minted)
+        if adopted:
+            store.tag_children(obj, adopted)
 
     # The authored name belongs to the object, so the copy inherits it (the format allows two
     # objects one name); the SHOWN name is Blender's (``Crate.001``), or the save would record
@@ -229,6 +242,82 @@ def _replay_pending(obj, pending_edits: dict, pending_structure: dict) -> None:
         component_edits.revert_field(obj, spec["id"], spec.get("path", ""))
     for cid in pending_structure["removed"]:
         component_edits.remove_component(obj, cid)
+
+
+def _adopt_child_copies(instance_copy, original_guid: str, copy_guid: str) -> list[str]:
+    """Re-address the copies of the original instance's resolved children to the copy.
+
+    Duplicating an instance TOGETHER with its children copies the derived markers: each child
+    copy arrives claiming the ORIGINAL instance's ``(instance, local)`` address, one claim too
+    many. A copy whose whole parent chain was duplicated with it -- Blender re-parents the
+    copies within the new subtree, so the chain of copies reaches the instance copy -- is
+    adopted instead of refused: its carrier address moves to ``(copy guid, local)``, and its
+    guid is re-minted as ``uuid5(copy guid, local)``, the identity the copy's own
+    materialization will have (``resolve.mint_child_guid`` -- deterministic, so an undo that
+    restores the clash re-adopts the same guids). Its snapshot becomes what that
+    materialization would show -- the PREFAB's baseline, re-parented into the copy's subtree --
+    so a child copy still standing where the ORIGINAL's override put it reads as moved, and the
+    save writes the move as a carrier on the COPY's entry: the original's child overrides
+    transfer. Component overrides on children do not (the gesture copies no payload of its own),
+    and snapshot := baseline is what keeps the panel and the saved file agreeing about that.
+    Nested content (``own = False``) keeps its flattened local, the same address
+    ``overrides.locals_of`` computes.
+
+    A child copied WITHOUT its parent chain stays parented under the ORIGINAL's subtree and is
+    NOT adopted: half a subtree cannot move house, and the save keeps refusing it. The returned
+    locals are exactly the adopted ones, so nothing the gesture did not copy is recorded as
+    shown -- that record drives the "author deleted this child" logic, and over-recording
+    writes ``Dropped = true``.
+    """
+    lowered = original_guid.lower()
+    candidates = [
+        obj for obj in instance_copy.children_recursive
+        if store.is_derived(obj)
+        and (address := store.local_of(obj)) is not None
+        and address[0].lower() == lowered
+    ]
+    members = {obj.as_pointer() for obj in candidates}
+
+    def reaches_copy(obj) -> bool:
+        parent = obj.parent
+        while parent is not None and parent is not instance_copy:
+            if parent.as_pointer() not in members:
+                return False
+            parent = parent.parent
+        return parent is instance_copy
+
+    adopted = []
+    for obj in candidates:
+        if not reaches_copy(obj):
+            continue
+        _instance, local, own = store.local_of(obj)
+        parent = obj.parent
+        parent_guid = (
+            copy_guid if parent is instance_copy
+            else resolve.mint_child_guid(copy_guid, store.local_of(parent)[1])
+        )
+        guid = resolve.mint_child_guid(copy_guid, local)
+        store.tag_local(obj, copy_guid, local, own)
+        base = _readdressed(store.base_json(obj), guid, parent_guid)
+        store.tag_object(obj, guid, base)
+        store.tag_base(obj, base)
+        adopted.append(local)
+    return adopted
+
+
+def _readdressed(components: list, guid: str, parent_guid: str) -> list:
+    """The payload with meta identity re-minted and re-parented to the copy's subtree, so the
+    save's re-parenting check sees the address the copy's own materialization would produce."""
+    for component in components:
+        if not isinstance(component, dict):
+            continue
+        if str(component.get("id", "")).lower() != well_known.META_ID:
+            continue
+        data = component.get("data")
+        if isinstance(data, dict):
+            data[well_known.GUID] = guid
+            data[well_known.PARENT] = parent_guid
+    return components
 
 
 def _remint_pending() -> None:

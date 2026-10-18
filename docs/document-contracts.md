@@ -263,17 +263,26 @@ prefab's root for an instance copy (as a placed one) — and everything it inher
 overlay on top. The panel draws snapshot + overlay and the save writes the copy's fresh entry
 from the overlay, so they agree under every overlay gesture: discarding a copy's edits leaves
 an empty object or a bare instance in the panel and in the file, and removing an inherited
-component hides it in both. The copy records no resolved children: the original's list would
-tell the save the copy showed children it does not have, and their absence would be written as
-`Dropped = true`. So a duplicated instance shows no prefab children until the save's automatic
-refresh (or a Reload) resolves them from the prefab: its saved entry is an ordinary instance.
-Child overrides (carriers) belong to the original's instance relation and do not transfer.
+component hides it in both. The copy records no resolved children of its own: the original's
+list would tell the save the copy showed children it does not have, and their absence would be
+written as `Dropped = true`. So an instance duplicated ALONE shows no prefab children until the
+save's automatic refresh (or a Reload) resolves them from the prefab: its saved entry is an
+ordinary instance, and the original's child overrides (carriers) do not transfer.
+Duplicating the instance TOGETHER with its children is the gesture that carries them over
+(`duplicates._adopt_child_copies`): Blender re-parents the child copies within the copy's
+subtree, and each child copy whose whole parent chain reaches the instance copy is adopted --
+its carrier address rewritten to the copy's fresh guid, its own guid re-minted as
+`resolve.mint_child_guid(copy guid, local)` (the identity the copy's own materialization will
+have, so the save's re-parenting check agrees), and exactly the adopted locals recorded as the
+copy's resolved children. A moved child copy then saves as a carrier on the COPY's entry,
+transferring the override; a child copied WITHOUT its parent chain stays parented under the
+original's subtree, is not adopted, and is refused as below.
 Shape Empties are children too: Shift+D on a collision-shape host alone gives a copy with no
 shapes, and `shapes.bake` drops the rows whose Empties are gone — what the viewport shows;
-select the Empties with the host to copy them. A copy of a resolved prefab CHILD is not
-re-minted — `save._refuse_duplicate_derived` still refuses it, and duplicating an instance
-together with its children is the most common way to hit that refusal; duplicate the instance
-alone — and `save._refuse_duplicate_identities` remains the net for a clash the pass cannot
+select the Empties with the host to copy them. A copy of a resolved prefab CHILD on its own is
+not re-minted — `save._refuse_duplicate_derived` still refuses it, with a message naming the
+two working gestures (the instance alone, or the instance with its whole subtree) — and
+`save._refuse_duplicate_identities` remains the net for a clash the pass cannot
 attribute (handler disabled, or both claimants created between passes). Opening a file or
 enabling the addon is no depsgraph update the handler sees, so each queues one pass that only
 records holders (`_observe_all`); without it the first duplicate after opening a workfile

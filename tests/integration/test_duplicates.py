@@ -356,6 +356,8 @@ def main() -> int:
             except save.SaveError as error:
                 check("prefab's child" in str(error), "the save refuses two claims on one "
                                                       "prefab child")
+                check("select it alone" in str(error),
+                      "and the refusal names the working gesture")
             bpy.data.objects.remove(stray, do_unlink=True)
 
             print("\n== a copy's panel and its saved entry agree under every overlay gesture ==")

@@ -326,6 +326,24 @@ def main() -> int:
             check(read(level).by_guid().get(late_guid) is not None,
                   "and writes the copy under its new identity")
 
+            print("\n== a pure move skips the scan; a duplicate triggers it ==")
+            duplicates.settle()   # clean slate: holders recorded, no timer queued
+            scans = []
+            real_observe = duplicates._observe
+            duplicates._observe = lambda scene: scans.append(scene.name) or real_observe(scene)
+            try:
+                crate.location.x += 1.0
+                bpy.context.view_layer.update()
+                check(not scans, "a transform-only pass did not scan the scene")
+                moved_copy = operator_duplicate(crate)
+                bpy.context.view_layer.update()
+                check(bool(scans), "a duplicate pass scanned the scene")
+            finally:
+                duplicates._observe = real_observe
+            duplicates.settle()
+            bpy.data.objects.remove(moved_copy, do_unlink=True)
+            crate.location.x -= 1.0
+
             print("\n== duplicating a resolved prefab child is still refused ==")
             bulb = next(o for o in scene.collection.all_objects if store.is_derived(o))
             stray = duplicate(bulb)

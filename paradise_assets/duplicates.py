@@ -193,6 +193,9 @@ def _carry_instance_overrides(obj, shown: list, base: list) -> None:
             continue
         base_data = base_data if isinstance(base_data, dict) else {}
         for key in overrides.differs(base_data, data):
+            # `differs` also yields fields only the BASE has, but the resolver's merge never
+            # drops a field, so the resolved payload cannot lack one -- such a key cannot be
+            # part of the override and is skipped.
             if key in data:
                 component_edits.set_field(obj, cid, key, data[key])
     for cid in base_by_id:
@@ -258,7 +261,11 @@ def _remint_pending() -> None:
 
 def settle() -> None:
     """One synchronous detection + re-mint pass: the handler's work on demand, so a test does
-    not have to pump Blender's timer queue. A timer still queued finds nothing left to do."""
+    not have to pump Blender's timer queue. A queued timer is cancelled first: its work has
+    just been done, and the handler's ``is_registered`` gate would otherwise swallow the next
+    pass's scan."""
+    if bpy.app.timers.is_registered(_remint_pending):
+        bpy.app.timers.unregister(_remint_pending)
     _observe_all()
     _remint_pending()
 
@@ -271,17 +278,18 @@ def _observe_all() -> None:
         _observe(scene)
 
 
-def _transform_only(depsgraph) -> bool:
-    """True for a pass that only moved objects -- every frame of a transform drag. No copy
-    gesture arrives that way: linking a new object always updates its collection too."""
+def _no_new_objects(depsgraph) -> bool:
+    """True while nothing was added or reshaped: every update is an Object with no geometry
+    change. Measured on Blender 5.2: a transform drag updates only the moved Object (transform
+    flag), and a material tweak adds its shading flag, while linking an object -- the first
+    half of every copy gesture -- updates the new Object WITH its geometry flag, plus its
+    collection and the scene. So geometry on an Object, or any non-Object entry, means
+    "look"; a move or a material change does not."""
     updates = depsgraph.updates
     if not updates:
         return False
     return all(
-        isinstance(update.id, bpy.types.Object)
-        and update.is_updated_transform
-        and not update.is_updated_geometry
-        and not update.is_updated_shading
+        isinstance(update.id, bpy.types.Object) and not update.is_updated_geometry
         for update in updates
     )
 
@@ -293,7 +301,7 @@ def _on_depsgraph_update(scene, depsgraph) -> None:
     # an update on the scene it happened in; an undo that restores one re-evaluates the scene
     # (collection included), which is an update here as well. A queued re-mint already covers
     # whatever this pass would find.
-    if bpy.app.timers.is_registered(_remint_pending) or _transform_only(depsgraph):
+    if bpy.app.timers.is_registered(_remint_pending) or _no_new_objects(depsgraph):
         return
     if _observe(scene):
         bpy.app.timers.register(_remint_pending, first_interval=0.0)

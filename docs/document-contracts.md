@@ -238,6 +238,49 @@ the document has no field for. The save folds such an inverse into the channels 
 (`save._fold_parent_inverses`) so hand parenting is safe too; before it, an object parented by
 Ctrl+P loaded back somewhere else.
 
+**A duplicated document object is minted an identity of its own the moment it appears**
+(`duplicates.py`). Every copy gesture — Shift+D, Alt+D, paste — copies ID properties,
+`paradise_guid` included, and the save once refused both objects because it could not tell
+which one the author meant. A `depsgraph_update_post` pass remembers which object holds each
+unique identity (by `ID.session_uid` — undo/redo restores it, a rename does not change it and
+Blender never gives it to another ID within a session, unlike pointers or `.001` names), so a
+second claimant is attributable to the copy; a timer re-mints it, because mutating inside the
+depsgraph callback is undefined behaviour. The re-mint runs after the operator's undo push and
+is not an undo step of its own, so the copy's `uuid4` is REMEMBERED by the original's identity
+and the copy's `session_uid`: an undo that restores the clash re-mints the guid the copy
+already had instead of churning the document's entries, while a deleted copy or a fresh
+duplicate — a new ID — never gets an identity the document once held. A remembered guid
+another object already claims is replaced, never handed out twice. Copy, delete, then paste
+keeps the identity: the delete pass drops the original's record, so the pasted object is the
+only claimant and nothing is re-minted — a move through the clipboard, not a duplicate.
+The copy keeps everything the gesture promises: a plain object's copy carries the original's
+components (queued as additions) and a duplicated instance keeps its overrides, rebuilt from
+the per-field difference between the resolved payload and the prefab baseline — the resolver
+merges per top-level field, so that difference IS the override — plus any unsaved edits, which
+win over the inherited state. Like every other new object, the copy's snapshot is what the file
+will hold before this session's edits — nothing for a plain copy (as an adopted group), the
+prefab's root for an instance copy (as a placed one) — and everything it inherits is pending
+overlay on top. The panel draws snapshot + overlay and the save writes the copy's fresh entry
+from the overlay, so they agree under every overlay gesture: discarding a copy's edits leaves
+an empty object or a bare instance in the panel and in the file, and removing an inherited
+component hides it in both. The copy records no resolved children: the original's list would
+tell the save the copy showed children it does not have, and their absence would be written as
+`Dropped = true`. So a duplicated instance shows no prefab children until the save's automatic
+refresh (or a Reload) resolves them from the prefab: its saved entry is an ordinary instance.
+Child overrides (carriers) belong to the original's instance relation and do not transfer.
+Shape Empties are children too: Shift+D on a collision-shape host alone gives a copy with no
+shapes, and `shapes.bake` drops the rows whose Empties are gone — what the viewport shows;
+select the Empties with the host to copy them. A copy of a resolved prefab CHILD is not
+re-minted — `save._refuse_duplicate_derived` still refuses it, and duplicating an instance
+together with its children is the most common way to hit that refusal; duplicate the instance
+alone — and `save._refuse_duplicate_identities` remains the net for a clash the pass cannot
+attribute (handler disabled, or both claimants created between passes). Opening a file or
+enabling the addon is no depsgraph update the handler sees, so each queues one pass that only
+records holders (`_observe_all`); without it the first duplicate after opening a workfile
+would be unattributable. The save runs the same pass (`duplicates.settle()`) before the
+refusal, so a copy whose timer has not fired yet — or a clash an undo restored without an
+update the handler scans — is re-minted rather than refused.
+
 **A collision shape is an Empty under its object, and the Empty is the editor.** A shape row is
 the host shape itself (`authoredBy: shape` on the row — ShiningPie's `AuthoredColliders` rows,
 and every marker's `Volume`: `ObstacleMarker`'s solid, a trigger's sensor) or a game record with

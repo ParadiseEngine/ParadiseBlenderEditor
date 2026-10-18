@@ -24,6 +24,7 @@ def register() -> None:
         component_ops,
         context_menu,
         dropped,
+        duplicates,
         field_widgets,
         ops,
         prefs,
@@ -60,6 +61,9 @@ def register() -> None:
         # The Asset Browser's drop cannot be replaced, only followed (see dropped.py).
         dropped.register_handler()
 
+        # A duplicated document object gets an identity of its own (see duplicates.py).
+        duplicates.register_handler()
+
         # Ctrl+S writes the document too (materialize/sync.py).
         sync.register_handler()
         light_preview.register_handler()
@@ -75,12 +79,13 @@ def register() -> None:
 def unregister() -> None:
     import bpy
 
-    from . import action_ops, browser, context_menu, dropped, field_widgets, watch
+    from . import action_ops, browser, context_menu, dropped, duplicates, field_widgets, watch
     from .materialize import action_preview, light_preview, refresh, sync
     from .play import session as play_session
     browser.unregister_menu()
     context_menu.unregister_menu()
     dropped.unregister_handler()
+    duplicates.unregister_handler()
     refresh.unregister_handler()
     sync.unregister_handler()
     light_preview.unregister_handler()

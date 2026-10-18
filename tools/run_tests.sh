@@ -77,6 +77,10 @@ if command -v "$BLENDER" >/dev/null 2>&1; then
   integration "groups as empties" \
     tests/integration/test_groups.py "$DEFAULT_NOISE"
 
+  # Duplicating a document object: the copy gets an identity of its own, the clash stays refused.
+  integration "duplicated objects re-minted" \
+    tests/integration/test_duplicates.py "$DEFAULT_NOISE"
+
   # Collision shapes: a host-authored Shapes list shown as Empties, baked back on save.
   integration "collision shapes as empties" \
     tests/integration/test_shapes.py "$DEFAULT_NOISE"

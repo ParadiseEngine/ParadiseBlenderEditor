@@ -17,8 +17,9 @@ What it pins:
 - Every operator any panel draws exists.
 - The landing state offers the project's documents, and offers them BY PATH -- a row that did
   not set ``filepath`` would silently open the file browser instead.
-- Both browse buttons explicitly clear ``filepath``: leaving it unset lets Blender restore
-  the REGISTER operator's last-used path as a ghost value and silently reopen it (#60).
+- Both Open Prefab browse buttons and Add Prefab explicitly clear ``filepath``: leaving it
+  unset lets Blender restore the REGISTER operator's last-used path as a ghost value and
+  silently reopen or re-place it (#60, #63).
 - A sub-panel's ``bl_parent_id`` names a panel registered BEFORE it: Blender drops a child
   whose parent is missing or registers later silently, so the registration order is checked.
 """
@@ -219,6 +220,13 @@ def main() -> int:
                     for props in properties_for(open_panel, "paradise_assets.open_prefab")
                 ] == [""],
                 "Open Another explicitly clears filepath to block last-used path restoration",
+            )
+            check(
+                [
+                    getattr(props, "filepath", None)
+                    for props in properties_for(open_panel, "paradise_assets.add_prefab_instance")
+                ] == [""],
+                "Add Prefab explicitly clears filepath to block last-used path restoration",
             )
 
             components = draw(ui.PARADISE_ASSETS_PT_object, context)

@@ -256,12 +256,12 @@ def _adopt_child_copies(instance_copy, original_guid: str, copy_guid: str) -> li
     materialization will have (``resolve.mint_child_guid`` -- deterministic, so an undo that
     restores the clash re-adopts the same guids). Its snapshot becomes what that
     materialization would show -- the PREFAB's baseline, re-parented into the copy's subtree --
-    so a child copy still standing where the ORIGINAL's override put it reads as moved, and the
-    save writes the move as a carrier on the COPY's entry: the original's child overrides
-    transfer. Component overrides on children do not (the gesture copies no payload of its own),
-    and snapshot := baseline is what keeps the panel and the saved file agreeing about that.
-    Nested content (``own = False``) keeps its flattened local, the same address
-    ``overrides.locals_of`` computes.
+    with the child's component overrides and unsaved edits reconstructed as pending overlay on
+    top, matching :func:`_remint` on the instance root. A child copy still standing where the
+    ORIGINAL's override put it reads as moved, and the save writes both transform and component
+    overrides as a carrier on the COPY's entry while discarding edits leaves panel and file
+    agreeing on the prefab baseline. Nested content (``own = False``) keeps its flattened
+    local, the same address ``overrides.locals_of`` computes.
 
     A child copied WITHOUT its parent chain stays parented under the ORIGINAL's subtree and is
     NOT adopted: half a subtree cannot move house, and the save keeps refusing it. The returned
@@ -297,10 +297,19 @@ def _adopt_child_copies(instance_copy, original_guid: str, copy_guid: str) -> li
             else resolve.mint_child_guid(copy_guid, store.local_of(parent)[1])
         )
         guid = resolve.mint_child_guid(copy_guid, local)
-        store.tag_local(obj, copy_guid, local, own)
+        shown = store.component_json(obj)
+        pending_edits = component_edits.read(obj)
+        pending_structure = component_edits.read_structure(obj)
+        component_edits.clear(obj)
         base = _readdressed(store.base_json(obj), guid, parent_guid)
+        _carry_instance_overrides(obj, shown, base)
+        store.tag_authored(obj, [])
+        _replay_pending(obj, pending_edits, pending_structure)
+        store.tag_local(obj, copy_guid, local, own)
         store.tag_object(obj, guid, base)
         store.tag_base(obj, base)
+        authored = obj.get(store.NAME_KEY)
+        store.tag_name(obj, authored if isinstance(authored, str) else None)
         adopted.append(local)
     return adopted
 

@@ -247,7 +247,12 @@ if verb == ["assets", "verify"]:
     # Verify every asset has a .meta and every {guid, path} in every .prefab resolves!
     guid_to_rel = {}
     for f in assets.rglob("*"):
-        if f.is_dir() or f.name == "project.toml" or f.name.endswith(".meta"):
+        if (
+            f.is_dir()
+            or f.name == "project.toml"
+            or f.name.endswith(".meta")
+            or ".blend" in f.name and not f.name.endswith(".blend")
+        ):
             continue
         m = sidecar.read(str(f) + ".meta")
         if m is None:
@@ -284,7 +289,6 @@ def _make_mesh_object(name: str, material_name: str, location=(0.0, 0.0, 0.0)) -
     mesh = bpy.data.meshes.new(name)
     mesh.from_pydata([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)], [], [(0, 1, 2)])
     mat = bpy.data.materials.get(material_name) or bpy.data.materials.new(material_name)
-    mat.use_nodes = True
     mesh.materials.append(mat)
     obj = bpy.data.objects.new(name, mesh)
     obj.location = location

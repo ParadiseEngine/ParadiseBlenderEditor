@@ -226,7 +226,8 @@ def _refuse_duplicate_derived(scene: bpy.types.Scene) -> None:
         "them at random:\n" + "\n".join(lines)
         + "\n\nA copy of a prefab's child is not a new object -- the prefab decides what is in "
         "an instance. Delete the copy, or place another instance. To duplicate an instance, "
-        "select it alone, without its children."
+        "select it alone, or together with its whole child subtree -- a child copied without "
+        "its parents cannot follow the copy."
     )
 
 

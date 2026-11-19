@@ -7,8 +7,12 @@ re-mints the claimant it has never seen. What is pinned here: the copy keeps the
 components, an instance's overrides, and unsaved edits (a pending whole-component revert
 included); the guid minted for a copy comes back when the clash is restored (what undo relies
 on) but is never handed to a different object -- not after a rename, not after a delete; a
-duplicated prefab CHILD stays refused; and a clash the detection cannot attribute still trips
-the save's refusal.
+duplicated prefab CHILD stays refused unless it came along with its whole subtree: an instance
+duplicated TOGETHER with its children adopts the child copies (re-addressed to the copy's fresh
+guid, re-minted as the copy's own materialization will mint them), so the copy keeps the
+original's child overrides; a child copied without its parent chain is still refused; and an
+undo across the subtree duplicate re-mints the same guids. A clash the detection cannot
+attribute still trips the save's refusal.
 
 Copies are made with ``obj.copy()`` + link, which is what Shift+D, Alt+D and Ctrl+V each do to
 ID properties, and through ``bpy.ops.object.duplicate`` for the operator path.
@@ -32,8 +36,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 import paradise_assets
 from paradise_assets import component_ops, duplicates
 from paradise_assets import edits as component_edits
+from paradise_assets.document import overrides, project, resolve, well_known
 from paradise_assets.document import prefab as prefab_document
-from paradise_assets.document import project, well_known
 from paradise_assets.materialize import load, save, store
 
 failures: list[str] = []
@@ -47,6 +51,16 @@ CHILD_LOCAL = "aaaaaaaa-0000-4000-8000-000000000002"
 TAG = "01b792a0-f12e-4fe9-9867-907ae988b301"
 EXTRA = "01b792a0-f12e-4fe9-9867-907ae988b302"
 GLOW = "01b792a0-f12e-4fe9-9867-907ae988b303"
+
+TREE_LEVEL = "cccccccc-0000-4000-8000-000000000001"
+TREE_INSTANCE = "cccccccc-0000-4000-8000-000000000002"
+TREE_PREFAB = "5f2a1111-2222-4333-8444-666666666666"
+BULB_PREFAB = "5f2a1111-2222-4333-8444-777777777777"
+TREE_ROOT = "dddddddd-0000-4000-8000-000000000001"
+TREE_BULB = "dddddddd-0000-4000-8000-000000000002"
+BULB_ROOT = "eeeeeeee-0000-4000-8000-000000000001"
+BULB_TIP = "eeeeeeee-0000-4000-8000-000000000002"
+TREE_TIP = resolve.mint_child_guid(TREE_BULB, BULB_TIP)
 
 
 def check(condition: bool, label: str) -> bool:
@@ -111,6 +125,60 @@ def make_project(work: str) -> str:
             + f'\n[[objects.components]]\nid = "{GLOW}"\nremoved = true\n'
             # The instance's override of the prefab root's Tag: only the touched field.
             + f'\n[[objects.components]]\nid = "{TAG}"\ntype = "Game.Tag"\nValue = 3\n'
+        )
+    return level
+
+
+def make_tree_project(work: str) -> str:
+    """A level whose one instance carries CHILD overrides: the prefab is Post -> Bulb -> Tip
+    (where Bulb is itself a nested prefab carrying Tip, so Tip exercises ``own = False``), and
+    a carrier on the instance moves Bulb to x=2 and overrides its Glow component."""
+    assets = os.path.join(work, "assets")
+    os.makedirs(os.path.join(assets, "prefabs"))
+    os.makedirs(os.path.join(assets, "scenes"))
+    with open(os.path.join(assets, "project.toml"), "w", encoding="utf-8") as handle:
+        handle.write('schema_version = 1\nname = "treetest"\n')
+
+    bulb_path = os.path.join(assets, "prefabs", "bulb.prefab")
+    with open(bulb_path, "w", encoding="utf-8") as handle:
+        handle.write(
+            "schema_version = 1\n"
+            "\n[[objects]]\n" + meta(f'Guid = "{BULB_ROOT}"\nName = "Bulb"\n') + transform()
+            + f'\n[[objects.components]]\nid = "{GLOW}"\ntype = "Game.Glow"\nLevel = 1\n'
+            + "\n[[objects]]\n"
+            + meta(f'Guid = "{BULB_TIP}"\nName = "Tip"\nParent = "{BULB_ROOT}"\n')
+            + transform()
+        )
+    with open(bulb_path + ".meta", "w", encoding="utf-8") as handle:
+        handle.write(f'schema_version = 1\nguid = "{BULB_PREFAB}"\n')
+
+    prefab_path = os.path.join(assets, "prefabs", "tree.prefab")
+    with open(prefab_path, "w", encoding="utf-8") as handle:
+        handle.write(
+            "schema_version = 1\n"
+            "\n[[objects]]\n" + meta(f'Guid = "{TREE_ROOT}"\nName = "Post"\n') + transform()
+            + "\n[[objects]]\n"
+            + f'prefab = {{ guid = "{BULB_PREFAB}", path = "prefabs/bulb.prefab" }}\n'
+            + meta(f'Guid = "{TREE_BULB}"\nName = "Bulb"\nParent = "{TREE_ROOT}"\n')
+            + transform()
+        )
+    with open(prefab_path + ".meta", "w", encoding="utf-8") as handle:
+        handle.write(f'schema_version = 1\nguid = "{TREE_PREFAB}"\n')
+
+    level = os.path.join(assets, "scenes", "tree.prefab")
+    with open(level, "w", encoding="utf-8") as handle:
+        handle.write(
+            "schema_version = 1\n"
+            "\n[[objects]]\n" + meta(f'Guid = "{TREE_LEVEL}"\nName = "Level"\n') + transform()
+            + "\n[[objects]]\n"
+            + f'prefab = {{ guid = "{TREE_PREFAB}", path = "prefabs/tree.prefab" }}\n'
+            + meta(f'Guid = "{TREE_INSTANCE}"\nName = "Tree_03"\nParent = "{TREE_LEVEL}"\n')
+            + transform(5.0)
+            # The instance's CHILD overrides: Bulb stands at x=2 and its Glow is Level=9.
+            + "\n[[objects]]\n"
+            + meta(f'Parent = "{TREE_INSTANCE}"\nTarget = "{TREE_BULB}"\n')
+            + transform(2.0)
+            + f'\n[[objects.components]]\nid = "{GLOW}"\ntype = "Game.Glow"\nLevel = 9\n'
         )
     return level
 
@@ -436,6 +504,156 @@ def main() -> int:
             check(store.guid_of(opening_copy) not in (None, CRATE)
                   and store.guid_of(crate) == CRATE,
                   "so the save re-mints the copy rather than refusing the clash")
+
+            print("\n== duplicating an instance with its whole subtree adopts the child copies ==")
+            tree_level = make_tree_project(os.path.join(root, "tree"))
+            opened(tree_level)
+            scene = bpy.context.scene
+            duplicates.settle()
+            instance = store.object_with_guid(scene, TREE_INSTANCE)
+            bulb = store.object_with_guid(scene, resolve.mint_child_guid(TREE_INSTANCE, TREE_BULB))
+            tip = store.object_with_guid(scene, resolve.mint_child_guid(TREE_INSTANCE, TREE_TIP))
+            check(bulb is not None and tip is not None
+                  and bulb.parent is instance and tip.parent is bulb,
+                  "the instance's resolved subtree loaded")
+
+            bpy.ops.object.select_all(action="DESELECT")
+            for obj in (instance, bulb, tip):
+                obj.select_set(True)
+            bpy.context.view_layer.objects.active = instance
+            bpy.ops.object.duplicate()
+            duplicates.settle()
+
+            copy = bpy.context.view_layer.objects.active
+            copy_guid = store.guid_of(copy)
+            check(copy is not instance and copy_guid not in (None, TREE_INSTANCE),
+                  "the instance copy was re-minted")
+            bulb_copy = store.object_with_guid(
+                scene, resolve.mint_child_guid(copy_guid, TREE_BULB))
+            tip_copy = store.object_with_guid(
+                scene, resolve.mint_child_guid(copy_guid, TREE_TIP))
+            check(bulb_copy is not None and bulb_copy is not bulb
+                  and store.local_of(bulb_copy) == (copy_guid, TREE_BULB, True)
+                  and bulb_copy.parent is copy,
+                  "the child copy was adopted as the copy's own child")
+            check(tip_copy is not None and tip_copy is not tip
+                  and store.local_of(tip_copy) == (copy_guid, TREE_TIP, False)
+                  and tip_copy.parent is bulb_copy,
+                  "and the nested-prefab grandchild copy with its flattened local (own=False)")
+            check(payload(bulb_copy, GLOW).get("Level") == 9,
+                  "the adopted child copy shows its inherited component override in the panel")
+            check(store.resolved_children(copy) == {TREE_BULB, TREE_TIP},
+                  "the copy records exactly the copied children as shown")
+
+            print("\n== the save writes the adopted children's overrides on the copy ==")
+            save.save_prefab(scene)
+            written = read(tree_level)
+            instances = {e.guid: e for e in written.objects
+                         if e.prefab is not None and e.prefab.guid.lower() == TREE_PREFAB}
+            check(set(instances) == {TREE_INSTANCE, copy_guid},
+                  "the document holds both instances of the one prefab")
+            copy_carriers = overrides.carriers_of(written, copy_guid)
+            check(set(copy_carriers) == {TREE_BULB},
+                  "the copy's entry carries a carrier for the overridden child, none for Tip")
+            check(list(copy_carriers[TREE_BULB].component(well_known.TRANSFORM_ID)
+                       .data["Position"]) == [2.0, 0.0, 0.0],
+                  "with the original's child transform override")
+            check(copy_carriers[TREE_BULB].component(GLOW).data == {"Level": 9},
+                  "and the original's child component override")
+            original_carriers = overrides.carriers_of(written, TREE_INSTANCE)
+            check(list(original_carriers[TREE_BULB].component(well_known.TRANSFORM_ID)
+                       .data["Position"]) == [2.0, 0.0, 0.0]
+                  and original_carriers[TREE_BULB].component(GLOW).data == {"Level": 9},
+                  "and the original's carrier is intact")
+            check(not any(e.dropped for e in written.objects),
+                  "and nothing was written dropped")
+
+            print("\n== a save after undo across the subtree duplicate re-mints the same guids ==")
+            # Background Blender refuses bpy.ops.ed.undo, so stand in for what it restores: the
+            # same IDs claiming the original's addresses again.
+            copy[store.GUID_KEY] = TREE_INSTANCE
+            for child, local, own in (
+                (bulb_copy, TREE_BULB, True),
+                (tip_copy, TREE_TIP, False),
+            ):
+                child[store.GUID_KEY] = resolve.mint_child_guid(TREE_INSTANCE, local)
+                store.tag_local(child, TREE_INSTANCE, local, own)
+            duplicates.settle()
+            check(store.guid_of(copy) == copy_guid,
+                  "the restored clash re-mints the guid the copy already had")
+            check(store.guid_of(bulb_copy) == resolve.mint_child_guid(copy_guid, TREE_BULB)
+                  and store.guid_of(tip_copy) == resolve.mint_child_guid(copy_guid, TREE_TIP),
+                  "and re-adopts the child copies under the same guids")
+            save.save_prefab(scene)
+            written = read(tree_level)
+            check(len([e for e in written.objects
+                       if e.prefab is not None and e.prefab.guid.lower() == TREE_PREFAB]) == 2,
+                  "the save after the undo keeps both instances")
+            undo_carriers = overrides.carriers_of(written, copy_guid)
+            check(set(undo_carriers) == {TREE_BULB}
+                  and undo_carriers[TREE_BULB].component(GLOW).data == {"Level": 9},
+                  "and the copy keeps both its transform and component child overrides")
+
+            print("\n== discarding edits on an adopted child copy agrees between panel and file ==")
+            bpy.ops.object.select_all(action="DESELECT")
+            for obj in (instance, bulb, tip):
+                obj.select_set(True)
+            bpy.context.view_layer.objects.active = instance
+            bpy.ops.object.duplicate()
+            duplicates.settle()
+            reverted_copy = bpy.context.view_layer.objects.active
+            reverted_copy_guid = store.guid_of(reverted_copy)
+            reverted_bulb = store.object_with_guid(
+                scene, resolve.mint_child_guid(reverted_copy_guid, TREE_BULB))
+            component_edits.clear(reverted_bulb)
+            check(payload(reverted_bulb, GLOW) == {"Level": 1},
+                  "discarding an adopted child copy's edits restores the prefab baseline in panel")
+            save.save_prefab(scene)
+            reverted_carriers = overrides.carriers_of(read(tree_level), reverted_copy_guid)
+            check(reverted_carriers[TREE_BULB].component(GLOW) is None,
+                  "and the save writes no component override on that child's carrier")
+
+            print("\n== duplicating an instance with only PART of its subtree is still refused ==")
+            opened(tree_level)
+            scene = bpy.context.scene
+            duplicates.settle()
+            before = {e.guid for e in read(tree_level).objects
+                      if e.prefab is not None and e.prefab.guid.lower() == TREE_PREFAB}
+            instance = store.object_with_guid(scene, TREE_INSTANCE)
+            bulb = store.object_with_guid(scene, resolve.mint_child_guid(TREE_INSTANCE, TREE_BULB))
+            tip = store.object_with_guid(scene, resolve.mint_child_guid(TREE_INSTANCE, TREE_TIP))
+            bpy.ops.object.select_all(action="DESELECT")
+            instance.select_set(True)
+            tip.select_set(True)   # the grandchild WITHOUT the child it hangs from
+            bpy.context.view_layer.objects.active = instance
+            bpy.ops.object.duplicate()
+            duplicates.settle()
+
+            copy = bpy.context.view_layer.objects.active
+            check(store.guid_of(copy) not in (None, TREE_INSTANCE),
+                  "the instance copy was re-minted")
+            claims = [o for o in scene.collection.all_objects
+                      if (address := store.local_of(o)) is not None
+                      and address[:2] == (TREE_INSTANCE, TREE_TIP)]
+            check(len(claims) == 2, "the grandchild copy still claims the original's address")
+            tip_copy = next(o for o in claims if o is not tip)
+            check(tip_copy.parent is bulb,
+                  "Blender left it under the original's subtree")
+            check(store.resolved_children(copy) == set(),
+                  "and the copy records no child it did not bring along")
+            try:
+                save.save_prefab(scene)
+                check(False, "the save refuses the half-copied subtree")
+            except save.SaveError as error:
+                check("prefab's child" in str(error), "the save refuses the half-copied subtree")
+                check("whole child subtree" in str(error),
+                      "and the refusal names the working gesture")
+            bpy.data.objects.remove(tip_copy, do_unlink=True)
+            bpy.data.objects.remove(copy, do_unlink=True)
+            save.save_prefab(scene)
+            check({e.guid for e in read(tree_level).objects
+                   if e.prefab is not None and e.prefab.guid.lower() == TREE_PREFAB} == before,
+                  "the document saves untouched once the partial copies are gone")
     finally:
         paradise_assets.unregister()
 

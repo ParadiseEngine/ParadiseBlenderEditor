@@ -380,12 +380,15 @@ class PARADISE_ASSETS_OT_add_prefab_instance(Operator):
     bl_label = "Add Prefab Instance"
     bl_options = {"REGISTER", "UNDO"}
 
-    filepath: StringProperty(subtype="FILE_PATH")  # type: ignore[valid-type]
-    # The pair a file browser multi-selection arrives as. Without ``files`` Blender still lets
-    # the author box-select prefab files but hands the operator only the active one (#72).
-    directory: StringProperty(subtype="DIR_PATH", options={"HIDDEN"})  # type: ignore[valid-type]
+    filepath: StringProperty(subtype="FILE_PATH", options={"SKIP_SAVE"})  # type: ignore[valid-type]
+    # The pair a file browser multi-selection (and a multi-file FileHandler drop) arrives as.
+    # Without ``files`` Blender still lets the author box-select prefab files but hands the
+    # operator only the active one (#72); ``SKIP_SAVE`` keeps a prior browser selection from
+    # ghost-restoring onto a later ``INVOKE_DEFAULT`` call that only named ``filepath``.
+    directory: StringProperty(  # type: ignore[valid-type]
+        subtype="DIR_PATH", options={"HIDDEN", "SKIP_SAVE"})
     files: CollectionProperty(  # type: ignore[valid-type]
-        type=bpy.types.OperatorFileListElement, options={"HIDDEN"})
+        type=bpy.types.OperatorFileListElement, options={"HIDDEN", "SKIP_SAVE"})
     filter_glob: StringProperty(default="*.prefab", options={"HIDDEN"})  # type: ignore[valid-type]
 
     @classmethod
@@ -471,7 +474,7 @@ class PARADISE_ASSETS_OT_create_prefab(Operator):
     bl_label = "Create Prefab from Selection"
     bl_options = {"REGISTER"}
 
-    filepath: StringProperty(subtype="FILE_PATH")  # type: ignore[valid-type]
+    filepath: StringProperty(subtype="FILE_PATH", options={"SKIP_SAVE"})  # type: ignore[valid-type]
     filter_glob: StringProperty(default="*.prefab", options={"HIDDEN"})  # type: ignore[valid-type]
 
     @classmethod
@@ -581,7 +584,7 @@ class PARADISE_ASSETS_OT_extract_prefab(Operator):
     # No UNDO: it writes two files and reloads the scene, and an undo step over that is a lie.
     bl_options = {"REGISTER"}
 
-    filepath: StringProperty(subtype="FILE_PATH")  # type: ignore[valid-type]
+    filepath: StringProperty(subtype="FILE_PATH", options={"SKIP_SAVE"})  # type: ignore[valid-type]
     filter_glob: StringProperty(default="*.prefab", options={"HIDDEN"})  # type: ignore[valid-type]
 
     @classmethod

@@ -181,6 +181,13 @@ def main() -> int:
                 landing_paths[:1] == [""],
                 "Open Prefab explicitly clears filepath to block last-used path restoration",
             )
+            check(
+                [
+                    getattr(props, "filepath", None)
+                    for props in properties_for(landing, "paradise_assets.create_prefab")
+                ] == [""],
+                "landing Create Prefab explicitly clears filepath so active-name default wins",
+            )
             offered = landing_paths[1:]
             check(
                 offered == [document],
@@ -227,6 +234,20 @@ def main() -> int:
                     for props in properties_for(open_panel, "paradise_assets.add_prefab_instance")
                 ] == [""],
                 "Add Prefab explicitly clears filepath to block last-used path restoration",
+            )
+            check(
+                [
+                    getattr(props, "filepath", None)
+                    for props in properties_for(open_panel, "paradise_assets.extract_prefab")
+                ] == [""],
+                "Extract explicitly clears filepath so active-name default wins",
+            )
+            check(
+                [
+                    getattr(props, "filepath", None)
+                    for props in properties_for(open_panel, "paradise_assets.create_prefab")
+                ] == [""],
+                "Create Prefab explicitly clears filepath so active-name default wins",
             )
 
             components = draw(ui.PARADISE_ASSETS_PT_object, context)

@@ -44,7 +44,8 @@ class PARADISE_ASSETS_PT_document(_AssetsPanel, Panel):
                 "paradise_assets.open_prefab", text="Open Prefab…", icon="FILE_FOLDER"
             ).filepath = ""
             layout.operator(
-                "paradise_assets.create_prefab", text="Create Prefab from Selection…", icon="EXPORT")
+                "paradise_assets.create_prefab", text="Create Prefab from Selection…", icon="EXPORT"
+            ).filepath = ""
             _draw_openable(layout, context)
             return
 
@@ -99,8 +100,10 @@ class PARADISE_ASSETS_PT_document(_AssetsPanel, Panel):
         row.operator(
             "paradise_assets.add_prefab_instance", text="Add Prefab…", icon="ADD"
         ).filepath = ""
-        row.operator("paradise_assets.extract_prefab", text="Extract…", icon="EXPORT")
-        layout.operator("paradise_assets.create_prefab", text="Create Prefab from Selection…", icon="EXPORT")
+        row.operator("paradise_assets.extract_prefab", text="Extract…", icon="EXPORT").filepath = ""
+        layout.operator(
+            "paradise_assets.create_prefab", text="Create Prefab from Selection…", icon="EXPORT"
+        ).filepath = ""
         layout.operator(
             "paradise_assets.open_prefab", text="Open Another…", icon="FILE_FOLDER"
         ).filepath = ""

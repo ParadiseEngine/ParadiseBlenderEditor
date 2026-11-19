@@ -77,6 +77,10 @@ if command -v "$BLENDER" >/dev/null 2>&1; then
   integration "groups as empties" \
     tests/integration/test_groups.py "$DEFAULT_NOISE"
 
+  # Add Prefab Instance: multi-selection, partial-batch refusals, and browse vs named-file invoke.
+  integration "adding prefab instances" \
+    tests/integration/test_add_prefab.py "$DEFAULT_NOISE"
+
   # Duplicating a document object: the copy gets an identity of its own, the clash stays refused.
   integration "duplicated objects re-minted" \
     tests/integration/test_duplicates.py "$DEFAULT_NOISE"

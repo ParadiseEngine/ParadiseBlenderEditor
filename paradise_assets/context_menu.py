@@ -180,7 +180,9 @@ def _draw(self, context) -> None:
         self.layout.separator()
         column = self.layout.column()
         column.operator_context = "INVOKE_DEFAULT"
-        column.operator("paradise_assets.create_prefab", text="Create Prefab from Selection…", icon="EXPORT")
+        column.operator(
+            "paradise_assets.create_prefab", text="Create Prefab from Selection…", icon="EXPORT"
+        ).filepath = ""
     if obj is None or store.read_state(context.scene) is None or store.guid_of(obj) is None:
         return
 
@@ -195,7 +197,7 @@ def _draw(self, context) -> None:
     column.operator(
         "paradise_assets.extract_prefab",
         text="Create Prefab from Object…",
-        icon="EXPORT")
+        icon="EXPORT").filepath = ""
     column.operator(
         "paradise_assets.group_objects",
         text="Group Selected",

@@ -19,6 +19,7 @@ import json
 import bpy
 from mathutils import Quaternion, Vector
 
+from .. import edits
 from ..document import collider_shapes, component_schema
 from . import store
 
@@ -41,10 +42,18 @@ def owner_of(obj):
 
 
 def editable(obj, component_id: str) -> bool:
-    """Whether shapes of this component on ``obj`` reach the document: the save bakes only the
-    components an object's OWN entry authors, so a derived child, or an instance whose collider
-    is its prefab's, must not be offered an Empty that would be silently dropped."""
-    return obj is not None and store.guid_of(obj) is not None and store.authors(obj, component_id)
+    """Whether shapes of this component on ``obj`` reach the document: the save bakes the
+    components an object's OWN entry authors (including a component added in this session before
+    its first save), so a derived child, or an instance whose collider is its prefab's, must not
+    be offered an Empty that would be silently dropped."""
+    if obj is None or store.guid_of(obj) is None or store.is_derived(obj):
+        return False
+    if store.authors(obj, component_id):
+        return True
+    return any(
+        str(spec.get("id", "")).lower() == component_id.lower()
+        for spec in edits.added_components(obj)
+    )
 
 
 def materialize(obj, components: list, vocabulary: component_schema.Vocabulary) -> int:
@@ -121,7 +130,10 @@ def bake(obj, entry, vocabulary: component_schema.Vocabulary, item_default) -> i
 def overlay_live(obj, component_id: str, schema, data: dict, item_default) -> dict:
     """``data`` with every shape list replaced by what the Empties say NOW -- the rows the save
     would write. The panel plans from this, or it keeps showing the rows of the last save while
-    an author adds and deletes Empties."""
+    an author adds and deletes Empties. A component owned by the prefab materializes no Empties
+    here, so its stored rows are kept for the locked count rather than wiped to zero."""
+    if not editable(obj, component_id):
+        return data
     for field in collider_shapes.shape_fields(schema):
         stored_rows = _stored_rows(field, data.get(field.name))
         _store_rows(field, data, [

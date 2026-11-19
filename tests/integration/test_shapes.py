@@ -384,6 +384,32 @@ def main() -> int:
             own = object_named("OwnCollider")
             check(shapes.editable(own, COLLIDER), "an instance that authors its own collider is editable")
 
+            from paradise_assets import edits as component_edits
+            preserved = shapes.overlay_live(
+                from_prefab, COLLIDER,
+                paradise_assets.document.component_schema.load(layout.root).get(COLLIDER),
+                {"Shapes": [{"ShapeType": "Box", "Size": [1, 1, 1]}]},
+                shapes.default_row,
+            )
+            check(len(preserved["Shapes"]) == 1,
+                  "overlay_live keeps a prefab-owned collider's shape count instead of zeroing it")
+
+            component_edits.add_component(
+                from_prefab, {"id": MARKER, "type": "Game.CameraTriggerMarker", "data": {"Yaw": 15.0}})
+            check(shapes.editable(from_prefab, MARKER),
+                  "a shape-bearing component newly added to an instance is editable before its first save")
+            bpy.ops.paradise_assets.add_shape(
+                component_id=MARKER, field_name="Volume", shape_type="Sphere", single=True)
+            added_volume = shapes.shape_empties(from_prefab, MARKER, "Volume")
+            check(len(added_volume) == 1 and added_volume[0].empty_display_type == "SPHERE",
+                  "Add Shape creates the sphere Volume Empty on the newly added instance component")
+            save.save_prefab(bpy.context.scene)
+            saved_inst = next(
+                e for e in prefab_document.loads(read(level), level).objects if e.name == "PrefabCollider"
+            )
+            check(saved_inst.component(MARKER).data.get("Volume", {}).get("ShapeType") == "Sphere",
+                  "and saving bakes the newly added instance Volume into the document")
+
             print("\n== a shape Empty is never adopted as a group ==")
             open_document(level, layout)
             handle = shapes.shape_empties(object_named("OwnCollider"), COLLIDER, "Shapes")[0]

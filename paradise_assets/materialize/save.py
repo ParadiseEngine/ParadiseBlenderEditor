@@ -33,8 +33,10 @@ from ..document import (
     axes,
     canonical_toml,
     component_schema,
+    mesh_slots,
     overrides,
     project,
+    schema,
     well_known,
 )
 from ..document import prefab as prefab_document
@@ -106,9 +108,12 @@ def save_prefab(scene: bpy.types.Scene, *, invoke_actions: bool = True) -> SaveR
     vocabulary = (
         component_schema.load(layout.root) if layout is not None
         else component_schema.Vocabulary({}, None))
+    mesh_fields = (
+        schema.load(layout.root) if layout is not None
+        else schema.MeshFields(None, None))
     scene.view_layers[0].update()
     try:
-        merged = _merge(scene, base, result, vocabulary)
+        merged = _merge(scene, base, result, vocabulary, layout, mesh_fields)
     except ValueError as error:
         raise SaveError(str(error)) from error
 
@@ -305,7 +310,12 @@ def _refuse_orphaned_derived(scene: bpy.types.Scene) -> None:
 
 
 def _merge(
-    scene: bpy.types.Scene, base: PrefabDocument, result: SaveResult, vocabulary
+    scene: bpy.types.Scene,
+    base: PrefabDocument,
+    result: SaveResult,
+    vocabulary,
+    layout=None,
+    mesh_fields=None,
 ) -> PrefabDocument:
     """The document as Blender now has it, over the document as the file now has it. File order
     is kept: Blender guarantees no iteration order, and following it would reshuffle the file on
@@ -332,6 +342,9 @@ def _merge(
         (entry.parent, entry.target) for entry in base.objects if entry.target is not None
     }
 
+    if mesh_fields is None:
+        mesh_fields = schema.MeshFields(None, None)
+
     merged = PrefabDocument()
     for entry in base.objects:
         if entry.target is not None:
@@ -340,7 +353,10 @@ def _merge(
                 result.removed += 1
                 continue
             key = (entry.parent, entry.target)
-            updated = _carrier_entry(entry, derived.get(key), objects.get(entry.parent), result, vocabulary)
+            updated = _carrier_entry(
+                entry, derived.get(key), objects.get(entry.parent),
+                result, vocabulary, layout, mesh_fields,
+            )
             if updated is None:
                 result.removed += 1
             else:
@@ -351,14 +367,18 @@ def _merge(
         if obj is None:
             result.removed += 1
             continue
-        merged.objects.append(_object_entry(obj, entry, result, vocabulary))
-        merged.objects.extend(_new_carriers(entry.guid, obj, derived, placed, result, vocabulary))
+        merged.objects.append(_object_entry(obj, entry, result, vocabulary, layout, mesh_fields))
+        merged.objects.extend(
+            _new_carriers(entry.guid, obj, derived, placed, result, vocabulary, layout, mesh_fields)
+        )
 
     for obj in sorted(remaining.values(), key=_document_order):
         result.added += 1
-        merged.objects.append(_object_entry(obj, None, result, vocabulary))
+        merged.objects.append(_object_entry(obj, None, result, vocabulary, layout, mesh_fields))
         merged.objects.extend(
-            _new_carriers(store.guid_of(obj), obj, derived, placed, result, vocabulary))
+            _new_carriers(
+                store.guid_of(obj), obj, derived, placed, result, vocabulary, layout, mesh_fields
+            ))
 
     return merged
 
@@ -369,7 +389,9 @@ def _document_order(obj: bpy.types.Object) -> str:
     return store.document_name(obj) or obj.name
 
 
-def _new_carriers(instance_guid, obj, derived, placed, result: SaveResult, vocabulary) -> list[PrefabObject]:
+def _new_carriers(
+    instance_guid, obj, derived, placed, result: SaveResult, vocabulary, layout=None, mesh_fields=None
+) -> list[PrefabObject]:
     """Carriers this instance needs and the file does not have yet, right after its own entry.
 
     Ordered by the prefab-local guid rather than by anything Blender knows: the next save finds
@@ -404,14 +426,17 @@ def _new_carriers(instance_guid, obj, derived, placed, result: SaveResult, vocab
             made.append(carrier)
             continue
 
-        carrier = _carrier_entry(overrides.new_carrier(instance_guid, local), child, obj, result, vocabulary)
+        carrier = _carrier_entry(
+            overrides.new_carrier(instance_guid, local), child, obj,
+            result, vocabulary, layout, mesh_fields,
+        )
         if carrier is not None:
             made.append(carrier)
     return made
 
 
 def _carrier_entry(
-    original: PrefabObject, obj, instance, result: SaveResult, vocabulary
+    original: PrefabObject, obj, instance, result: SaveResult, vocabulary, layout=None, mesh_fields=None
 ) -> PrefabObject | None:
     """One override carrier as Blender now has it, or ``None`` when it says nothing.
 
@@ -431,6 +456,12 @@ def _carrier_entry(
     entry = original
     _write_carrier_transform(entry, obj, result)
     _apply_edits(obj, entry, result, vocabulary)
+    if mesh_fields is not None:
+        result.edited += mesh_slots.reconcile_entry(
+            entry, layout, mesh_fields,
+            fallback_components=store.component_json(obj),
+            label=obj.name,
+        )
     result.edited += transform_helpers.bake(obj, entry, vocabulary)
     return None if overrides.is_empty(entry) else entry
 
@@ -563,7 +594,12 @@ def _root_object(scene: bpy.types.Scene):
 
 
 def _object_entry(
-    obj: bpy.types.Object, original: PrefabObject | None, result: SaveResult, vocabulary
+    obj: bpy.types.Object,
+    original: PrefabObject | None,
+    result: SaveResult,
+    vocabulary,
+    layout=None,
+    mesh_fields=None,
 ) -> PrefabObject:
     """One Blender object as a document object: the file's entry with only what Blender owns
     overwritten, which is what keeps an instance an instance rather than the plain objects it
@@ -583,6 +619,12 @@ def _object_entry(
 
     # Last, so an overlay edit could never win against the meta/transform writes above.
     _apply_edits(obj, entry, result, vocabulary)
+    if mesh_fields is not None:
+        result.edited += mesh_slots.reconcile_entry(
+            entry, layout, mesh_fields,
+            fallback_components=store.component_json(obj),
+            label=obj.name,
+        )
     # After the overlay: a typed IsTrigger and a moved Empty land on the same row. ``entry`` is
     # the file's own entry, so for an instance only the lists IT authors are baked.
     result.edited += shapes.bake(obj, entry, vocabulary, _default_row)

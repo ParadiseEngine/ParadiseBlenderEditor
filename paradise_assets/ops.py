@@ -34,9 +34,20 @@ from .document import (
     project,
     unpack,
 )
+from .document import detach_model as doc_detach
 from .document import prefab as prefab_document
 from .document.prefab import PrefabDocumentError, loads
-from .materialize import geometry, grouping, instancing, load, save, selection_prefab, store, workfile
+from .materialize import (
+    detach_model,
+    geometry,
+    grouping,
+    instancing,
+    load,
+    save,
+    selection_prefab,
+    store,
+    workfile,
+)
 from .play import host
 
 __all__ = ["classes"]
@@ -554,6 +565,65 @@ class PARADISE_ASSETS_OT_create_prefab(Operator):
             {"INFO"},
             f"Saved {reference.path}. Use Add Prefab to place it, or Open Prefab to edit its components. "
             "The selected source objects are unchanged.",
+        )
+        return {"FINISHED"}
+
+
+class PARADISE_ASSETS_OT_detach_models(Operator):
+    """Detach selected mesh objects in a model source .blend into separate directly-placed models"""
+
+    bl_idname = "paradise_assets.detach_models"
+    bl_label = "Detach as Separate Model(s)"
+    # Writes the .blend, extracted assets and placing .prefabs across disk; undo cannot span them.
+    bl_options = {"REGISTER"}
+
+    collection_name: StringProperty(  # type: ignore[valid-type]
+        name="Single Model Name",
+        description=(
+            "Optional name to group all selected objects into one detached model; "
+            "leave empty to detach each selected object as its own model"
+        ),
+        default="",
+        options={"SKIP_SAVE"},
+    )
+
+    @classmethod
+    def poll(cls, context):
+        return detach_model.can_poll(context)
+
+    def invoke(self, context, event):
+        if not bpy.app.background and context.window is not None:
+            return context.window_manager.invoke_props_dialog(self, width=380)
+        return self.execute(context)
+
+    def draw(self, context):
+        layout = self.layout
+        selected = sorted(getattr(context, "selected_objects", ()), key=lambda o: o.name)
+        if self.collection_name.strip():
+            target = doc_detach.clean_model_name(self.collection_name)
+            layout.label(text=f"Group {len(selected)} object(s) into model: {target}", icon="EXPORT")
+        else:
+            names = ", ".join(doc_detach.clean_model_name(o.name) for o in selected[:4])
+            more = f" (+{len(selected) - 4} more)" if len(selected) > 4 else ""
+            layout.label(text=f"Models ({len(selected)}): {names}{more}", icon="OUTLINER_COLLECTION")
+        layout.prop(self, "collection_name")
+
+    def execute(self, context):
+        try:
+            outcome = detach_model.detach(context, collection_name=self.collection_name)
+        except doc_detach.DetachError as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+        except (OSError, ValueError, RuntimeError) as error:
+            self.report({"ERROR"}, f"Could not detach model(s): {error}")
+            return {"CANCELLED"}
+
+        names = ", ".join(outcome.detached_names)
+        docs = ", ".join(outcome.placing_prefabs)
+        self.report(
+            {"INFO"},
+            f"Detached {len(outcome.detached_names)} model(s) ({names}) from '{outcome.body_name}' "
+            f"and updated {docs}.",
         )
         return {"FINISHED"}
 
@@ -1138,6 +1208,7 @@ classes = (
     PARADISE_ASSETS_OT_recreate_workfile,
     PARADISE_ASSETS_OT_save_prefab,
     PARADISE_ASSETS_OT_create_prefab,
+    PARADISE_ASSETS_OT_detach_models,
     PARADISE_ASSETS_OT_toggle_watch,
     PARADISE_ASSETS_OT_open_watch_log,
     PARADISE_ASSETS_OT_copy_watch_errors,

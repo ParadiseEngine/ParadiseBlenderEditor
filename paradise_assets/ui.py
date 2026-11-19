@@ -19,7 +19,7 @@ from bpy.types import Panel
 from . import action_ops, clip_ops, component_ops, edits, field_widgets, transform_ops, watch
 from .document import assets as asset_index
 from .document import component_schema, glb_clips, well_known
-from .materialize import refresh, save, shapes, store, sync, tagging, workfile
+from .materialize import detach_model, refresh, save, shapes, store, sync, tagging, workfile
 
 __all__ = ["classes"]
 
@@ -46,6 +46,12 @@ class PARADISE_ASSETS_PT_document(_AssetsPanel, Panel):
             layout.operator(
                 "paradise_assets.create_prefab", text="Create Prefab from Selection…", icon="EXPORT"
             ).filepath = ""
+            if detach_model.can_offer(context):
+                layout.operator(
+                    "paradise_assets.detach_models",
+                    text="Detach as Separate Model(s)…",
+                    icon="OUTLINER_COLLECTION",
+                )
             _draw_openable(layout, context)
             return
 

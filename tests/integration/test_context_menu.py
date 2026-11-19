@@ -122,8 +122,9 @@ class Layout:
         pass
 
     def operator(self, idname, **_kwargs) -> Props:
-        self.run.append(idname)
-        return Props()
+        props = Props()
+        self.run.append((idname, props))
+        return props
 
     def column(self, **_kwargs):
         return Layout(self.run)
@@ -140,7 +141,13 @@ def drawn(context) -> list:
     """The operator ids ``_draw`` would put in the menu for this context."""
     layout = Layout()
     menus._draw(Host(layout), context)
-    return layout.run
+    return [idname for idname, _props in layout.run]
+
+
+def drawn_props(context, target: str) -> list[Props]:
+    layout = Layout()
+    menus._draw(Host(layout), context)
+    return [props for idname, props in layout.run if idname == target]
 
 
 def named(name: str):
@@ -205,6 +212,13 @@ def main() -> int:
             check(
                 menus.PARADISE_ASSETS_OT_open_prefab_elsewhere.poll(bpy.context),
                 "Open Prefab polls true on the instance",
+            )
+            check(
+                [getattr(p, "filepath", None)
+                 for p in drawn_props(bpy.context, "paradise_assets.create_prefab")] == [""]
+                and [getattr(p, "filepath", None)
+                     for p in drawn_props(bpy.context, "paradise_assets.extract_prefab")] == [""],
+                "context-menu Create/Extract Prefab entries explicitly clear filepath",
             )
             bpy.context.view_layer.objects.active = root_object
             check(

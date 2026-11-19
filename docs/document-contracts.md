@@ -167,7 +167,12 @@ one is shown as its source has it. No library instance ever drew the bindings: t
 materials' Base Color to that object colour (`meshes.tint_by_object_colour`) -- a textured
 material, and every slot after the first, always showed the model's own. That tint now reaches
 only a `.glb` or `.gltf` placement; a converted model got it while it was shown through its GLB.
-The game binds `Slots[i]` to primitive `i` of the converted GLB.
+The game binds `Slots[i]` to primitive `i` of the converted GLB. Because `extract` writes a starter
+prefab only once, `save_prefab` reconciles `MaterialsComponentData.Slots` whenever a placed mesh's
+current GLB draw count changes (`document/mesh_slots.py`): inserted draws take their extracted
+materials from `<source>.meta`, deleted draws drop, authored overrides stay on their draws via
+sequence alignment rather than shifting by position, and a save whose model added an unextracted
+material refuses with the `paradise assets extract` command to run first.
 
 **A `.blend` of asset collections is one model per asset, identified by a GUID in the `.blend`.**
 A collection marked as an asset (Mark as Asset) is a model of its own, exported about the

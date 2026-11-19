@@ -15,6 +15,7 @@ from ..document import (
     component_schema,
     material_document,
     mesh_document,
+    mesh_slots,
     model_source,
     project,
     schema,
@@ -145,7 +146,12 @@ def load_document(
     vocabulary = component_schema.load(layout.root)
     for entry in document.objects:
         if entry.guid in created:
-            shapes.materialize(created[entry.guid], tagging.payload(entry), vocabulary)
+            obj = created[entry.guid]
+            shapes.materialize(obj, tagging.payload(entry), vocabulary)
+            if warning := mesh_slots.stale_warning(
+                entry, layout, mesh_fields, fallback_components=store.component_json(obj)
+            ):
+                result.warn(warning)
 
     result.instances = resolution.expanded
     document = resolution.document

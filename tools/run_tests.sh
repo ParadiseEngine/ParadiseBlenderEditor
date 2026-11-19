@@ -81,6 +81,10 @@ if command -v "$BLENDER" >/dev/null 2>&1; then
   integration "adding prefab instances" \
     tests/integration/test_add_prefab.py "$DEFAULT_NOISE"
 
+  # Embedded mesh material slots: draw insertions/deletions reconcile Slots and keep overrides (#67).
+  integration "mesh material slots track model draw changes" \
+    tests/integration/test_mesh_slots.py "$DEFAULT_NOISE"
+
   # Duplicating a document object: the copy gets an identity of its own, the clash stays refused.
   integration "duplicated objects re-minted" \
     tests/integration/test_duplicates.py "$DEFAULT_NOISE"

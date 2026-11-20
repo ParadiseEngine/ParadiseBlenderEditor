@@ -140,6 +140,9 @@ def main() -> int:
 
             print("\n== a reference to a placed prefab's child loads and saves byte-identically ==")
             open_level(level, layout)
+            result = save.save_prefab(scene_of())   # the canonical writer's own spelling
+            check(camera_target(level) == MINTED_DOOR, "the child reference is kept as written")
+            check(not result.warnings, f"and warns about nothing ({result.warnings})")
             before = level.read_text(encoding="utf-8")
             result = save.save_prefab(scene_of())
             check(level.read_text(encoding="utf-8") == before, "an unchanged save rewrites nothing")
@@ -161,9 +164,15 @@ def main() -> int:
             check(camera_target(level) == SHOP, f"the instance root is written ({camera_target(level)})")
 
             select_only(camera, active=camera)
-            outcome = bpy.ops.paradise_assets.pick_entity(
-                component_id=TARGET_ID, field_name="Object", from_selection=True)
-            check(outcome == {"CANCELLED"}, "with nothing else selected the eyedropper refuses")
+            try:
+                outcome = bpy.ops.paradise_assets.pick_entity(
+                    component_id=TARGET_ID, field_name="Object", from_selection=True)
+            except RuntimeError as error:   # an operator's ERROR report raises from bpy.ops
+                outcome = str(error)
+            check(outcome == {"CANCELLED"} or "exactly one other" in str(outcome),
+                  f"with nothing else selected the eyedropper refuses ({outcome})")
+            check(camera_target(level) == SHOP and edits.count(camera) == 0,
+                  "and changes nothing")
 
             print("\n== the search list offers resolved children and writes their guid ==")
             select_only(camera, active=camera)

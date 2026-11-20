@@ -14,6 +14,7 @@ import json
 import os
 import sys
 import tempfile
+import traceback
 from pathlib import Path
 
 import bpy
@@ -236,6 +237,11 @@ def main() -> int:
             save.save_prefab(scene())
             check(route_of(level, copy_guid) is None and route_of(level, guid) is not None,
                   "deleting the copy removes its entry and keeps the original's")
+    except Exception as error:
+        # On stdout and last: the runner keeps only the tail of the output, and a traceback on
+        # stderr lands at its top.
+        traceback.print_exc(file=sys.stdout)
+        check(False, f"the test raised {error!r}")
     finally:
         paradise_assets.unregister()
 

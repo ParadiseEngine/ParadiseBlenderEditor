@@ -22,7 +22,7 @@ from mathutils import Vector
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import paradise_assets
-from paradise_assets import edits
+from paradise_assets import duplicates, edits
 from paradise_assets.document import prefab, project, well_known
 from paradise_assets.materialize import load, save, store
 
@@ -220,10 +220,14 @@ def main() -> int:
             rail.data.splines.remove(rail.data.splines[1])
 
             print("\n== duplication re-mints, deletion leaves no entry ==")
+            # The depsgraph handler's pass, seeded before the copy exists (a background Blender
+            # pumps no timers): it is what tells the copy from the original.
+            duplicates.settle()
             copy = rail.copy()
             copy.data = rail.data.copy()
             scene().collection.objects.link(copy)
             bpy.context.view_layer.update()
+            duplicates.settle()
             save.save_prefab(scene())
             check(store.guid_of(copy) not in (None, guid), "the copy has an identity of its own")
             check(route_of(level, store.guid_of(copy)) is not None, "and is written with its route")

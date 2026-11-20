@@ -14,7 +14,7 @@ import copy
 import json
 import os
 
-from . import well_known
+from . import splines, well_known
 from .actions import ActionSchema
 from .project import SCHEMA_CANDIDATES
 
@@ -26,6 +26,7 @@ __all__ = [
     "ROLE_OPTIONAL",
     "ROLE_ROW",
     "ROLE_SHAPES",
+    "ROLE_SPLINES",
     "ROLE_TRANSFORM",
     "ComponentSchema",
     "FieldSchema",
@@ -56,7 +57,7 @@ EDITABLE_TYPES = frozenset({
 
 #: ``asset`` and ``entity`` are NOT here: the document stores those and this addon picks them.
 _HOST_LOCKED = frozenset({
-    "mesh", "shape", "sprite", "light", "camera", "transform", "navmesh",
+    "mesh", "shape", "spline", "sprite", "light", "camera", "transform", "navmesh",
     "parent", "id", "name", "local-position", "local-rotation", "local-scale",
 })
 
@@ -69,6 +70,9 @@ ROLE_TRANSFORM = "transform"
 #: A list of host shapes: rows are Empties in the scene, and only their non-geometry members
 #: are typed here.
 ROLE_SHAPES = "shapes"
+#: A host spline field: the curve object draws it, one row per spline; only the rows' game
+#: members are typed here.
+ROLE_SPLINES = "splines"
 
 
 class FieldSchema:
@@ -121,6 +125,7 @@ class FieldSchema:
                 self.items is not None
                 and not is_host_locked(self.items)
                 and _shape_member(self) is None
+                and not splines.is_spline_field(self)
             )
         return self.type in EDITABLE_TYPES or is_asset_field(self)
 
@@ -301,6 +306,26 @@ def _walk_shapes(field: FieldSchema, path: str, value, items: list[PlanItem]) ->
             _walk_field(child, join_path(row_path, child.name), node.get(child.name), items, node)
 
 
+def _walk_splines(field: FieldSchema, path: str, value, items: list[PlanItem]) -> None:
+    """A spline list, or one spline: a locked header (the curve draws the geometry and owns the
+    row count -- one row per spline), then per row the game members beside the geometry."""
+    items.append(PlanItem(path, field, ROLE_SPLINES))
+    member = splines.member_name(field)
+    if member is None:
+        return
+    row_type = field.items if field.type == "array" else field
+    if field.type == "array":
+        rows = [(join_path(path, str(i)), r) for i, r in enumerate(value)] if isinstance(value, list) else []
+    else:
+        rows = [(path, value)] if isinstance(value, dict) else []
+    for row_path, row in rows:
+        node = row if isinstance(row, dict) else {}
+        for child in row_type.fields:
+            if child.name == member:
+                continue
+            _walk_field(child, join_path(row_path, child.name), node.get(child.name), items, node)
+
+
 def _walk_field(
     field: FieldSchema, path: str, value, items: list[PlanItem], siblings: dict
 ) -> None:
@@ -316,6 +341,10 @@ def _walk_field(
     # A shape before the host lock: the field IS host-authored, and the Empty is its editor.
     if _shape_row(field) is not None:
         _walk_shapes(field, path, value, items)
+        return
+    # Likewise a spline: the curve object is its editor, and decides how many rows there are.
+    if splines.is_spline_field(field):
+        _walk_splines(field, path, value, items)
         return
     if is_host_locked(field):
         items.append(PlanItem(path, field, ROLE_LOCKED))

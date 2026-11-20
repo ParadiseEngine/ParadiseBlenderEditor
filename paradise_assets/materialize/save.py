@@ -43,7 +43,7 @@ from ..document import (
 from ..document import prefab as prefab_document
 from ..document.asset_reference import AssetReference
 from ..document.prefab import PrefabComponent, PrefabDocument, PrefabDocumentError, PrefabObject
-from . import shapes, store, tagging, transform_helpers
+from . import curves, shapes, store, tagging, transform_helpers
 from .shapes import default_row as shapes_default_row
 
 __all__ = ["SaveError", "SaveResult", "document_trs", "save_prefab"]
@@ -114,6 +114,7 @@ def save_prefab(scene: bpy.types.Scene, *, invoke_actions: bool = True) -> SaveR
         else schema.MeshFields(None, None))
     scene.view_layers[0].update()
     try:
+        curves.refuse_inherited_edits(scene, vocabulary)
         merged = _merge(scene, base, result, vocabulary, layout, mesh_fields)
     except ValueError as error:
         raise SaveError(str(error)) from error
@@ -635,6 +636,8 @@ def _object_entry(
     # After the overlay: a typed IsTrigger and a moved Empty land on the same row. ``entry`` is
     # the file's own entry, so for an instance only the lists IT authors are baked.
     result.edited += shapes.bake(obj, entry, vocabulary, _default_row)
+    # A curve's Bezier splines into its spline field, the same way: rows follow the curve.
+    result.edited += curves.bake(obj, entry, vocabulary, _default_row)
     result.edited += transform_helpers.bake(obj, entry, vocabulary)
     return entry
 
@@ -748,7 +751,8 @@ def _apply_structure(obj: bpy.types.Object, entry: PrefabObject, result: SaveRes
         entry.components.append(PrefabComponent(
             component_id,
             spec.get("type"),
-            canonical_toml.restore_inline_tables(dict(data)) if isinstance(data, dict) else {},
+            canonical_toml.restore_inline_tables(dict(data), structural_rows=True)
+            if isinstance(data, dict) else {},
         ))
         present.add(component_id.lower())
         result.edited += 1

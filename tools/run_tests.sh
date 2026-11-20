@@ -93,6 +93,10 @@ if command -v "$BLENDER" >/dev/null 2>&1; then
   integration "entity references name resolved objects" \
     tests/integration/test_entity_refs.py "$DEFAULT_NOISE"
 
+  # Bezier curves as document objects: admitted, baked to HostSpline rows, rebuilt on load (#76).
+  integration "curves bake to host splines" \
+    tests/integration/test_curves.py "$DEFAULT_NOISE"
+
   # Duplicating a document object: the copy gets an identity of its own, the clash stays refused.
   integration "duplicated objects re-minted" \
     tests/integration/test_duplicates.py "$DEFAULT_NOISE"

@@ -129,8 +129,22 @@ def scene_fingerprint(scene: bpy.types.Scene, *, document_only: bool = False) ->
                          tuple(value for row in obj.matrix_basis for value in row),
                          tuple(value for row in obj.matrix_parent_inverse for value in row),
                          obj.empty_display_size if shapes.is_shape(obj) else 0.0,
+                         _curve_digest(obj),
                          repr(sorted((key, str(value)) for key, value in obj.items())))
                         for obj in objects))
+
+
+def _curve_digest(obj) -> tuple:
+    """A document curve's knots and handles: not in its matrix either, yet a save bakes them."""
+    if obj.type != "CURVE" or obj.data is None:
+        return ()
+    return tuple(
+        (spline.type, spline.use_cyclic_u, tuple(
+            (*point.co, *point.handle_left, *point.handle_right)
+            for point in spline.bezier_points
+        ), len(spline.points))
+        for spline in obj.data.splines
+    )
 
 
 def write_state(scene: bpy.types.Scene, path: str, *, stamp: str | None = None) -> DocumentState:

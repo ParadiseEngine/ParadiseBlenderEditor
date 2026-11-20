@@ -324,6 +324,30 @@ are made for the components this DOCUMENT authors — for an instance, its own e
 spells it, not the expansion that folds the prefab's components in: ShiningPie's props carry no
 collider, every one of its 122 placed instances does.
 
+**A Bezier curve is a document object whose splines are a `HostSpline` field**
+(`authoredBy: spline`, ParadiseEngine#362; `materialize/curves.py`, numbers in
+`document/splines.py`). Admission is a gesture: **Add Curve to Document** (the Components panel
+on an unadmitted CURVE) mints an identity, hangs the curve under the root keeping its world
+placement, and adds a component the game declares a spline field on. A curve nobody admitted
+stays Blender's own, like a stray Empty. Its transform is written like an Empty's (a Ctrl+P
+inverse folds), duplication re-mints it, deleting it drops its entry. The save copies the
+curve's Bezier splines into the field — one row per spline, in order, per knot the `Position`
+plus `HandleIn`/`HandleOut` as OFFSETS from it, and `Cyclic` — in object space and document axes,
+keeping the stored spelling of every number the curve did not move (the zero-byte fixed point).
+It is a copy, never a resample. A handle's "unmoved" tolerance scales with its knot's distance
+from the origin, since Blender keeps handles absolute in float32. Rows follow their splines by
+geometry, so deleting a spline before another keeps each row's game members with its own spline;
+splines both removed and reshaped since the last save refuse rather than guess. A curve a placed
+prefab contributes shows as a curve, but its knots are the prefab's: an edit to them refuses the
+save (edit the prefab) instead of being dropped. Poly and NURBS splines, fewer than two knots, two spline fields
+on one curve, several splines in a single-spline field, or a non-finite coordinate refuse the
+save by object. A row's game members (a route's `Speed`) stay typed in the panel; the panel
+locks the geometry and offers no Add/Remove, since the curve owns the row count. The load
+builds a CURVE object for any entry whose components carry a spline field (handles `ALIGNED`
+where collinear, else `FREE`); handle modes, tilt and radius are Blender's editing state and
+are not document data. Curves are never exported: no GLB path takes anything but meshes.
+The member names follow #362's proposal and are spelled once, in `document/splines.py`.
+
 ## Prefab overrides and save state
 
 **An instance's overrides are authored as CARRIERS, and the trap is the baseline you measure

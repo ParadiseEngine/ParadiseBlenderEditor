@@ -22,7 +22,7 @@ from ..document import (
     well_known,
 )
 from ..document.prefab import PrefabDocument, PrefabObject
-from . import light_preview, shapes, store, tagging, transform_helpers
+from . import curves, light_preview, shapes, store, tagging, transform_helpers
 from .meshes import LIBRARY_COLLECTION, MeshLibrary
 
 __all__ = ["LoadError", "LoadResult", "load_document"]
@@ -130,10 +130,11 @@ def load_document(
     _clear_previous(scene, preserve_actions=preserve_actions)
     _drop_startup_content(startup)
     created: dict[str, bpy.types.Object] = {}
+    vocabulary = component_schema.load(layout.root)
 
     for entry in resolution.document.objects:
         collection = collections.get(_mesh_reference(entry, mesh_fields))
-        obj = _create_object(entry, scene, layout, collection, result)
+        obj = _create_object(entry, scene, layout, collection, result, vocabulary)
         tagging.tag(obj, entry, resolution)
         if store.is_derived(obj):
             result.derived += 1
@@ -143,7 +144,6 @@ def load_document(
     # Shapes only for what this DOCUMENT authors. An instance's own entry is read from the
     # file, not the expansion: the expansion folds the prefab's components in, and a shape the
     # prefab declares is edited in the prefab. A resolved child is not an object at all.
-    vocabulary = component_schema.load(layout.root)
     for entry in document.objects:
         if entry.guid in created:
             obj = created[entry.guid]
@@ -200,9 +200,16 @@ def _create_object(
     layout: project.ProjectLayout,
     collection: bpy.types.Collection | None,
     result: LoadResult,
+    vocabulary=None,
 ) -> bpy.types.Object:
-    obj = bpy.data.objects.new(entry.name or "object", None)
-    obj.empty_display_size = 0.25
+    # An object whose components carry a host spline IS a curve -- rows or not, so there is
+    # something to draw in. Everything else is an Empty, instancing its model if it has one.
+    obj = None
+    if collection is None and vocabulary is not None:
+        obj = curves.new_object(entry.name or "curve", tagging.payload(entry), vocabulary)
+    if obj is None:
+        obj = bpy.data.objects.new(entry.name or "object", None)
+        obj.empty_display_size = 0.25
     if collection is not None:
         obj.instance_type = "COLLECTION"
         obj.instance_collection = collection

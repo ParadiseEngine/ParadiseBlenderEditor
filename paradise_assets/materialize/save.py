@@ -114,6 +114,7 @@ def save_prefab(scene: bpy.types.Scene, *, invoke_actions: bool = True) -> SaveR
         else schema.MeshFields(None, None))
     scene.view_layers[0].update()
     try:
+        curves.refuse_inherited_edits(scene, vocabulary)
         merged = _merge(scene, base, result, vocabulary, layout, mesh_fields)
     except ValueError as error:
         raise SaveError(str(error)) from error
@@ -750,7 +751,8 @@ def _apply_structure(obj: bpy.types.Object, entry: PrefabObject, result: SaveRes
         entry.components.append(PrefabComponent(
             component_id,
             spec.get("type"),
-            canonical_toml.restore_inline_tables(dict(data)) if isinstance(data, dict) else {},
+            canonical_toml.restore_inline_tables(dict(data), structural_rows=True)
+            if isinstance(data, dict) else {},
         ))
         present.add(component_id.lower())
         result.edited += 1

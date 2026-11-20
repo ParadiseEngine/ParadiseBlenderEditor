@@ -41,6 +41,7 @@ __all__ = [
     "is_spline_single",
     "keep_unchanged",
     "member_name",
+    "same_geometry",
     "spline_fields",
     "to_blender",
 ]
@@ -193,8 +194,13 @@ def keep_unchanged(stored: dict, computed: dict) -> dict:
             if not isinstance(old, dict):
                 kept.append(knot)
                 continue
+            # A handle is stored relative but Blender keeps it ABSOLUTE in float32, so its error
+            # grows with the knot's distance from the origin, not with the handle's own length.
+            anchor = old.get(POSITION) if isinstance(old.get(POSITION), list) else None
             same = {
-                key: old[key] if _same_numbers(old.get(key), value) else value
+                key: old[key]
+                if _same_numbers(old.get(key), value, None if key == POSITION else anchor)
+                else value
                 for key, value in knot.items()
             }
             # A knot written with extra members (a future kind's) keeps them.
@@ -207,13 +213,36 @@ def keep_unchanged(stored: dict, computed: dict) -> dict:
     return merged
 
 
-def _same_numbers(a, b) -> bool:
+def same_geometry(stored, computed: dict) -> bool:
+    """Whether ``computed`` is the spline ``stored`` already holds, up to float32 noise -- how a
+    curve's spline is told apart from its neighbours when one of them is deleted."""
+    if not isinstance(stored, dict) or bool(stored.get(CYCLIC)) != bool(computed.get(CYCLIC)):
+        return False
+    old_knots = stored.get(KNOTS)
+    new_knots = computed.get(KNOTS) or []
+    if not isinstance(old_knots, list) or len(old_knots) != len(new_knots):
+        return False
+    kept = keep_unchanged(stored, computed)[KNOTS]
+    return all(
+        isinstance(old, dict)
+        and all(knot.get(key) == old.get(key) for key in (POSITION, HANDLE_IN, HANDLE_OUT))
+        for old, knot in zip(old_knots, kept, strict=True)
+    )
+
+
+def _same_numbers(a, b, anchor=None) -> bool:
+    """Equal within float32 noise. ``anchor`` is the knot position a handle offset hangs off:
+    the absolute value Blender stored is ``anchor + offset``, so that is the magnitude whose
+    precision bounds the error."""
     if not isinstance(a, (list, tuple)) or not isinstance(b, (list, tuple)) or len(a) != len(b):
         return False
     try:
+        bases = [0.0] * len(a)
+        if anchor is not None and len(anchor) == len(a):
+            bases = [abs(float(p)) for p in anchor]
         return all(
-            abs(float(x) - float(y)) <= _EPSILON * max(abs(float(x)), 1.0)
-            for x, y in zip(a, b, strict=True)
+            abs(float(x) - float(y)) <= _EPSILON * max(abs(float(x)) + base, 1.0)
+            for x, y, base in zip(a, b, bases, strict=True)
         )
     except (TypeError, ValueError):
         return False

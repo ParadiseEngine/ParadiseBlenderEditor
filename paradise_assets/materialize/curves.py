@@ -131,9 +131,11 @@ def _bake_field(obj, data: dict, field, item_default) -> int:
             "Join them or separate the extra ones into their own object.")
     member = splines.member_name(field)
     stored_rows = _stored_rows(field, data.get(field.name))
+    assignment = _match_rows(obj, field, live, stored_rows)
     rows, changed = [], 0
     for index, geometry in enumerate(live):
-        original = stored_rows[index] if index < len(stored_rows) else None
+        original = stored_rows[assignment[index]] if assignment[index] is not None else None
+        changed += int(assignment[index] != index)
         base = copy.deepcopy(original) if isinstance(original, dict) else item_default(field)
         if member is None:
             held = base
@@ -149,6 +151,79 @@ def _bake_field(obj, data: dict, field, item_default) -> int:
     changed += abs(len(rows) - len(stored_rows))
     _store_rows(field, data, rows)
     return changed
+
+
+def _match_rows(obj, field, live: list[dict], stored_rows: list) -> list[int | None]:
+    """Which stored row each live spline continues, so a row's game members follow its spline
+    when a spline before it is deleted. Blender gives a spline no identity, so it is told by its
+    geometry: an unmoved spline matches its own row first. What is left pairs up in order --
+    an edited spline keeps its place, and a spline added since (Blender appends) is new -- unless
+    splines were both removed AND reshaped since the last save, where which row belongs to which
+    spline cannot be told and guessing would hand one spline's fields to another."""
+    member = splines.member_name(field)
+
+    def geometry_of(row):
+        if not isinstance(row, dict):
+            return None
+        return row if member is None else row.get(member)
+
+    assignment: list[int | None] = [None] * len(live)
+    used: set[int] = set()
+    for index, computed in enumerate(live):
+        for candidate, row in enumerate(stored_rows):
+            if candidate not in used and splines.same_geometry(geometry_of(row), computed):
+                assignment[index] = candidate
+                used.add(candidate)
+                break
+    unmatched_live = [i for i, a in enumerate(assignment) if a is None]
+    unmatched_rows = [i for i in range(len(stored_rows)) if i not in used]
+    if unmatched_live and len(unmatched_live) < len(unmatched_rows):
+        raise splines.SplineError(
+            f"{obj.name}: since the last save, splines were both removed and reshaped, so which "
+            f"{field.name} row belongs to which spline cannot be told. Undo back to one kind of "
+            "change, save, then make the other.")
+    for index, row in zip(unmatched_live, unmatched_rows, strict=False):
+        assignment[index] = row
+    return assignment
+
+
+def refuse_inherited_edits(scene, vocabulary) -> None:
+    """Refuse a save that would silently drop a curve edit the document cannot hold.
+
+    A curve a placed prefab contributes -- a resolved child, or an instance whose spline
+    component is its prefab's -- shows as an editable curve, but its knots are the PREFAB's:
+    the save bakes only what an object's own entry authors, and an override cannot carry
+    geometry. Moving a knot there and saving used to write nothing and say nothing.
+    """
+    for obj in scene.collection.all_objects:
+        if obj.type != "CURVE" or store.guid_of(obj) is None:
+            continue
+        for component in store.component_json(obj):
+            component_id = str(component.get("id", ""))
+            if not store.is_derived(obj) and (
+                store.authors(obj, component_id)
+                or any(str(spec.get("id", "")).lower() == component_id.lower()
+                       for spec in edits.added_components(obj))
+            ):
+                continue   # the save bakes this one
+            schema = vocabulary.describe(component)
+            field = spline_field_of(schema)
+            if field is None:
+                continue
+            data = component.get("data") if isinstance(component.get("data"), dict) else {}
+            member = splines.member_name(field)
+            stored = [
+                row if member is None else (row.get(member) if isinstance(row, dict) else None)
+                for row in _stored_rows(field, data.get(field.name))
+            ]
+            live = _live_splines(obj)
+            if len(live) != len(stored) or not all(
+                splines.same_geometry(old, new) for old, new in zip(stored, live, strict=True)
+            ):
+                raise splines.SplineError(
+                    f"{obj.name}: this curve comes from its prefab, and its splines were edited "
+                    "here, where the document cannot hold them. Open the prefab and edit the "
+                    "curve there, or reload to put it back.")
 
 
 def _live_splines(obj) -> list[dict]:

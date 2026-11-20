@@ -334,7 +334,12 @@ inverse folds), duplication re-mints it, deleting it drops its entry. The save c
 curve's Bezier splines into the field — one row per spline, in order, per knot the `Position`
 plus `HandleIn`/`HandleOut` as OFFSETS from it, and `Cyclic` — in object space and document axes,
 keeping the stored spelling of every number the curve did not move (the zero-byte fixed point).
-It is a copy, never a resample. Poly and NURBS splines, fewer than two knots, two spline fields
+It is a copy, never a resample. A handle's "unmoved" tolerance scales with its knot's distance
+from the origin, since Blender keeps handles absolute in float32. Rows follow their splines by
+geometry, so deleting a spline before another keeps each row's game members with its own spline;
+splines both removed and reshaped since the last save refuse rather than guess. A curve a placed
+prefab contributes shows as a curve, but its knots are the prefab's: an edit to them refuses the
+save (edit the prefab) instead of being dropped. Poly and NURBS splines, fewer than two knots, two spline fields
 on one curve, several splines in a single-spline field, or a non-finite coordinate refuse the
 save by object. A row's game members (a route's `Speed`) stay typed in the panel; the panel
 locks the geometry and offers no Add/Remove, since the curve owns the row count. The load

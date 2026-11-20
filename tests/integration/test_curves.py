@@ -24,7 +24,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 import paradise_assets
 from paradise_assets import duplicates, edits
-from paradise_assets.document import prefab, project, well_known
+from paradise_assets.document import prefab, project, resolve, well_known
+from paradise_assets.document import splines as splines_doc
+from paradise_assets.document.asset_reference import AssetReference
 from paradise_assets.materialize import load, save, store
 
 failures: list[str] = []
@@ -125,6 +127,61 @@ POINTS = [
 ]
 
 
+TRACK = "55555555-0000-4000-8000-000000000001"
+TRACK_RAIL = "55555555-0000-4000-8000-000000000002"
+INSTANCE = "44444444-0000-4000-8000-000000000009"
+
+
+def prefab_curve_section(root: Path) -> None:
+    """A curve a placed prefab contributes shows as a curve, and editing it here is refused:
+    the save bakes only what the level's own entries author."""
+    print("\n== a prefab's curve is shown, and editing it in the level is refused ==")
+    level = make_project(root)
+    row = splines_doc.from_blender("Rail", POINTS, False)
+
+    def entry(guid, name, parent=None, *components, reference=None):
+        made = prefab.PrefabObject.with_meta(guid, name, parent)
+        made.prefab = reference
+        made.components.append(prefab.PrefabComponent(
+            well_known.TRANSFORM_ID, "transform",
+            {"Position": [0.0, 0.0, 0.0], "Rotation": [0.0, 0.0, 0.0, 1.0], "Scale": [1.0, 1.0, 1.0]}))
+        made.components.extend(components)
+        return made
+
+    track = prefab.PrefabDocument([
+        entry(TRACK, "Track"),
+        entry(TRACK_RAIL, "Rail", TRACK, prefab.PrefabComponent(
+            ROUTE_ID, "Game.PatrolRoute", {"Legs": [{"Curve": row, "Speed": 1.0}]})),
+    ])
+    (root / "assets" / "prefabs").mkdir(parents=True, exist_ok=True)
+    (root / "assets" / "prefabs" / "track.prefab").write_text(prefab.dumps(track), encoding="utf-8")
+    (root / "assets" / "prefabs" / "track.prefab.meta").write_text(
+        'schema_version = 1\nguid = "66666666-0000-4000-8000-000000000001"\n', encoding="utf-8")
+    document = prefab.loads(level.read_text(encoding="utf-8"), str(level))
+    document.objects.append(entry(
+        INSTANCE, "Track", ROOT,
+        reference=AssetReference("66666666-0000-4000-8000-000000000001", "prefabs/track.prefab")))
+    level.write_text(prefab.dumps(document), encoding="utf-8")
+
+    open_level(level, project.ProjectLayout(str(root)))
+    derived = store.object_with_guid(bpy.context.scene, resolve.mint_child_guid(INSTANCE, TRACK_RAIL))
+    check(derived is not None and derived.type == "CURVE" and store.is_derived(derived),
+          "the prefab's rail is a curve in the level")
+    save.save_prefab(bpy.context.scene)
+    check(prefab.loads(level.read_text(encoding="utf-8"), str(level)).objects[-1].guid == INSTANCE,
+          "an untouched prefab curve saves")
+    before = level.read_text(encoding="utf-8")
+    derived.data.splines[0].bezier_points[1].co.z += 2.0
+    refused = None
+    try:
+        save.save_prefab(bpy.context.scene)
+    except save.SaveError as error:
+        refused = str(error)
+    check(refused is not None and "comes from its prefab" in refused,
+          f"a knot moved on it is refused, not dropped ({refused})")
+    check(level.read_text(encoding="utf-8") == before, "and nothing is written")
+
+
 def main() -> int:
     paradise_assets.register()
     try:
@@ -207,6 +264,37 @@ def main() -> int:
             save.save_prefab(scene())
             check(len(route_of(level, guid)["Legs"]) == 1, "deleting a spline drops its row")
 
+            print("\n== deleting the FIRST spline keeps each row with its own spline ==")
+            second = [((0, 0, 3), (0, -1, 3), (0, 1, 3)), ((0, 5, 3), (0, 4, 3), (0, 6, 3))]
+            add_spline(rail.data, second)
+            save.save_prefab(scene())
+            edits.set_field(rail, ROUTE_ID, "Legs/1/Speed", 8.5)
+            save.save_prefab(scene())
+            second_knots = route_of(level, guid)["Legs"][1]["Curve"]["Knots"]
+            rail.data.splines.remove(rail.data.splines[0])
+            save.save_prefab(scene())
+            legs = route_of(level, guid)["Legs"]
+            check(len(legs) == 1 and legs[0]["Speed"] == 8.5
+                  and legs[0]["Curve"]["Knots"] == second_knots,
+                  f"the surviving spline keeps its own speed ({[r['Speed'] for r in legs]})")
+
+            print("\n== removed AND reshaped since the last save is refused, not guessed ==")
+            add_spline(rail.data, POINTS)
+            save.save_prefab(scene())
+            rail.data.splines.remove(rail.data.splines[0])
+            knot = rail.data.splines[0].bezier_points[0]
+            knot.co.x += 1.0
+            refused = None
+            try:
+                save.save_prefab(scene())
+            except save.SaveError as error:
+                refused = str(error)
+            check(refused is not None and "cannot be told" in refused,
+                  f"the ambiguous save refuses ({refused})")
+            knot.co.x -= 1.0
+            save.save_prefab(scene())
+            check(len(route_of(level, guid)["Legs"]) == 1, "undoing the reshape lets it save")
+
             print("\n== a poly spline is refused, naming the object ==")
             add_spline(rail.data, POINTS, kind="POLY")
             written = level.read_text(encoding="utf-8")
@@ -237,6 +325,8 @@ def main() -> int:
             save.save_prefab(scene())
             check(route_of(level, copy_guid) is None and route_of(level, guid) is not None,
                   "deleting the copy removes its entry and keeps the original's")
+        with tempfile.TemporaryDirectory() as raw_root:
+            prefab_curve_section(Path(raw_root))
     except Exception as error:
         # On stdout and last: the runner keeps only the tail of the output, and a traceback on
         # stderr lands at its top.

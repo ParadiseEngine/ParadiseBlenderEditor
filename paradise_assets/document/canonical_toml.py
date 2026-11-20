@@ -139,19 +139,39 @@ def header_array_paths(text: str) -> frozenset[tuple[str, ...]]:
     return frozenset(paths)
 
 
-def restore_inline_tables(value, header_arrays: frozenset[tuple[str, ...]] = frozenset(), path=()):
+def restore_inline_tables(
+    value, header_arrays: frozenset[tuple[str, ...]] = frozenset(), path=(), *, structural_rows=False
+):
     """Rebuild :class:`InlineTable` values after ``tomllib``, which returns a plain ``dict`` for
     both forms; without this a read-and-write moves every reference under a header. Also the
     way a model built from JSON (the edit overlay) is made writable: a plain ``dict`` inside a
     list becomes the inline element it must be written as. *header_arrays* names the arrays
-    that were spelled as ``[[header]]`` blocks (:func:`header_array_paths`)."""
+    that were spelled as ``[[header]]`` blocks (:func:`header_array_paths`).
+
+    *structural_rows* is for a model that never had a spelling (the overlay): a list element
+    holding a nested record -- a spline row's knots -- cannot be inline, so it becomes the
+    header-array element the writer emits for the same payload built in memory. Parsed TEXT
+    keeps refusing it: there the file spelled it inline, and rewriting it as headers would
+    change bytes nobody edited."""
     if isinstance(value, list):
-        return [_restore_element(element, header_arrays, path) for element in value]
+        restored_list = [
+            _restore_element(element, header_arrays, path, structural_rows) for element in value
+        ]
+        # A structural element makes the list a header array, which the writer emits only when
+        # EVERY element is a non-empty table.
+        if (structural_rows and path not in header_arrays
+                and any(_is_table(e) for e in restored_list)
+                and not _is_table_array(restored_list)):
+            raise ValueError(
+                f"mixes tables with inline values in the array at '{'.'.join(path)}'")
+        return restored_list
     if not isinstance(value, dict):
         return value
 
     restored = {
-        key: restore_inline_tables(member, header_arrays, (*path, key)) for key, member in value.items()
+        key: restore_inline_tables(
+            member, header_arrays, (*path, key), structural_rows=structural_rows)
+        for key, member in value.items()
     }
 
     # A nested table means structural, never a reference -- an inline table may not contain one.
@@ -161,14 +181,24 @@ def restore_inline_tables(value, header_arrays: frozenset[tuple[str, ...]] = fro
     return InlineTable(restored) if is_written_inline(restored) else restored
 
 
-def _restore_element(element, header_arrays, path):
+def _restore_element(element, header_arrays, path, structural_rows=False):
     if not isinstance(element, dict):
-        return restore_inline_tables(element, header_arrays, path)
+        return restore_inline_tables(element, header_arrays, path, structural_rows=structural_rows)
     if path in header_arrays:
         return {
-            key: restore_inline_tables(member, header_arrays, (*path, key))
+            key: restore_inline_tables(
+                member, header_arrays, (*path, key), structural_rows=structural_rows)
             for key, member in element.items()
         }
+
+    if structural_rows:
+        members = {
+            key: restore_inline_tables(member, header_arrays, (*path, key), structural_rows=True)
+            for key, member in element.items()
+        }
+        if any(_is_table(member) or _is_table_array(member) for member in members.values()):
+            return members
+        return InlineTable(members)
 
     inline = InlineTable()
     for key, member in element.items():

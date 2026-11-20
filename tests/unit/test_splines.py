@@ -8,6 +8,7 @@ fixed point -- re-deriving an unmoved curve keeps the document's own spelling.
 from __future__ import annotations
 
 import math
+import struct
 
 import pytest
 
@@ -85,6 +86,51 @@ def test_float32_noise_keeps_the_documents_spelling():
     assert changed["Knots"][0]["Position"] == [0.5, 1.0, -2.0]
     assert changed["Knots"][0]["HandleIn"] == [0.1, 0.0, 0.0]
     assert changed["Cyclic"] is True
+
+
+def _f32(value: float) -> float:
+    return struct.unpack("<f", struct.pack("<f", value))[0]
+
+
+def test_a_curve_far_from_the_origin_round_trips_through_float32_unchanged():
+    # Blender keeps handles ABSOLUTE in float32: at x=1000 its precision is ~6e-5, far coarser
+    # than a 0.1 handle offset's own magnitude would allow for.
+    stored = {"Knots": [
+        {"Position": [1000.0, 2.0, -3.0], "HandleIn": [-0.1, 0.0, 0.0], "HandleOut": [0.1, 0.0, 0.0]},
+        {"Position": [1001.0, 2.0, -3.0], "HandleIn": [-0.1, 0.0, 0.0], "HandleOut": [0.1, 0.0, 0.0]},
+    ], "Cyclic": False}
+    points, cyclic = splines.to_blender(stored)
+    as_float32 = [tuple(tuple(_f32(c) for c in v) for v in point) for point in points]
+    computed = splines.from_blender("Far", as_float32, cyclic)
+    assert computed != stored            # the noise is real
+    assert splines.keep_unchanged(stored, computed) == stored
+    assert splines.same_geometry(stored, computed)
+    moved = splines.from_blender("Far", [as_float32[0], tuple(
+        (x + 0.5, y, z) for x, y, z in as_float32[1])], cyclic)
+    assert not splines.same_geometry(stored, moved)
+
+
+def test_same_geometry_compares_knot_count_and_cyclic():
+    row = splines.from_blender("R", [((0, 0, 0),) * 3, ((1, 0, 0),) * 3], False)
+    assert splines.same_geometry(row, dict(row))
+    assert not splines.same_geometry(row, dict(row, Cyclic=True))
+    assert not splines.same_geometry(row, {"Knots": row["Knots"][:1], "Cyclic": False})
+    assert not splines.same_geometry(None, row)
+
+
+def test_an_overlay_row_holding_a_nested_record_restores_to_header_rows():
+    # A duplicated curve's components come back from JSON with no table form; its rows hold a
+    # spline record with a knot list, which no inline table may contain.
+    from paradise_assets.document import canonical_toml
+
+    payload = {"Legs": [{"Curve": {"Knots": [{"Position": [0.0, 0.0, 0.0]}], "Cyclic": False},
+                         "Speed": 2.0}]}
+    restored = canonical_toml.restore_inline_tables(payload, structural_rows=True)
+    text = canonical_toml.dumps(restored)
+    assert text.startswith("[[Legs]]\n")
+    assert canonical_toml.loads(text) == payload
+    with pytest.raises(ValueError, match="nests a table"):
+        canonical_toml.restore_inline_tables(payload)
 
 
 def test_negative_zero_is_never_written():

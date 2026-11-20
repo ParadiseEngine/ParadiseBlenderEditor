@@ -89,6 +89,10 @@ if command -v "$BLENDER" >/dev/null 2>&1; then
   integration "detach model objects into separate drawable models" \
     tests/integration/test_detach_model.py "$DEFAULT_NOISE"
 
+  # Entity references: picked from the document's objects, refused at save when they dangle (#70, #71).
+  integration "entity references name resolved objects" \
+    tests/integration/test_entity_refs.py "$DEFAULT_NOISE"
+
   # Duplicating a document object: the copy gets an identity of its own, the clash stays refused.
   integration "duplicated objects re-minted" \
     tests/integration/test_duplicates.py "$DEFAULT_NOISE"

@@ -18,7 +18,7 @@ from bpy.types import Panel
 
 from . import action_ops, clip_ops, component_ops, edits, field_widgets, transform_ops, watch
 from .document import assets as asset_index
-from .document import component_schema, glb_clips, well_known
+from .document import component_schema, entity_refs, glb_clips, well_known
 from .materialize import detach_model, refresh, save, shapes, store, sync, tagging, workfile
 
 __all__ = ["classes"]
@@ -523,6 +523,8 @@ class PARADISE_ASSETS_PT_object(_AssetsPanel, Panel):
                 value = edits.read_path(merged, item.path)
                 if component_schema.is_asset_field(item.field, value):
                     continue
+                if entity_refs.is_entity_field(item.field):
+                    continue  # a picker, never a text slot to type a guid into
                 if item.field.fields:
                     continue
                 widget_rows.append((component_id, item, value))

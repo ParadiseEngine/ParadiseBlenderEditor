@@ -157,6 +157,9 @@ class FieldSchema:
             return []
         if self.type == "enum" and self.values:
             return self.values[0]
+        if self.authored_by == "entity":
+            # The zero guid, not "": the generated reader is Guid.Parse, which throws on "".
+            return "00000000-0000-0000-0000-000000000000"
         return ""
 
     def clamp(self, value):

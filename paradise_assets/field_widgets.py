@@ -26,7 +26,8 @@ from bpy.types import Operator, PropertyGroup
 
 from . import edits
 from .document import assets as asset_index
-from .document import component_schema, model_source, project
+from .document import component_schema, entity_refs, model_source, project
+from .document import guid as document_guid
 from .materialize import light_preview, store
 
 __all__ = ["attach", "classes", "detach", "draw_item", "sync"]
@@ -39,6 +40,12 @@ _SYNCING = False
 _INT_MIN, _INT_MAX = -(2**31), 2**31 - 1
 _ENUM_CACHE: dict[str, list] = {}
 _PICK_CACHE: list[tuple[str, str, str]] = []
+_ENTITY_CACHE: list[tuple[str, str, str]] = []
+
+#: What "(none)" writes into an entity field. Not ``""``: the generated reader is
+#: ``Guid.Parse(...)``, which throws on an empty string, while the zero guid reads back as
+#: ``Guid.Empty`` -- the game's own spelling of "names nothing".
+NO_ENTITY = "00000000-0000-0000-0000-000000000000"
 
 #: Widgets that already print a unit, so the label must not repeat it.
 _RNA_SHOWS_UNIT = frozenset({
@@ -89,6 +96,44 @@ def _pick_asset_items(self, context):
         items.append((current, f"{label} (missing)", ""))
     _PICK_CACHE = items
     return _PICK_CACHE
+
+
+def entity_label(obj) -> str:
+    """An object as an entity picker shows it: its name, then the chain it hangs under,
+    innermost first, so two "Door"s in two shops are told apart."""
+    chain, parent, seen = [], obj.parent, {obj.name}
+    while parent is not None and parent.name not in seen and parent.parent is not None:
+        seen.add(parent.name)
+        chain.append(parent.name)
+        parent = parent.parent
+    return obj.name if not chain else f"{obj.name}  ({' / '.join(chain)})"
+
+
+def _entity_targets(scene):
+    """``(guid, label)`` for every object an entity field may name: each object of the open
+    document that carries an identity -- its own entries, instance roots and every resolved
+    child, nested-prefab content included. Shapes and helpers carry none and are not offered."""
+    found = []
+    for obj in scene.collection.all_objects:
+        guid = store.guid_of(obj)
+        if guid and document_guid.is_text(guid):
+            found.append((guid, entity_label(obj)))
+    found.sort(key=lambda pair: pair[1].lower())
+    return found
+
+
+def _pick_entity_items(self, context):
+    """Search-popup items, held module-level because Blender does not retain callback tuples."""
+    global _ENTITY_CACHE
+    items = [(_NONE, "(none)", "Name no object")]
+    scene = getattr(context, "scene", None) if context is not None else None
+    if scene is not None:
+        items.extend((guid.lower(), label, guid) for guid, label in _entity_targets(scene))
+    current = (self.current_guid or "").lower()
+    if current and not entity_refs.is_unset(current) and all(item[0] != current for item in items):
+        items.append((current, f"{current} (missing)", ""))
+    _ENTITY_CACHE = items
+    return _ENTITY_CACHE
 
 
 def _commit(slot, context) -> None:
@@ -242,6 +287,11 @@ def draw_item(
         if scope != "document":
             _draw_prefab_revert(row, component_id, item.path, overridden)
         return
+    if entity_refs.is_entity_field(item.field) and scope != "document":
+        _draw_entity(row, context, component_id, item, value, label)
+        _draw_revert(row, edited, component_id, item.path, scope)
+        _draw_prefab_revert(row, component_id, item.path, overridden)
+        return
     if slot is None:
         row.label(text=f"{label}: {component_schema.format_value(value)}")
         _draw_prefab_revert(row, component_id, item.path, overridden)
@@ -272,6 +322,38 @@ def _draw_asset(row, component_id: str, item, value, label: str, scope="componen
     pick.kinds_json = json.dumps(_kinds_of(item.field, value))
     pick.current_guid = guid
     pick.current_path = path
+
+
+def _draw_entity(row, context, component_id: str, item, value, label: str) -> None:
+    """An entity reference as the object it names, never as a guid to type: a picker over the
+    document's objects, an eyedropper for the other selected object, and a jump to the target.
+    A value naming nothing shows red -- the save refuses it, and this is where to fix it."""
+    unset = entity_refs.is_unset(value)
+    target = None
+    if not unset and document_guid.parse(value) is not None:
+        target = store.object_with_guid(context.scene, document_guid.canonical(value))
+    if unset:
+        caption = "(none)"
+    elif target is not None:
+        caption = entity_label(target)
+    else:
+        caption = f"missing: {value}"
+    if not item.path.rsplit("/", 1)[-1].isdigit():
+        row.label(text=f"{label}:")
+    picker = row.row(align=True)
+    picker.alert = not unset and target is None
+    pick = picker.operator("paradise_assets.pick_entity", text=caption, icon="OBJECT_DATA")
+    pick.component_id = component_id
+    pick.field_name = item.path
+    pick.current_guid = "" if unset or not isinstance(value, str) else value
+    pick.from_selection = False
+    eyedropper = row.operator("paradise_assets.pick_entity", text="", icon="EYEDROPPER")
+    eyedropper.component_id = component_id
+    eyedropper.field_name = item.path
+    eyedropper.from_selection = True
+    if target is not None:
+        reveal = row.operator("paradise_assets.reveal_object", text="", icon="RESTRICT_SELECT_OFF")
+        reveal.guid = store.guid_of(target) or ""
 
 
 def _draw_revert(row, edited: dict, component_id: str, path: str, scope="component") -> None:
@@ -545,6 +627,61 @@ class PARADISE_ASSETS_OT_pick_asset(Operator):
         return {"FINISHED"}
 
 
+class PARADISE_ASSETS_OT_pick_entity(Operator):
+    """Choose the object an entity-reference field names: any object of this document,
+    including a child of a placed prefab. With the eyedropper, the other selected object"""
+
+    bl_idname = "paradise_assets.pick_entity"
+    bl_label = "Pick Object"
+    bl_options = {"REGISTER", "UNDO", "INTERNAL"}
+    bl_property = "entity"
+
+    component_id: StringProperty()
+    field_name: StringProperty()
+    current_guid: StringProperty()
+    from_selection: BoolProperty(
+        name="From Selection",
+        description="Name the other selected document object rather than searching",
+    )
+    entity: EnumProperty(items=_pick_entity_items)
+
+    def invoke(self, context, _event):
+        if self.from_selection:
+            return self.execute(context)
+        current = (self.current_guid or "").lower()
+        self.entity = current if current and not entity_refs.is_unset(current) else _NONE
+        context.window_manager.invoke_search_popup(self)
+        return {"FINISHED"}
+
+    def execute(self, context):
+        obj = _owner(context, "component")
+        if obj is None or not self.component_id or not self.field_name:
+            return {"CANCELLED"}
+        if self.from_selection:
+            others = [
+                candidate for candidate in context.selected_objects
+                if candidate is not obj and document_guid.is_text(store.guid_of(candidate))
+            ]
+            if len(others) != 1:
+                self.report(
+                    {"ERROR"},
+                    "Select the target, then this object last (active): exactly one other "
+                    f"document object must be selected, not {len(others)}.",
+                )
+                return {"CANCELLED"}
+            guid = store.guid_of(others[0])
+        elif not self.entity or self.entity == _NONE:
+            guid = NO_ENTITY
+        else:
+            guid = next(
+                (spelled for ident, _label, spelled in _ENTITY_CACHE if ident == self.entity and spelled),
+                self.entity,
+            )
+        edits.set_field(obj, self.component_id, self.field_name, guid)
+        _redraw(context)
+        return {"FINISHED"}
+
+
 def _redraw(context) -> None:
     screen = getattr(context, "screen", None)
     if screen is None:
@@ -575,4 +712,4 @@ def detach() -> None:
         del bpy.types.WindowManager.paradise_document_slots
 
 
-classes = (ParadiseFieldSlot, PARADISE_ASSETS_OT_pick_asset)
+classes = (ParadiseFieldSlot, PARADISE_ASSETS_OT_pick_asset, PARADISE_ASSETS_OT_pick_entity)

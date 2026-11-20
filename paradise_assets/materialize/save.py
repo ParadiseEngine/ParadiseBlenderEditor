@@ -33,6 +33,7 @@ from ..document import (
     axes,
     canonical_toml,
     component_schema,
+    entity_refs,
     mesh_slots,
     overrides,
     project,
@@ -127,13 +128,19 @@ def save_prefab(scene: bpy.types.Scene, *, invoke_actions: bool = True) -> SaveR
             "or reload to put the deleted root back."
         ) from error
 
+    # Resolved once, before the write: the entity-reference check needs the expansion, and the
+    # snapshot refresh after the write re-tags from the very same one.
+    resolution = tagging.resolve_document(merged, layout) if layout is not None else None
+    if resolution is not None:
+        _check_entity_references(merged, resolution, vocabulary, result)
+
     atomic.write_text(state.path, prefab_document.dumps(merged))
     store.write_state(scene, state.path)
 
     # Clear the overlay only AFTER the write: before it, a failed save loses the edits; kept, it
     # would re-apply on the next save over whatever someone else wrote meanwhile. The snapshot
     # is refreshed too, or add/remove vanish from the panel the moment the overlay clears.
-    _refresh_snapshots(scene, merged, layout)
+    _refresh_snapshots(scene, merged, layout, resolution)
     transform_helpers.refresh(scene, vocabulary)
     for obj in _document_objects(scene) + _derived_objects(scene):
         component_edits.clear(obj)
@@ -747,7 +754,23 @@ def _apply_structure(obj: bpy.types.Object, entry: PrefabObject, result: SaveRes
         result.edited += 1
 
 
-def _refresh_snapshots(scene: bpy.types.Scene, merged: PrefabDocument, layout) -> None:
+def _check_entity_references(merged: PrefabDocument, resolution, vocabulary, result: SaveResult) -> None:
+    """Refuse a document whose own entity references name nothing it resolves to (#70, #71).
+
+    What a placed prefab contributes is only reported: this document cannot fix it. Nor is
+    anything refused while the expansion itself failed -- a prefab that could not be read takes
+    its children's identities with it, and refusing over those would be refusing over a guess.
+    """
+    report = entity_refs.check(merged, resolution.document, vocabulary, resolution.locals)
+    if report.errors and not resolution.errors:
+        raise SaveError(report.refusal())
+    for problem in report.errors + report.warnings:
+        result.warnings.append(f"Entity reference: {problem.message()}")
+
+
+def _refresh_snapshots(
+    scene: bpy.types.Scene, merged: PrefabDocument, layout, resolution=None
+) -> None:
     """Re-tag every object from the document that was just written.
 
     RESOLVED, not the raw entries. An instance's entry holds meta, transform and its overrides;
@@ -758,7 +781,8 @@ def _refresh_snapshots(scene: bpy.types.Scene, merged: PrefabDocument, layout) -
     """
     if layout is None:
         return
-    resolution = tagging.resolve_document(merged, layout)
+    if resolution is None:
+        resolution = tagging.resolve_document(merged, layout)
     by_guid = {entry.guid.lower(): entry for entry in resolution.document.objects if entry.guid}
 
     for obj in _document_objects(scene) + _derived_objects(scene):

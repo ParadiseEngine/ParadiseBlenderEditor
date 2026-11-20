@@ -510,6 +510,35 @@ the one Blender showed; `store.document_name` compares them.
 warns "current value '0' matches no enum" and becomes unreadable. Use a `NONE` sentinel and map
 it back where the format's value is `""`.
 
+## Entity references
+
+A payload field the game declares `authoredBy: entity` (`HostEntity`) stores another object's
+guid, and the runtime looks it up once the scene is built. The resolver remaps only `meta.Guid`
+and `meta.Parent`; a payload guid is carried verbatim, so what the field names must be a guid the
+RESOLVED document contains (`document/entity_refs.py`): a document entry, an instance root
+(whose resolved guid is the instance guid), or a resolved child of an instance, nested-prefab
+content included, as `resolve.mint_child_guid(instance, flattened local)`. That value exists in
+no file, but it is what C# mints too and it survives reloads, saves, renames, prefab edits that
+keep the member, and duplicating either side: a duplicated instance is a different entity, and
+the reference keeps naming the original's child (#68, #71). No new spelling is written, so the
+two resolvers stay byte-identical.
+
+The Components panel never offers an entity field as text. `paradise_assets.pick_entity`
+searches the open document's objects (every identity the scene carries: entries, instance roots
+and resolved children, labelled with the chain they hang under), its eyedropper names the other
+selected object, and **(none)** writes the zero guid — not `""`, which the generated reader's
+`Guid.Parse` throws on. A value naming nothing is drawn red.
+
+The save checks every entity value against the expansion it is about to write. A value the
+document spells ITSELF — on an entry, an instance's own entry or an override carrier — that names
+nothing, or is not a guid at all, refuses the save by object, component and field: the target was
+deleted or re-placed, or removed from its prefab, and the author has to pick again. A dangling
+value a placed prefab contributes is only a warning, since this document cannot fix it; nor is
+anything refused while the expansion itself failed. The commonest such value is a prefab naming
+its own member by its prefab-LOCAL guid, which resolves inside that prefab and dangles in every
+instance; remapping payload references on expansion is a cross-language format change and has
+to start in C# `PrefabResolver` (below).
+
 ## When the document format changes
 
 C# is the source of truth — `Paradise.Assets.Documents` for the prefab format and its canonical

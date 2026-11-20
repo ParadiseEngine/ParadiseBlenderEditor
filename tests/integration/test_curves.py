@@ -307,6 +307,24 @@ def main() -> int:
             speeds = [row["Speed"] for row in route_of(level, guid)["Legs"]]
             check(speeds == [9.0, 0.0], f"the kept spline keeps 9.0, the new one starts fresh ({speeds})")
 
+            print("\n== removed, reshaped AND added in one save is refused too ==")
+            add_spline(rail.data, [((6, 0, 0), (5, 0, 0), (7, 0, 0)), ((6, 5, 0), (5, 5, 0), (7, 5, 0))])
+            save.save_prefab(scene())          # rows: [S4 9.0, S5 0.0, S6 0.0]
+            rail.data.splines.remove(rail.data.splines[0])
+            reshaped = rail.data.splines[0].bezier_points[0]
+            reshaped.co.z += 1.0
+            add_spline(rail.data, [((9, 0, 0), (8, 0, 0), (10, 0, 0)), ((9, 5, 0), (8, 5, 0), (10, 5, 0))])
+            refused = None
+            try:
+                save.save_prefab(scene())
+            except save.SaveError as error:
+                refused = str(error)
+            check(refused is not None and "cannot be told" in refused, f"refused ({refused})")
+            rail.data.splines.remove(rail.data.splines[-1])
+            reshaped.co.z -= 1.0
+            save.save_prefab(scene())
+            check(len(route_of(level, guid)["Legs"]) == 2, "backing out the extra edits lets it save")
+
             print("\n== a poly spline is refused, naming the object ==")
             add_spline(rail.data, POINTS, kind="POLY")
             written = level.read_text(encoding="utf-8")
@@ -318,7 +336,7 @@ def main() -> int:
             check(refused is not None and "Rail" in refused and "only Bezier" in refused,
                   f"the save refuses ({refused})")
             check(level.read_text(encoding="utf-8") == written, "and writes nothing")
-            rail.data.splines.remove(rail.data.splines[1])
+            rail.data.splines.remove(rail.data.splines[-1])   # the poly spline just added
 
             print("\n== duplication re-mints, deletion leaves no entry ==")
             # The depsgraph handler's pass, seeded before the copy exists (a background Blender

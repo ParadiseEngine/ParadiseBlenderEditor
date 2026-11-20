@@ -170,25 +170,39 @@ def _match_rows(obj, field, live: list[dict], stored_rows: list) -> list[int | N
     assignment: list[int | None] = [None] * len(live)
     used: set[int] = set()
     for index, computed in enumerate(live):
-        for candidate, row in enumerate(stored_rows):
-            if candidate not in used and splines.same_geometry(geometry_of(row), computed):
-                assignment[index] = candidate
-                used.add(candidate)
-                break
-    unmatched_live = [i for i, a in enumerate(assignment) if a is None]
-    unmatched_rows = [i for i in range(len(stored_rows)) if i not in used]
-    if unmatched_live and len(unmatched_live) < len(unmatched_rows):
+        # Two identical splines both match either row: the one at the same place wins, or a
+        # reshaped neighbour would be handed the wrong row.
+        candidates = [
+            candidate for candidate, row in enumerate(stored_rows)
+            if candidate not in used and splines.same_geometry(geometry_of(row), computed)
+        ]
+        if candidates:
+            best = min(candidates, key=lambda candidate: (abs(candidate - index), candidate))
+            assignment[index] = best
+            used.add(best)
+
+    matched = [(i, a) for i, a in enumerate(assignment) if a is not None]
+    leftover_rows = [i for i in range(len(stored_rows)) if i not in used]
+    reshaped = False
+    for index in [i for i, a in enumerate(assignment) if a is None]:
+        if not leftover_rows:
+            break   # nothing left to continue: a spline added since the last save
+        row = leftover_rows[0]
+        # A reshaped spline keeps its place in the order; one whose leftover row would sit out
+        # of order with the matched splines around it is new (Blender appends), and that row
+        # belonged to a spline that was deleted.
+        if all((j < index) == (a < row) for j, a in matched):
+            assignment[index] = row
+            leftover_rows.pop(0)
+            reshaped = True
+    if reshaped and leftover_rows:
+        # A reshaped spline took a row by position while another row lost its spline: which of
+        # them was deleted cannot be told from geometry, and guessing hands one spline's game
+        # members to another.
         raise splines.SplineError(
             f"{obj.name}: since the last save, splines were both removed and reshaped, so which "
             f"{field.name} row belongs to which spline cannot be told. Undo back to one kind of "
             "change, save, then make the other.")
-    matched = [(i, a) for i, a in enumerate(assignment) if a is not None]
-    for index, row in zip(unmatched_live, unmatched_rows, strict=False):
-        # A reshaped spline keeps its place in the order; one whose leftover row would sit out
-        # of order with the matched splines around it is new (Blender appends), and the row it
-        # would inherit belonged to a spline that was deleted.
-        in_order = all((j < index) == (a < row) for j, a in matched)
-        assignment[index] = row if in_order else None
     return assignment
 
 

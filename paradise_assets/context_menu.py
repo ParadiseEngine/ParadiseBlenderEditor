@@ -22,7 +22,7 @@ import bpy
 from bpy.types import Operator
 
 from .document import model_source
-from .materialize import selection_prefab, store
+from .materialize import detach_model, selection_prefab, store
 from .materialize.meshes import model_of
 
 __all__ = ["classes", "register_menu", "unregister_menu"]
@@ -183,6 +183,12 @@ def _draw(self, context) -> None:
         column.operator(
             "paradise_assets.create_prefab", text="Create Prefab from Selection…", icon="EXPORT"
         ).filepath = ""
+        if detach_model.can_offer(context):
+            column.operator(
+                "paradise_assets.detach_models",
+                text="Detach as Separate Model(s)…",
+                icon="OUTLINER_COLLECTION",
+            )
     if obj is None or store.read_state(context.scene) is None or store.guid_of(obj) is None:
         return
 

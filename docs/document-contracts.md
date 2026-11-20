@@ -190,7 +190,15 @@ a collection is duplicated, so two collections can arrive sharing one: the one t
 under that GUID keeps it -- a name the sidecar's `[extract]` parts list for it, or the name hint
 of a mesh document extracted from it (`asset_guids.recorded_names`) -- else the first by name, and
 every other gets a fresh one.
-The converter refuses a file with an asset collection lacking a GUID, or two sharing one.
+The converter refuses a file with an asset collection lacking a GUID, or two sharing one. In a
+source `.blend`, **Detach as Separate Model(s)…** (`paradise_assets.detach_models`,
+`document/detach_model.py` + `materialize/detach_model.py`) splits selected static mesh objects out
+into new asset-marked collections of the same file (wrapping the remainder under the original stem
+when splitting a whole-file `.blend`), migrates `asset = { guid, name }` into the remainder's
+reference documents and `<source>.meta` so no identities churn, stages direct `StaticMesh`
+placements under each placing object before `paradise assets extract` so no starter prefabs are
+minted, fills each detached placement's `MaterialsComponentData.Slots` and reconciles the body's,
+and verifies the tree.
 
 Each asset converts to `.editor/converted/<assets-relative source>/<asset guid>.glb`, stamped like
 a whole-file conversion plus `paradiseAsset` (its GUID), `paradiseAssetName` and `paradiseAssets`

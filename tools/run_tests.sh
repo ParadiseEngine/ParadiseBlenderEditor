@@ -85,6 +85,10 @@ if command -v "$BLENDER" >/dev/null 2>&1; then
   integration "mesh material slots track model draw changes" \
     tests/integration/test_mesh_slots.py "$DEFAULT_NOISE"
 
+  # Detaching selected objects in a model .blend into separate directly-placed models (#66).
+  integration "detach model objects into separate drawable models" \
+    tests/integration/test_detach_model.py "$DEFAULT_NOISE"
+
   # Duplicating a document object: the copy gets an identity of its own, the clash stays refused.
   integration "duplicated objects re-minted" \
     tests/integration/test_duplicates.py "$DEFAULT_NOISE"

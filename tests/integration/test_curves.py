@@ -325,6 +325,23 @@ def main() -> int:
             save.save_prefab(scene())
             check(len(route_of(level, guid)["Legs"]) == 2, "backing out the extra edits lets it save")
 
+            print("\n== deleting the first spline and reshaping the LAST is refused ==")
+            third = [((12, 0, 0), (11, 0, 0), (13, 0, 0)), ((12, 5, 0), (11, 5, 0), (13, 5, 0))]
+            add_spline(rail.data, third)
+            save.save_prefab(scene())          # three rows
+            rail.data.splines.remove(rail.data.splines[0])
+            last = rail.data.splines[-1].bezier_points[0]
+            last.co.z += 1.0
+            refused = None
+            try:
+                save.save_prefab(scene())
+            except save.SaveError as error:
+                refused = str(error)
+            check(refused is not None and "cannot be told" in refused, f"refused ({refused})")
+            last.co.z -= 1.0
+            save.save_prefab(scene())
+            check(len(route_of(level, guid)["Legs"]) == 2, "undoing the reshape lets the deletion save")
+
             print("\n== a poly spline is refused, naming the object ==")
             add_spline(rail.data, POINTS, kind="POLY")
             written = level.read_text(encoding="utf-8")

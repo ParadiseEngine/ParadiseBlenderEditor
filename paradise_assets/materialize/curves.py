@@ -185,16 +185,17 @@ def _match_rows(obj, field, live: list[dict], stored_rows: list) -> list[int | N
     leftover_rows = [i for i in range(len(stored_rows)) if i not in used]
     reshaped = False
     for index in [i for i, a in enumerate(assignment) if a is None]:
-        if not leftover_rows:
-            break   # nothing left to continue: a spline added since the last save
-        row = leftover_rows[0]
-        # A reshaped spline keeps its place in the order; one whose leftover row would sit out
-        # of order with the matched splines around it is new (Blender appends), and that row
-        # belonged to a spline that was deleted.
-        if all((j < index) == (a < row) for j, a in matched):
-            assignment[index] = row
-            leftover_rows.pop(0)
-            reshaped = True
+        # A reshaped spline keeps its place in the order, so it can only continue a leftover
+        # row that sits in order with every spline already placed. With none, it is new
+        # (Blender appends), and a row it passes over belonged to a spline that was deleted.
+        row = next(
+            (r for r in leftover_rows if all((j < index) == (a < r) for j, a in matched)), None)
+        if row is None:
+            continue
+        assignment[index] = row
+        leftover_rows.remove(row)
+        matched.append((index, row))
+        reshaped = True
     if reshaped and leftover_rows:
         # A reshaped spline took a row by position while another row lost its spline: which of
         # them was deleted cannot be told from geometry, and guessing hands one spline's game

@@ -182,8 +182,13 @@ def _match_rows(obj, field, live: list[dict], stored_rows: list) -> list[int | N
             f"{obj.name}: since the last save, splines were both removed and reshaped, so which "
             f"{field.name} row belongs to which spline cannot be told. Undo back to one kind of "
             "change, save, then make the other.")
+    matched = [(i, a) for i, a in enumerate(assignment) if a is not None]
     for index, row in zip(unmatched_live, unmatched_rows, strict=False):
-        assignment[index] = row
+        # A reshaped spline keeps its place in the order; one whose leftover row would sit out
+        # of order with the matched splines around it is new (Blender appends), and the row it
+        # would inherit belonged to a spline that was deleted.
+        in_order = all((j < index) == (a < row) for j, a in matched)
+        assignment[index] = row if in_order else None
     return assignment
 
 

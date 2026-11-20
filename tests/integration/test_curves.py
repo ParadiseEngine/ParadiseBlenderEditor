@@ -295,6 +295,18 @@ def main() -> int:
             save.save_prefab(scene())
             check(len(route_of(level, guid)["Legs"]) == 1, "undoing the reshape lets it save")
 
+            print("\n== a spline added after a deletion is new, not the deleted one's heir ==")
+            edits.set_field(rail, ROUTE_ID, "Legs/0/Speed", 4.0)
+            add_spline(rail.data, second)
+            save.save_prefab(scene())
+            edits.set_field(rail, ROUTE_ID, "Legs/1/Speed", 9.0)
+            save.save_prefab(scene())
+            rail.data.splines.remove(rail.data.splines[0])
+            add_spline(rail.data, [((2, 0, 0), (1, 0, 0), (3, 0, 0)), ((2, 5, 0), (1, 5, 0), (3, 5, 0))])
+            save.save_prefab(scene())
+            speeds = [row["Speed"] for row in route_of(level, guid)["Legs"]]
+            check(speeds == [9.0, 0.0], f"the kept spline keeps 9.0, the new one starts fresh ({speeds})")
+
             print("\n== a poly spline is refused, naming the object ==")
             add_spline(rail.data, POINTS, kind="POLY")
             written = level.read_text(encoding="utf-8")

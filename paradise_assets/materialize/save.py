@@ -43,7 +43,7 @@ from ..document import (
 from ..document import prefab as prefab_document
 from ..document.asset_reference import AssetReference
 from ..document.prefab import PrefabComponent, PrefabDocument, PrefabDocumentError, PrefabObject
-from . import shapes, store, tagging, transform_helpers
+from . import curves, shapes, store, tagging, transform_helpers
 from .shapes import default_row as shapes_default_row
 
 __all__ = ["SaveError", "SaveResult", "document_trs", "save_prefab"]
@@ -635,6 +635,8 @@ def _object_entry(
     # After the overlay: a typed IsTrigger and a moved Empty land on the same row. ``entry`` is
     # the file's own entry, so for an instance only the lists IT authors are baked.
     result.edited += shapes.bake(obj, entry, vocabulary, _default_row)
+    # A curve's Bezier splines into its spline field, the same way: rows follow the curve.
+    result.edited += curves.bake(obj, entry, vocabulary, _default_row)
     result.edited += transform_helpers.bake(obj, entry, vocabulary)
     return entry
 

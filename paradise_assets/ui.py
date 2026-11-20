@@ -471,6 +471,11 @@ class PARADISE_ASSETS_PT_object(_AssetsPanel, Panel):
         guid = store.guid_of(obj) if obj is not None else None
         if guid is None:
             layout.label(text="Not a document object.", icon="DOT")
+            active = context.active_object
+            if active is not None and active.type == "CURVE":
+                layout.operator_menu_enum(
+                    "paradise_assets.admit_curve", "component",
+                    text="Add Curve to Document", icon="CURVE_BEZCURVE")
             return
 
         if obj is not context.active_object:
@@ -713,6 +718,18 @@ def _draw_schema_fields(
                     add.field_name = item.path
                     add.shape_type = shape_type
                     add.single = single
+            continue
+
+        if item.role == component_schema.ROLE_SPLINES:
+            single = item.field.type != "array"
+            count = (1 if isinstance(value, dict) else 0) if single else (
+                len(value) if isinstance(value, list) else 0)
+            if obj.type != "CURVE":
+                caption = "the prefab's curve; edit it there" if store.is_derived(obj) else (
+                    "reload to draw it as a curve")
+            else:
+                caption = "the curve's splines — edit them in the viewport"
+            box.row().label(text=f"{item.path} ({count})  — {caption}", icon="CURVE_BEZCURVE")
             continue
 
         if item.role == component_schema.ROLE_ROW and _is_shape_row(item):

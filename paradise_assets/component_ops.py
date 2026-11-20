@@ -507,7 +507,55 @@ def _redraw(context) -> None:
         area.tag_redraw()
 
 
+_CURVE_CACHE: list[tuple[str, str, str]] = []
+
+
+def _curve_component_items(self, context):
+    """The components that can carry a curve's splines, held module-level for Blender."""
+    global _CURVE_CACHE
+    from .materialize import curves
+    _CURVE_CACHE = [
+        (schema.id, schema.display_name, schema.type or schema.id)
+        for schema in curves.curve_components(vocabulary_for(context))
+    ] or [("NONE", "(the game declares no spline component)", "")]
+    return _CURVE_CACHE
+
+
+class PARADISE_ASSETS_OT_admit_curve(Operator):
+    """Make the active curve a document object: an identity, hung under the document root, and
+    a component whose spline field the save fills from the curve's Bezier splines"""
+
+    bl_idname = "paradise_assets.admit_curve"
+    bl_label = "Add Curve to Document"
+    bl_options = {"REGISTER", "UNDO"}
+
+    component: EnumProperty(name="Component", items=_curve_component_items)
+
+    @classmethod
+    def poll(cls, context) -> bool:
+        obj = context.active_object
+        return (
+            store.read_state(context.scene) is not None
+            and obj is not None and obj.type == "CURVE" and store.guid_of(obj) is None
+        )
+
+    def execute(self, context):
+        from .materialize import curves
+        if not self.component or self.component == "NONE":
+            self.report({"ERROR"}, "The game's schema declares no component with a spline field.")
+            return {"CANCELLED"}
+        try:
+            obj = curves.admit(context, self.component)
+        except ValueError as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+        _redraw(context)
+        self.report({"INFO"}, f"{obj.name} is a document curve now — save the document to bake it")
+        return {"FINISHED"}
+
+
 classes = (
+    PARADISE_ASSETS_OT_admit_curve,
     PARADISE_ASSETS_OT_edit_optional_field,
     PARADISE_ASSETS_OT_revert_field,
     PARADISE_ASSETS_OT_revert_to_prefab,

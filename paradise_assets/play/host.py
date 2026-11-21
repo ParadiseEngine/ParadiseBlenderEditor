@@ -44,8 +44,23 @@ def _dotnet() -> str | None:
     return shutil.which("dotnet") or _well_known_dotnet()
 
 
+_TARGET_FRAMEWORK = re.compile(r"<TargetFramework>\s*([^<\s]+)\s*</TargetFramework>")
+
+#: The engine's framework when its csproj does not name one itself.
+_DEFAULT_FRAMEWORK = "net11.0"
+
+
 def _built_output(project: str) -> str:
-    return os.path.join(os.path.dirname(project), "bin", "Debug", "net10.0", "paradise.dll")
+    """The dll a Debug build of *project* writes, under the framework the csproj declares: an
+    engine checkout that moved to a newer .NET keeps the old ``bin/Debug/<framework>`` beside
+    the new one, and running that stale CLI would write documents the source no longer reads."""
+    try:
+        text = pathlib.Path(project).read_text(encoding="utf-8")
+    except OSError:
+        text = ""
+    found = _TARGET_FRAMEWORK.search(text)
+    framework = found.group(1) if found else _DEFAULT_FRAMEWORK
+    return os.path.join(os.path.dirname(project), "bin", "Debug", framework, "paradise.dll")
 
 
 def _dotnet_run(project: str) -> list[str] | None:

@@ -7,6 +7,9 @@ What survives and what does not follows from the resolver (:mod:`resolve`), not 
 - A child's resolved guid becomes ``uuid5(instance guid, prefab-local guid)``, so a reference
   from outside the subtree to a child inside it silently stops naming anything. Those are found
   and warned about; they are not refused, because the fix is an authoring decision.
+- A reference INSIDE the subtree keeps working: the resolver rewrites a prefab's local guids to
+  each instance's (#70), and a reference to the extracted object itself is re-spelled as the
+  prefab root's new local guid, so every later instance names its own.
 - The instance is left carrying meta and transform ONLY. Copies of the subtree's components
   would be overrides, and an override shadows the prefab forever -- editing the new prefab would
   appear to do nothing at the one place it was extracted from.
@@ -27,7 +30,7 @@ import uuid
 from dataclasses import dataclass, field
 
 from . import guid as document_guid
-from . import well_known
+from . import resolve, well_known
 from .asset_reference import AssetReference
 from .new_prefab import IDENTITY_TRANSFORM
 from .prefab import PrefabComponent, PrefabDocument, PrefabObject
@@ -176,6 +179,7 @@ def _prefab_root(subject: PrefabObject, minted: str) -> PrefabObject:
     """The extracted object as a prefab root: a new prefab-local identity, no parent, and the
     identity transform -- where it stood in the level belongs to the instance, not to the prefab."""
     root = copy.deepcopy(subject)
+    _rename_root_references(root, subject.guid, minted)
 
     meta = root.meta
     meta.data.pop(well_known.PARENT, None)
@@ -195,10 +199,29 @@ def _prefab_root(subject: PrefabObject, minted: str) -> PrefabObject:
 def _reparented(entry: PrefabObject, old_root: str, minted: str) -> PrefabObject:
     """A subtree member verbatim, with a link to the old root re-pointed at the new one."""
     member = copy.deepcopy(entry)
+    _rename_root_references(member, old_root, minted)
     meta = member.meta
     if meta is not None and meta.data.get(well_known.PARENT) == old_root:
         meta.data[well_known.PARENT] = minted
     return member
+
+
+def _rename_root_references(member: PrefabObject, old_root: str, minted: str) -> None:
+    """A payload value naming the extracted object, re-spelled as the prefab root's local guid.
+
+    Inside the prefab the root answers only to ``minted``; the resolver rewrites that back to
+    each instance's guid (#70), so a member naming its root keeps naming it here -- the
+    instance keeps the old guid -- and names ITS root in every later instance. References
+    between the other members need nothing: they keep their guids as locals, which the
+    resolver remaps the same way.
+    """
+    rename = {document_guid.parse(old_root): minted}
+    for index, component in enumerate(member.components):
+        if component.id == well_known.META_ID:
+            continue
+        data = resolve.remap_guids(component.data, rename)
+        if data is not component.data:
+            member.components[index] = PrefabComponent(component.id, component.type, data, component.removed)
 
 
 def _remaining_document(

@@ -2,7 +2,9 @@
 resolvers must produce the same document): children follow their instance in prefab order;
 components in prefab order then instance additions; child identity is ``uuid5(instance guid,
 prefab-local guid AS CANONICAL TEXT)``, text because .NET's ``Guid.ToByteArray`` is mixed-endian
-and canonical because the file's spelling is not part of the identity (#30).
+and canonical because the file's spelling is not part of the identity (#30). A prefab payload
+value naming one of the prefab's own members by its local guid is rewritten to that member's
+resolved guid (:func:`_remap_references`, #70).
 """
 
 from __future__ import annotations
@@ -10,11 +12,11 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 
+from . import canonical_toml, well_known
 from . import guid as document_guid
-from . import well_known
 from .prefab import PrefabComponent, PrefabDocument, PrefabObject
 
-__all__ = ["ResolveResult", "flatten", "mint_child_guid", "resolve"]
+__all__ = ["ResolveResult", "flatten", "mint_child_guid", "remap_guids", "resolve"]
 
 #: Catches an acyclic but absurd chain; the cycle check catches the rest.
 MAX_NESTING_DEPTH = 32
@@ -133,6 +135,9 @@ def _expand(instance, instance_guid, prefab, carriers, result) -> None:
         if member.guid is not None
     }
     by_guid = prefab.by_guid()
+    # By VALUE, once per instance: a payload may spell a guid in any accepted form.
+    references = {document_guid.parse(local): resolved for local, resolved in minted.items()}
+    references.pop(None, None)
 
     for member in prefab.objects:
         if member.guid is None:
@@ -147,7 +152,7 @@ def _expand(instance, instance_guid, prefab, carriers, result) -> None:
             continue
 
         result.document.objects.append(
-            _merge(member, overrides, is_root, instance_guid, minted, prefab, result)
+            _merge(member, overrides, is_root, instance_guid, minted, references, prefab, result)
         )
 
     for (owner, target) in carriers:
@@ -169,14 +174,19 @@ def _drops_ancestor(member, by_guid, instance_guid, carriers) -> bool:
     return False
 
 
-def _merge(prefab_object, overrides, is_root, instance_guid, minted, prefab, result) -> PrefabObject:
+def _merge(
+    prefab_object, overrides, is_root, instance_guid, minted, references, prefab, result
+) -> PrefabObject:
     merged = PrefabObject()
 
     # COMPONENT ORDER: prefab order first, then instance-only additions in instance order.
-    for component in prefab_object.components:
-        overriding = overrides.component(component.id) if overrides is not None else None
+    for prefab_component in prefab_object.components:
+        overriding = overrides.component(prefab_component.id) if overrides is not None else None
         if overriding is not None and overriding.removed:
             continue
+        # The PREFAB's values are remapped before the merge, the instance's never: an override is
+        # spelled in the document that holds the instance, where the resolved guids live.
+        component = _remap_references(prefab_component, references)
         if overriding is None:
             merged.components.append(component)
             continue
@@ -237,6 +247,59 @@ def _rewrite_meta(merged, prefab_object, is_root, instance_guid, minted, overrid
         merged.components[index] = component
     else:
         merged.components.insert(0, component)
+
+
+def _remap_references(component: PrefabComponent, references: dict) -> PrefabComponent:
+    """``component`` with every payload string naming a member of the prefab by its prefab-LOCAL
+    guid rewritten to that member's resolved guid, or ``component`` itself when none does.
+
+    A prefab that names one of its own members (an entity reference, a host id) can only spell
+    the member's local guid, which no object answers to once the prefab is placed: the member
+    becomes ``uuid5(instance, local)``, the root the instance guid. Remapping here makes such a
+    reference name THIS instance's member, and it composes through nesting: flattening rewrites
+    an inner prefab's references to the flattened locals, which the outer expansion rewrites
+    again (ParadiseBlenderEditor#70).
+
+    NORMATIVE, mirroring C# ``PrefabResolver.RemapReferences``. The resolver has no schema, so
+    the rule is by value: a string that parses as a document guid (:func:`guid.parse`) and is the
+    local guid of a member of the flattened prefab, anywhere in a payload -- nested tables and
+    lists included -- is written as the member's resolved guid in canonical form. Everything else
+    is untouched, its spelling included. ``meta`` is skipped (:func:`_rewrite_meta` owns identity
+    and parenting), and so is a table shaped like an asset reference, which names an asset, never
+    an object.
+    """
+    if component.id == well_known.META_ID or not component.data:
+        return component
+    data = remap_guids(component.data, references)
+    if data is component.data:
+        return component
+    return PrefabComponent(component.id, component.type, data, component.removed)
+
+
+def remap_guids(value, references: dict):
+    """``value`` with every guid string ``references`` knows rewritten, or ``value`` itself when
+    nothing in it changed. ``references`` maps a guid, as a ``uuid.UUID``, to the guid text it
+    becomes. Walks tables and lists; a table shaped like an asset reference is left alone.
+    Public because :mod:`apply` runs the same rule backwards."""
+    if isinstance(value, str):
+        parsed = document_guid.parse(value)
+        resolved = references.get(parsed) if parsed is not None else None
+        return document_guid.canonical(resolved) if resolved is not None else value
+    if isinstance(value, dict):
+        if canonical_toml.is_written_inline(value):
+            return value
+        items = {key: remap_guids(item, references) for key, item in value.items()}
+        if all(items[key] is item for key, item in value.items()):
+            return value
+        remapped = type(value)()   # keeps an InlineTable inline
+        remapped.update(items)
+        return remapped
+    if isinstance(value, list):
+        items = [remap_guids(item, references) for item in value]
+        if all(new is old for new, old in zip(items, value, strict=True)):
+            return value
+        return items
+    return value
 
 
 def _merge_data(prefab_data: dict, override_data: dict) -> dict:

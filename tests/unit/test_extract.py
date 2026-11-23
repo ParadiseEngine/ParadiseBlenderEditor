@@ -173,6 +173,29 @@ class TestResolution:
         assert shelf.guid != SHELF
 
 
+    def test_references_inside_the_subtree_keep_naming_their_targets(self):
+        # Box names Shelf and the extracted Rack itself (#70): the first stays a prefab-local guid
+        # and the second is re-spelled as the new root's, and the resolver maps both back.
+        text = SOURCE.replace(
+            meta(f'Guid = "{BOX}"\nName = "Box"\nParent = "{SHELF}"\n') + transform(),
+            meta(f'Guid = "{BOX}"\nName = "Box"\nParent = "{SHELF}"\n') + transform()
+            + f'\n[[objects.components]]\nid = "{LINK}"\ntype = "Game.Link"\n'
+            + f'Shelf = "{SHELF}"\nRack = "{RACK}"\n',
+        )
+        result = run(prefab.loads(text, "level.prefab"))
+        assert result.prefab.by_guid()[BOX].component(LINK).data == {"Shelf": SHELF, "Rack": MINTED}
+
+        second = "dddddddd-0000-4000-8000-000000000001"
+        level = result.remaining(REFERENCE)
+        placed = prefab.PrefabObject.with_meta(second, "Rack.001", LEVEL)
+        placed.prefab = REFERENCE
+        level.objects.append(placed)
+        resolved = resolve.resolve(level, lambda reference: result.prefab).document.by_guid()
+        for rack in (RACK, second):
+            link = resolved[resolve.mint_child_guid(rack, BOX)].component(LINK).data
+            assert link == {"Shelf": resolve.mint_child_guid(rack, SHELF), "Rack": rack}
+
+
 class TestWarnings:
     def test_a_reference_to_an_extracted_child_is_warned_about(self):
         result = run(prefab.loads(lamp_links_to(SHELF), "level.prefab"))

@@ -1,9 +1,8 @@
 """Entity references: payload fields the game declares ``authoredBy: entity`` (``HostEntity``).
 
 Such a field stores the GUID of another object -- "the same identity its ``meta`` carries" -- and
-the runtime looks it up once the whole scene is built. The resolver remaps only ``meta.Guid`` and
-``meta.Parent`` (``resolve._rewrite_meta``); a GUID inside a payload is carried verbatim, so what
-the field names has to be a guid the RESOLVED document actually contains. Two kinds qualify:
+the runtime looks it up once the whole scene is built, so what the field names has to be a guid
+the RESOLVED document actually contains. Two kinds qualify:
 
 - **a document entry** -- an ordinary object, or an instance ROOT, whose resolved guid IS the
   instance guid by design;
@@ -21,11 +20,11 @@ a GUID that named nothing, and the game found out at load. :func:`check` makes i
 error: the save refuses a document whose OWN entity values name nothing it resolves to, and warns
 about values a placed prefab contributes, which the level's author cannot fix from here.
 
-A prefab that names one of its own members by its prefab-LOCAL guid resolves inside that prefab
-and dangles in every instance of it (the member answers to its minted guid there). Rewriting
-payload references on expansion is a normative, cross-language format change (C#
-``PrefabResolver`` first -- docs/document-contracts.md, "When the document format changes"), so
-it is reported here rather than silently papered over in one of the two mirrors.
+A prefab that names one of its own members by its prefab-LOCAL guid is not dangling: the
+resolver rewrites a prefab payload's local guids to each instance's resolved ones
+(``resolve._remap_references``, mirroring C# ``PrefabResolver.RemapReferences``, #70), so the
+resolved view this module checks already names the instance's own member. An instance's own
+values are never rewritten; they are spelled in resolved guids.
 
 Imports no ``bpy``: the unit tests are what keep it honest.
 """

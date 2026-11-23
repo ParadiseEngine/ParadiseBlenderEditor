@@ -537,15 +537,30 @@ it back where the format's value is `""`.
 ## Entity references
 
 A payload field the game declares `authoredBy: entity` (`HostEntity`) stores another object's
-guid, and the runtime looks it up once the scene is built. The resolver remaps only `meta.Guid`
-and `meta.Parent`; a payload guid is carried verbatim, so what the field names must be a guid the
-RESOLVED document contains (`document/entity_refs.py`): a document entry, an instance root
+guid, and the runtime looks it up once the scene is built. What the field names must be a guid
+the RESOLVED document contains (`document/entity_refs.py`): a document entry, an instance root
 (whose resolved guid is the instance guid), or a resolved child of an instance, nested-prefab
 content included, as `resolve.mint_child_guid(instance, flattened local)`. That value exists in
 no file, but it is what C# mints too and it survives reloads, saves, renames, prefab edits that
 keep the member, and duplicating either side: a duplicated instance is a different entity, and
 the reference keeps naming the original's child (#68, #71). No new spelling is written, so the
 two resolvers stay byte-identical.
+
+**A prefab naming its own member names each instance's member** (#70). Inside a prefab the only
+spelling of a member is its prefab-LOCAL guid, which no object answers to once the prefab is
+placed. So the resolver (`resolve._remap_references`, mirroring C#
+`PrefabResolver.RemapReferences`, ParadiseEngine first) rewrites every string in a PREFAB
+payload that parses as a guid and is the local guid of a member of the flattened prefab to that
+member's resolved guid -- the instance guid for the root, `uuid5(instance, local)` for a child --
+in canonical form, at any depth of tables and lists. It is by value because the resolver has no
+schema, and it is normative: both resolvers must agree. `meta` is skipped (`_rewrite_meta` owns
+identity) and so is a table shaped like an asset reference; every other value keeps its spelling.
+It composes through nesting (flattening rewrites an inner prefab's references to the flattened
+locals, which placing the outer prefab rewrites again), and it never touches an instance's own
+override values, which are spelled in the document holding the instance and so already in
+resolved guids. `apply.apply_to_prefab` runs the rule backwards: an override naming THIS
+instance's own member is written into the prefab as the member's local guid, so every instance
+names its own; one naming anything else is written as it is.
 
 The Components panel never offers an entity field as text. `paradise_assets.pick_entity`
 searches the open document's objects (every identity the scene carries: entries, instance roots
@@ -558,10 +573,9 @@ document spells ITSELF — on an entry, an instance's own entry or an override c
 nothing, or is not a guid at all, refuses the save by object, component and field: the target was
 deleted or re-placed, or removed from its prefab, and the author has to pick again. A dangling
 value a placed prefab contributes is only a warning, since this document cannot fix it; nor is
-anything refused while the expansion itself failed. The commonest such value is a prefab naming
-its own member by its prefab-LOCAL guid, which resolves inside that prefab and dangles in every
-instance; remapping payload references on expansion is a cross-language format change and has
-to start in C# `PrefabResolver` (below).
+anything refused while the expansion itself failed. A prefab naming its own member is no longer
+such a value (above); what remains is a prefab naming something that is not in it -- a member
+since deleted, or an object only some level holds.
 
 ## When the document format changes
 

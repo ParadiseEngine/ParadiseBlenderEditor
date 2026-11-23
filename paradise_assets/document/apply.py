@@ -26,7 +26,7 @@ import copy
 from dataclasses import dataclass, field
 
 from . import guid as document_guid
-from . import overrides, well_known
+from . import overrides, resolve, well_known
 from .prefab import PrefabComponent, PrefabDocument, PrefabObject
 
 __all__ = ["ApplyError", "ApplyResult", "apply_to_prefab"]
@@ -74,9 +74,10 @@ def apply_to_prefab(
 
     result = ApplyResult(prefab=copy.deepcopy(prefab))
     root = result.prefab.root()
+    localize = _localizer(wanted, prefab)
 
-    result.components += _apply_components(instance, root, is_root=True, result=result)
-    _apply_carriers(document, wanted, result)
+    result.components += _apply_components(instance, root, is_root=True, result=result, localize=localize)
+    _apply_carriers(document, wanted, result, localize)
 
     result.remaining = overrides.strip_instance(document, wanted)
     result.warnings.extend(_reach(document, instance, wanted))
@@ -98,7 +99,33 @@ def _instance(document: PrefabDocument, instance_guid: str) -> PrefabObject:
     return subject
 
 
-def _apply_carriers(document: PrefabDocument, instance_guid: str, result: ApplyResult) -> None:
+def _localizer(instance_guid: str, prefab: PrefabDocument) -> dict:
+    """How a value naming one of THIS instance's own members is spelled inside the prefab.
+
+    The resolver rewrites a prefab value naming a member by its local guid to that member's
+    resolved guid -- the instance guid for the root, ``uuid5(instance, local)`` for a child
+    (ParadiseBlenderEditor#70). An override naming this instance's own member is that rule's
+    output, so applying it runs the rule backwards: written as the local, it names each
+    instance's own member, this one included. A value naming anything else is written as it
+    is. Only members the prefab's OWN file declares are known here; content of a prefab nested
+    in it is addressed by a guid minted while flattening, which this unflattened document cannot
+    reproduce.
+    """
+    found = {}
+    for member in prefab.objects:
+        if member.guid is None or member.target is not None:
+            continue
+        resolved = (
+            instance_guid if member.guid == prefab.root_guid
+            else resolve.mint_child_guid(instance_guid, member.guid)
+        )
+        found[document_guid.parse(resolved)] = member.guid
+    return found
+
+
+def _apply_carriers(
+    document: PrefabDocument, instance_guid: str, result: ApplyResult, localize: dict
+) -> None:
     """Each carrier's payload onto the prefab child it addresses."""
     members = result.prefab.by_guid()
 
@@ -109,7 +136,7 @@ def _apply_carriers(document: PrefabDocument, instance_guid: str, result: ApplyR
             result.children += 1
             continue
 
-        written = _apply_components(carrier, target, is_root=False, result=result)
+        written = _apply_components(carrier, target, is_root=False, result=result, localize=localize)
         if written:
             result.children += 1
 
@@ -139,7 +166,8 @@ def _refuse_unaddressable(document: PrefabDocument, instance_guid: str, prefab: 
 
 
 def _apply_components(
-    source: PrefabObject, target: PrefabObject, *, is_root: bool, result: ApplyResult
+    source: PrefabObject, target: PrefabObject, *, is_root: bool, result: ApplyResult,
+    localize: dict | None = None,
 ) -> int:
     """``source``'s override components onto ``target``, returning how many landed.
 
@@ -175,6 +203,8 @@ def _apply_components(
         payload = _payload(component)
         if not payload:
             continue
+        if localize:
+            payload = resolve.remap_guids(payload, localize)
         if existing is None:
             target.components.append(
                 PrefabComponent(component.id, component.type, copy.deepcopy(payload))

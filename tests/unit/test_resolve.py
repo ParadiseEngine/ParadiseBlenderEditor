@@ -8,7 +8,7 @@ divergence would otherwise surface much later as two tools disagreeing about a d
 
 from __future__ import annotations
 
-from paradise_assets.document import prefab, resolve, well_known
+from paradise_assets.document import canonical_toml, prefab, resolve, well_known
 from paradise_assets.document.asset_reference import AssetReference
 from paradise_assets.document.prefab import PrefabComponent, PrefabDocument, PrefabDocumentError, PrefabObject
 
@@ -323,3 +323,138 @@ class TestNesting:
 
         assert result.expanded == 0
         assert result.document.objects[0] is plain
+
+
+TARGETS_ID = "3c1d5e7a-0000-4000-8000-0000000000aa"
+ELSEWHERE = "99999999-8888-4777-8666-555555555555"
+UNSET = "00000000-0000-0000-0000-000000000000"
+
+
+def self_referencing_members() -> prefab.PrefabDocument:
+    """Post and Bulb, where Post names both by their prefab-LOCAL guids, every way a payload can."""
+    document = two_object_prefab()
+    document.objects[0].components.append(
+        PrefabComponent(
+            TARGETS_ID,
+            "Targets",
+            {
+                "Light": CHILD_LOCAL,
+                "Self": ROOT_LOCAL.upper(),
+                "Undashed": CHILD_LOCAL.replace("-", ""),
+                "Outside": ELSEWHERE.upper(),
+                "Unset": UNSET,
+                "List": [CHILD_LOCAL, "not a guid", 3],
+                "Nested": {"Target": CHILD_LOCAL},
+                "Rows": [{"Target": CHILD_LOCAL}],
+                "Inline": [canonical_toml.InlineTable({"Target": CHILD_LOCAL, "Weight": 2.0})],
+                "Asset": canonical_toml.InlineTable({"guid": CHILD_LOCAL, "path": "prefabs/lamp.prefab"}),
+            },
+        )
+    )
+    return validated(document, "lamp.prefab")
+
+
+def targets(resolved: PrefabObject) -> dict:
+    return resolved.component(TARGETS_ID).data
+
+
+class TestReferencesToOwnMembers:
+    """A prefab naming its own members names each instance's (ParadiseBlenderEditor#70). Mirrors
+    ``PrefabResolverTests`` in C#, case for case."""
+
+    def test_a_prefab_naming_its_own_members_names_the_instances_members(self):
+        result = expand(self_referencing_members(), instance())
+
+        assert result.errors == []
+        data = targets(result.document.objects[0])
+        bulb = resolve.mint_child_guid(INSTANCE_GUID, CHILD_LOCAL)
+        assert result.document.objects[1].guid == bulb
+        assert data["Light"] == bulb
+        assert data["Self"] == INSTANCE_GUID  # the root is the instance
+        assert data["Undashed"] == bulb  # canonical once remapped
+        assert data["List"][0] == bulb
+        assert data["Nested"]["Target"] == bulb
+        assert data["Rows"][0]["Target"] == bulb
+        assert data["Inline"][0] == {"Target": bulb, "Weight": 2.0}
+        assert isinstance(data["Inline"][0], canonical_toml.InlineTable)  # still written inline
+
+    def test_values_naming_no_member_keep_their_spelling(self):
+        data = targets(expand(self_referencing_members(), instance()).document.objects[0])
+
+        assert data["Outside"] == ELSEWHERE.upper()
+        assert data["Unset"] == UNSET
+        assert data["List"][1:] == ["not a guid", 3]
+        # An asset reference names an asset, never an object, whatever its guid.
+        assert data["Asset"]["guid"] == CHILD_LOCAL
+
+    def test_each_instance_names_its_own_members(self):
+        second_guid = "7c2e9a41-1111-4222-8333-444444444444"
+        second = PrefabObject.with_meta(second_guid, "Lamp_04")
+        second.prefab = PREFAB_REF
+
+        result = expand(self_referencing_members(), instance(), second)
+
+        first, second_light = targets(result.document.objects[0]), targets(result.document.objects[2])
+        assert first["Light"] == resolve.mint_child_guid(INSTANCE_GUID, CHILD_LOCAL)
+        assert second_light["Light"] == resolve.mint_child_guid(second_guid, CHILD_LOCAL)
+        assert targets(result.document.objects[2])["Self"] == second_guid
+
+    def test_an_instances_override_is_carried_verbatim(self):
+        # Spelled in the document holding the instance, in RESOLVED guids, so never remapped --
+        # not even when it happens to spell a local of the prefab.
+        obj = instance(PrefabComponent(TARGETS_ID, "Targets", {"Light": CHILD_LOCAL, "Extra": ROOT_LOCAL}))
+
+        data = targets(expand(self_referencing_members(), obj).document.objects[0])
+
+        assert data["Light"] == CHILD_LOCAL
+        assert data["Extra"] == ROOT_LOCAL
+        assert data["Self"] == INSTANCE_GUID  # not overridden: remapped
+
+    def test_a_component_naming_no_member_is_passed_through_as_it_is(self):
+        source = single_object_prefab()
+        mesh = source.objects[0].component(MESH_ID)
+
+        resolved = expand(source, instance()).document.objects[0]
+
+        assert resolved.component(MESH_ID) is mesh
+
+    def test_the_prefab_itself_is_not_rewritten(self):
+        source = self_referencing_members()
+
+        expand(source, instance())
+
+        assert targets(source.objects[0])["Light"] == CHILD_LOCAL
+
+    def test_references_inside_a_nested_prefab_name_the_nested_members(self):
+        # fitting places lamp, and lamp names its own Bulb. Flattening fitting rewrites that to
+        # the Bulb fitting holds, and placing fitting rewrites it again -- to the very guid the
+        # resolved Bulb carries.
+        result = resolve.resolve(
+            PrefabDocument([outer_instance()]),
+            lambda ref: self_referencing_members() if ref.path == PREFAB_REF.path else outer_prefab(),
+        )
+
+        assert result.errors == []
+        post = next(o for o in result.document.objects if o.name == "Post")
+        bulb = next(o for o in result.document.objects if o.name == "Bulb")
+        assert targets(post)["Light"] == bulb.guid
+        assert targets(post)["Self"] == post.guid
+
+    def test_an_outer_prefab_naming_nested_content_names_the_placed_member(self):
+        # fitting names lamp's Bulb by its FLATTENED local, uuid5(inner instance, Bulb), the value
+        # an author picks inside fitting; placed, it must name that Bulb of THIS fitting.
+        outer = outer_prefab()
+        outer.objects[0].components.append(
+            PrefabComponent(
+                TARGETS_ID, "Targets", {"Light": resolve.mint_child_guid(OUTER_INNER_LOCAL, CHILD_LOCAL)}
+            )
+        )
+
+        result = resolve.resolve(
+            PrefabDocument([outer_instance()]),
+            lambda ref: two_object_prefab() if ref.path == PREFAB_REF.path else outer,
+        )
+
+        assert result.errors == []
+        bulb = next(o for o in result.document.objects if o.name == "Bulb")
+        assert targets(result.document.objects[0])["Light"] == bulb.guid

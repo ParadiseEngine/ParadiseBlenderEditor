@@ -7,6 +7,7 @@ The promises under test (#70, #71):
 - the values a document spells itself are errors when they name nothing; values a placed prefab
   contributes are warnings, since this document cannot fix them;
 - an unset field (absent, ``""``, the zero guid) is not a dangling name;
+- a prefab naming its own member names each instance's member, because the resolver remaps it;
 - a duplicated instance is a different entity: the reference keeps naming the original's child.
 """
 
@@ -27,6 +28,9 @@ SIGN_INSTANCE = "20000000-0000-4000-8000-000000000003"
 
 SIGN_ROOT = "30000000-0000-4000-8000-000000000001"
 BULB = "30000000-0000-4000-8000-000000000002"
+
+#: Named by no object anywhere: what a prefab holds after its target was deleted from it.
+GHOST = "40000000-0000-4000-8000-000000000001"
 
 TARGET_ID = "9519caf9-7a87-4f72-845d-d59695cac8b9"
 ROUTE_ID = "aaaaaaaa-0000-4000-8000-0000000000aa"
@@ -66,13 +70,13 @@ def _obj(guid, name, parent=None, *components, prefab=None) -> PrefabObject:
     return entry
 
 
-def _prefabs():
+def _prefabs(door_target=SIGN_INSTANCE):
     sign = PrefabDocument([_obj(SIGN_ROOT, "Sign"), _obj(BULB, "Bulb", SIGN_ROOT)])
     shop = PrefabDocument([
         _obj(SHOP_ROOT, "Shop"),
-        # A prefab naming its OWN member by its local guid: valid in shop.prefab, dangling in
-        # every instance of it.
-        _obj(DOOR, "Door", SHOP_ROOT, _target(SIGN_INSTANCE)),
+        # A prefab naming its OWN member by its local guid: valid in shop.prefab, and remapped
+        # by the resolver to each instance's own member (#70).
+        _obj(DOOR, "Door", SHOP_ROOT, _target(door_target)),
         _obj(SIGN_INSTANCE, "Sign", SHOP_ROOT, prefab=SIGN_REF),
     ])
     files = {SHOP_REF.path: shop, SIGN_REF.path: sign}
@@ -88,8 +92,8 @@ def _level(*camera_components, extra=()) -> PrefabDocument:
     ])
 
 
-def _check(document: PrefabDocument) -> entity_refs.Report:
-    prefabs = _prefabs()
+def _check(document: PrefabDocument, prefabs=None) -> entity_refs.Report:
+    prefabs = prefabs or _prefabs()
     resolved = resolve.resolve(document, prefabs)
     assert resolved.errors == []
     return entity_refs.check(
@@ -184,16 +188,35 @@ def test_an_override_carrier_value_is_this_documents_own():
     assert len(report.errors) == 1
     assert report.errors[0].owner == resolve.mint_child_guid(SHOP, DOOR)
     assert report.errors[0].owner_name == "Door"
-    # The override replaces the prefab's own dangling value, so no warning repeats it.
+    # The override replaces the prefab's own value, so no warning repeats it.
     assert report.warnings == []
 
 
+def test_an_override_replaces_a_dangling_prefab_value_without_a_warning():
+    carrier = overrides.new_carrier(SHOP, DOOR)
+    carrier.components.append(_target(SHOP))
+    report = _check(_level(extra=[carrier]), _prefabs(door_target=GHOST))
+    assert report.errors == [] and report.warnings == []
+
+
+def test_a_prefab_naming_its_own_member_names_each_instances_member():
+    document = _level(extra=[_obj(SHOP_COPY, "Shop.001", LEVEL_ROOT, prefab=SHOP_REF)])
+    prefabs = _prefabs()
+    resolved = resolve.resolve(document, prefabs).document
+    doors = {entry.guid: entry for entry in resolved.objects if entry.name == "Door"}
+    for shop in (SHOP, SHOP_COPY):
+        door = doors[resolve.mint_child_guid(shop, DOOR)]
+        assert door.component(TARGET_ID).data["Object"] == resolve.mint_child_guid(shop, SIGN_INSTANCE)
+    report = _check(document)
+    assert report.errors == [] and report.warnings == []
+
+
 def test_a_value_the_prefab_contributes_is_a_warning_not_a_refusal():
-    report = _check(_level())
+    report = _check(_level(), _prefabs(door_target=GHOST))
     assert report.errors == []
     assert len(report.warnings) == 1
     warning = report.warnings[0]
-    assert warning.inherited and warning.value == SIGN_INSTANCE
+    assert warning.inherited and warning.value == GHOST
     assert warning.message().endswith("(it comes from the placed prefab, so fix it there)")
 
 
@@ -210,7 +233,9 @@ def test_a_removed_component_carries_nothing_to_check():
     carrier = overrides.new_carrier(SHOP, DOOR)
     carrier.components.append(PrefabComponent(TARGET_ID, None, {}, removed=True))
     report = _check(_level(extra=[carrier]))
-    # Removing the door's component takes the prefab's dangling value with it, too.
+    assert report.errors == [] and report.warnings == []
+    # ... and the prefab's dangling value with it, too.
+    report = _check(_level(extra=[carrier]), _prefabs(door_target=GHOST))
     assert report.errors == [] and report.warnings == []
 
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from paradise_assets.document import apply, prefab, well_known
+from paradise_assets.document import apply, prefab, resolve, well_known
 from paradise_assets.document.asset_reference import AssetReference
 
 META = well_known.META_ID
@@ -173,6 +173,34 @@ class TestCarriers:
         )
         with pytest.raises(apply.ApplyError, match="nested inside this one"):
             apply.apply_to_prefab(level("", nested), INSTANCE, lamp())
+
+
+class TestReferences:
+    """An override naming this instance's own member applies as the member's LOCAL guid, the
+    inverse of the resolver's remap (#70), so every instance names its own member."""
+
+    def test_a_reference_to_this_instances_member_applies_as_the_local(self):
+        bulb = resolve.mint_child_guid(INSTANCE, CHILD_LOCAL)
+        body = f'Light = "{bulb}"\nSelf = "{INSTANCE.upper()}"\nStops = ["{bulb}", "{FLOOR}"]\n'
+        result = apply.apply_to_prefab(level(tag(body)), INSTANCE, lamp())
+        data = result.prefab.root().component(TAG).data
+        assert data["Light"] == CHILD_LOCAL
+        assert data["Self"] == ROOT_LOCAL
+        # Anything else is written as the instance spelled it.
+        assert data["Stops"] == [CHILD_LOCAL, FLOOR]
+
+    def test_the_applied_prefab_resolves_back_to_what_the_instance_showed(self):
+        bulb = resolve.mint_child_guid(INSTANCE, CHILD_LOCAL)
+        result = apply.apply_to_prefab(level(tag(f'Light = "{bulb}"\n'), SECOND_INSTANCE), INSTANCE, lamp())
+        resolved = resolve.resolve(result.remaining, lambda _: result.prefab).document.by_guid()
+        assert resolved[INSTANCE].component(TAG).data["Light"] == bulb
+        # ... and every other instance names ITS own bulb.
+        assert resolved[SECOND].component(TAG).data["Light"] == resolve.mint_child_guid(SECOND, CHILD_LOCAL)
+
+    def test_another_instances_member_is_not_localized(self):
+        other = resolve.mint_child_guid(SECOND, CHILD_LOCAL)
+        result = apply.apply_to_prefab(level(tag(f'Light = "{other}"\n'), SECOND_INSTANCE), INSTANCE, lamp())
+        assert result.prefab.root().component(TAG).data["Light"] == other
 
 
 class TestWhatIsLeft:

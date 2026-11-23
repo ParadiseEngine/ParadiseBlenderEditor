@@ -38,6 +38,8 @@ TARGET_ID = "9519caf9-7a87-4f72-845d-d59695cac8b9"
 ROUTE_ID = "aaaaaaaa-0000-4000-8000-0000000000aa"
 ZERO = "00000000-0000-0000-0000-000000000000"
 MINTED_DOOR = resolve.mint_child_guid(SHOP, DOOR)
+#: Named by no object anywhere: what a prefab holds after its target was deleted from it.
+GHOST = "44444444-0000-4000-8000-000000000001"
 
 
 def check(condition: bool, label: str) -> bool:
@@ -218,9 +220,20 @@ def main() -> int:
             check(refused is not None and MINTED_DOOR in refused,
                   f"the dangling child reference is refused ({refused})")
 
+            print("\n== a prefab naming its own member names the instance's member (#70) ==")
+            with tempfile.TemporaryDirectory() as other_root:
+                own = make_project(Path(other_root), door_route=DOOR)
+                open_level(own, project.ProjectLayout(other_root))
+                result = save.save_prefab(scene_of())
+                check(not result.warnings, f"the save warns about nothing ({result.warnings})")
+                door = store.object_with_guid(scene_of(), MINTED_DOOR)
+                shown = {c.get("id"): c.get("data") for c in store.component_json(door)} if door else {}
+                check((shown.get(ROUTE_ID) or {}).get("Stops") == [MINTED_DOOR],
+                      f"and the door shows its own resolved guid ({shown.get(ROUTE_ID)})")
+
             print("\n== a dangling value the placed prefab contributes only warns ==")
             with tempfile.TemporaryDirectory() as other_root:
-                warned = make_project(Path(other_root), door_route=DOOR)
+                warned = make_project(Path(other_root), door_route=GHOST)
                 open_level(warned, project.ProjectLayout(other_root))
                 result = save.save_prefab(scene_of())
                 check(any("Route.Stops.0" in w and "placed prefab" in w for w in result.warnings),

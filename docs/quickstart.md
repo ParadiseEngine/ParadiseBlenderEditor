@@ -8,7 +8,8 @@ not know about Paradise" to "the game is running on the level I just edited".
 - **Blender 5.2+.** Below that the extension refuses to enable rather than degrading.
 - **The `paradise` CLI.** Either `Paradise.Cli.csproj` from a ParadiseEngine checkout, or the
   installed dotnet tool. This is not optional: the CLI's watcher is what mints identities for
-  new files, and without an identity a new prefab cannot be created at all.
+  new files, and without an identity a new prefab cannot be created at all. Either way it needs
+  the .NET SDK the engine targets: .NET 11 from engine 0.65.0.
 - **KTX-Software (`ktx`)** — optional, but the engine's glTF reader rejects PNG/JPEG, so a build
   without it gives you untextured meshes.
 

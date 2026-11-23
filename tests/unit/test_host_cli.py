@@ -13,6 +13,11 @@ import os
 
 from paradise_assets.play import host
 
+_CLI_CSPROJ = (
+    "<Project>\n  <PropertyGroup>\n    <TargetFramework>net11.0</TargetFramework>\n"
+    "  </PropertyGroup>\n</Project>\n"
+)
+
 
 def test_cli_csproj_does_not_rebuild_on_every_verb(tmp_path, monkeypatch):
     project = tmp_path / "Paradise.Cli.csproj"
@@ -32,8 +37,8 @@ def test_cli_csproj_does_not_rebuild_on_every_verb(tmp_path, monkeypatch):
 def test_a_built_cli_runs_its_dll_directly(tmp_path, monkeypatch):
     # `dotnet run --no-build` evaluates the project first (half a second); the dll does not.
     project = tmp_path / "Paradise.Cli.csproj"
-    project.write_text("<Project />\n")
-    output = tmp_path / "bin" / "Debug" / "net10.0"
+    project.write_text(_CLI_CSPROJ)
+    output = tmp_path / "bin" / "Debug" / "net11.0"
     output.mkdir(parents=True)
     (output / "paradise.dll").write_bytes(b"")
     monkeypatch.setattr(host.shutil, "which", lambda name: "/opt/homebrew/bin/dotnet")
@@ -46,6 +51,27 @@ def test_a_built_cli_runs_its_dll_directly(tmp_path, monkeypatch):
     assert argv == ["/opt/homebrew/bin/dotnet", os.path.realpath(output / "paradise.dll")]
 
 
+def test_a_dll_left_from_an_older_framework_is_not_run(tmp_path, monkeypatch):
+    # An engine checkout that moved from net10.0 to net11.0 keeps the old bin/ until cleaned.
+    project = tmp_path / "Paradise.Cli.csproj"
+    project.write_text(_CLI_CSPROJ)
+    stale = tmp_path / "bin" / "Debug" / "net10.0"
+    stale.mkdir(parents=True)
+    (stale / "paradise.dll").write_bytes(b"")
+    monkeypatch.setattr(host.shutil, "which", lambda name: "/opt/homebrew/bin/dotnet")
+    monkeypatch.setattr(
+        host, "_preference", lambda name, default="": str(project) if name == "cli" else default
+    )
+
+    argv = host.resolve_cli_command()
+
+    assert argv is not None
+    assert "--no-build" in argv
+    stage = host._build_stage()
+    assert stage is not None
+    assert stage[1:3] == ["build", os.path.realpath(project)]
+
+
 def test_ensure_cli_built_skips_a_binary(monkeypatch):
     monkeypatch.setattr(host, "_preference", lambda name, default="": "/usr/bin/paradise")
 
@@ -54,8 +80,8 @@ def test_ensure_cli_built_skips_a_binary(monkeypatch):
 
 def test_ensure_cli_built_skips_when_the_output_is_already_there(tmp_path, monkeypatch):
     project = tmp_path / "Paradise.Cli.csproj"
-    project.write_text("<Project />\n")
-    output = tmp_path / "bin" / "Debug" / "net10.0"
+    project.write_text(_CLI_CSPROJ)
+    output = tmp_path / "bin" / "Debug" / "net11.0"
     output.mkdir(parents=True)
     (output / "paradise.dll").write_bytes(b"")
     monkeypatch.setattr(host, "_preference", lambda name, default="": str(project))
@@ -150,9 +176,9 @@ def test_a_project_that_pins_nothing_uses_whatever_is_installed(tmp_path, monkey
 def _workspace(tmp_path, override: bool):
     """A workspace holding an engine checkout and a game pinned to an older engine."""
     cli = tmp_path / "ParadiseEngine" / "src" / "Tools" / "Paradise.Cli"
-    output = cli / "bin" / "Debug" / "net10.0"
+    output = cli / "bin" / "Debug" / "net11.0"
     output.mkdir(parents=True)
-    (cli / "Paradise.Cli.csproj").write_text("<Project />\n")
+    (cli / "Paradise.Cli.csproj").write_text(_CLI_CSPROJ)
     (output / "paradise.dll").write_text("")
     targets = "<_ParadiseEngineSrc>ParadiseEngine/src/</_ParadiseEngineSrc>" if override else ""
     (tmp_path / "Directory.Build.targets").write_text(f"<Project>{targets}</Project>\n")
